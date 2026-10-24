@@ -150,11 +150,9 @@ struct HomeView: View {
                 #if DEBUG
                 // Only takes space when there is something to mirror: an unconditional
                 // 300pt panel above the header blacked out the app on device.
-                LensPanel(lens: glasses.mockLens, pov: glasses.pov, mocking: glasses.mocking,
-                          connected: glasses.connected, identifying: glasses.identifying,
-                          cameraNote: glasses.cameraNote, shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
+                LiveLensPanel()
                 #endif
-                header
+                HomeHeader()
                 // Live frame size and rate off the glasses, plus recording.
                 StreamControls()
                     .padding(.horizontal, 16)
@@ -233,96 +231,6 @@ struct HomeView: View {
     private func isCurrent(_ person: Person, now: Date) -> Bool {
         guard let seen = store.lastSeen[person.id] else { return false }
         return now.timeIntervalSince(seen) < 15 * 60
-    }
-
-    private var header: some View {
-        HStack {
-            Menu {
-                if glasses.connected {
-                    Button("Disconnect glasses", role: .destructive) { glasses.disconnect() }
-                } else {
-                    Button("Connect glasses") { Task { await glasses.connect() } }
-                }
-                // The escape hatch if the watch misbehaves on stage: off, and the button is
-                // the only way in again.
-                Button {
-                    glasses.watching.toggle()
-                } label: {
-                    Label("Auto-recognize", systemImage: glasses.watching ? "checkmark" : "eye.slash")
-                }
-                Section("Microphone") {
-                    Button {
-                        assistant.mic = .glasses
-                    } label: {
-                        Label("Glasses", systemImage: assistant.mic == .glasses ? "checkmark" : "eyeglasses")
-                    }
-                    Button {
-                        assistant.mic = .phone
-                    } label: {
-                        Label("iPhone", systemImage: assistant.mic == .phone ? "checkmark" : "iphone")
-                    }
-                }
-                #if DEBUG
-                Section("Run on") {
-                    Button {
-                        Task { await glasses.useMock(false) }
-                    } label: {
-                        Label("Real glasses", systemImage: glasses.mocking ? "eyeglasses" : "checkmark")
-                    }
-                    Button {
-                        Task { await glasses.useMock(true) }
-                    } label: {
-                        Label("This phone (simulated)", systemImage: glasses.mocking ? "checkmark" : "iphone")
-                    }
-                }
-                #endif
-            } label: {
-                HStack(spacing: 7) {
-                    Circle().fill(glasses.connected ? Color.green : Color(.tertiaryLabel)).frame(width: 7, height: 7)
-                    Text(glassesLabel)
-                        .font(.footnote.weight(.medium))
-                }
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Color(.secondarySystemBackground), in: Capsule())
-            }
-            Button {
-                Task { await assistant.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: assistant.armed ? "mic.fill" : "mic.slash")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(assistant.armed ? Color.red : Color.secondary)
-                    Text(assistant.armed ? "Listening" : "Mic off")
-                        .font(.footnote.weight(.medium))
-                }
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Color(.secondarySystemBackground), in: Capsule())
-            }
-            Spacer()
-            NavigationLink { StreamLabView() } label: {
-                Image(systemName: "camera.aperture")
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(width: 34, height: 34)
-                    .background(Color(.secondarySystemBackground), in: Circle())
-            }
-            NavigationLink { ConversationView() } label: {
-                Image(systemName: "text.bubble")
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(width: 34, height: 34)
-                    .background(Color(.secondarySystemBackground), in: Circle())
-            }
-        }
-        .tint(.primary)
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
-    }
-
-    /// The pill says which rig is live, so nobody has to guess whether the glasses are real.
-    private var glassesLabel: String {
-        #if DEBUG
-        if glasses.mocking { return glasses.connected ? "Phone sim" : "Phone sim off" }
-        #endif
-        return glasses.connected ? "Glasses on" : "Glasses off"
     }
 
     /// One quiet line under the title: what's happening right now, if anything.
@@ -1293,6 +1201,118 @@ struct LensPanel: View {
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(.separator)))
             Text(label).font(.caption2).foregroundStyle(.secondary)
         }
+    }
+}
+#endif
+
+/// The pill row, in a view of its own: HomeView's body read `glasses.pov`, so it re-ran on every
+/// camera frame (15–24 a second) and rebuilt the open Menu each time, which swallowed its taps —
+/// "Real glasses" and the mic choice did nothing (20:47–20:58). Here only what the row shows is read.
+struct HomeHeader: View {
+    @Environment(Glasses.self) private var glasses
+    @Environment(Assistant.self) private var assistant
+
+    var body: some View {
+        HStack {
+            Menu {
+                if glasses.connected {
+                    Button("Disconnect glasses", role: .destructive) { glasses.disconnect() }
+                } else {
+                    Button("Connect glasses") { Task { await glasses.connect() } }
+                }
+                // The escape hatch if the watch misbehaves on stage: off, and the button is
+                // the only way in again.
+                Button {
+                    glasses.watching.toggle()
+                } label: {
+                    Label("Auto-recognize", systemImage: glasses.watching ? "checkmark" : "eye.slash")
+                }
+                Section("Microphone") {
+                    Button {
+                        assistant.mic = .glasses
+                    } label: {
+                        Label("Glasses", systemImage: assistant.mic == .glasses ? "checkmark" : "eyeglasses")
+                    }
+                    Button {
+                        assistant.mic = .phone
+                    } label: {
+                        Label("iPhone", systemImage: assistant.mic == .phone ? "checkmark" : "iphone")
+                    }
+                }
+                #if DEBUG
+                Section("Run on") {
+                    Button {
+                        Task { await glasses.useMock(false) }
+                    } label: {
+                        Label("Real glasses", systemImage: glasses.mocking ? "eyeglasses" : "checkmark")
+                    }
+                    Button {
+                        Task { await glasses.useMock(true) }
+                    } label: {
+                        Label("This phone (simulated)", systemImage: glasses.mocking ? "checkmark" : "iphone")
+                    }
+                }
+                #endif
+            } label: {
+                HStack(spacing: 7) {
+                    Circle().fill(glasses.connected ? Color.green : Color(.tertiaryLabel)).frame(width: 7, height: 7)
+                    Text(glassesLabel)
+                        .font(.footnote.weight(.medium))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(.secondarySystemBackground), in: Capsule())
+            }
+            Button {
+                Task { await assistant.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: assistant.armed ? "mic.fill" : "mic.slash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(assistant.armed ? Color.red : Color.secondary)
+                    Text(assistant.armed ? "Listening" : "Mic off")
+                        .font(.footnote.weight(.medium))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(.secondarySystemBackground), in: Capsule())
+            }
+            Spacer()
+            NavigationLink { StreamLabView() } label: {
+                Image(systemName: "camera.aperture")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 34, height: 34)
+                    .background(Color(.secondarySystemBackground), in: Circle())
+            }
+            NavigationLink { ConversationView() } label: {
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 34, height: 34)
+                    .background(Color(.secondarySystemBackground), in: Circle())
+            }
+        }
+        .tint(.primary)
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+    }
+
+    /// The pill says which rig is live, so nobody has to guess whether the glasses are real.
+    private var glassesLabel: String {
+        #if DEBUG
+        if glasses.mocking { return glasses.connected ? "Phone sim" : "Phone sim off" }
+        #endif
+        return glasses.connected ? "Glasses on" : "Glasses off"
+    }
+}
+
+#if DEBUG
+/// The lens mirror and camera tile, reading the per-frame state itself so nothing around it redraws.
+struct LiveLensPanel: View {
+    @Environment(Store.self) private var store
+    @Environment(Glasses.self) private var glasses
+
+    var body: some View {
+        LensPanel(lens: glasses.mockLens, pov: glasses.pov, mocking: glasses.mocking,
+                  connected: glasses.connected, identifying: glasses.identifying,
+                  cameraNote: glasses.cameraNote, shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
     }
 }
 #endif
