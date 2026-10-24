@@ -122,7 +122,10 @@ struct Answerer {
 
     /// Streams the answer. Yields a growing string; the last value is the whole answer.
     /// Yields nothing at all when the model says SKIP.
-    static func stream(_ question: String) -> AsyncThrowingStream<String, Error> {
+    /// `provider`, `key` and `model` default to the app's configuration; tools/live-mac.swift
+    /// passes its own to race providers against each other.
+    static func stream(_ question: String, provider: Provider = provider, key: String? = key,
+                       model: String = model) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let work = Task.detached {
                 do {

@@ -171,8 +171,9 @@ import Observation
 }
 
 /// Converts mic buffers to 24 kHz mono 16-bit PCM and sends them in 80 ms binary frames, off the
-/// realtime thread. The server rejects ingress slower than real time (close 1008), so audio flows
-/// the whole time the mic is on, silence included.
+/// realtime thread. The server rejects ingress slower than real time (close 1008, "Ingress audio
+/// slower than real-time"), so audio flows the whole time the mic is on, silence included — and
+/// if the mic stalls (route change, the OS throttling us), a pacer pads the gap with silence.
 private final class Uplink: @unchecked Sendable {
     private let queue = DispatchQueue(label: "muse.uplink", qos: .userInteractive)
     private let lock = NSLock()
@@ -181,6 +182,17 @@ private final class Uplink: @unchecked Sendable {
     private let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true)!
     private var pending = Data()
     private static let frameBytes = 24_000 * 2 * 80 / 1000
+    private static let bytesPerSecond = 24_000.0 * 2
+    /// Wall-clock start of the current socket's audio, and how much we have sent on it.
+    private var startedAt = Date()
+    private var sentBytes = 0
+    private lazy var pacer: DispatchSourceTimer = {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(80))
+        timer.setEventHandler { [weak self] in self?.pad() }
+        timer.resume()
+        return timer
+    }()
 
     func prepare(from format: AVAudioFormat) throws {
         guard let converter = AVAudioConverter(from: format, to: target) else {
@@ -193,7 +205,27 @@ private final class Uplink: @unchecked Sendable {
         lock.lock()
         socket = next
         lock.unlock()
-        queue.async { self.pending.removeAll() }
+        queue.async {
+            self.pending.removeAll()
+            self.startedAt = Date()
+            self.sentBytes = 0
+            _ = self.pacer
+        }
+    }
+
+    /// More than 240 ms behind real time: the mic stalled, so send silence up to 80 ms behind.
+    private func pad() {
+        lock.lock()
+        let socket = self.socket
+        lock.unlock()
+        guard let socket else { return }
+        let expected = Int(Date().timeIntervalSince(startedAt) * Self.bytesPerSecond)
+        guard expected - sentBytes > Self.frameBytes * 3 else { return }
+        pending.removeAll()
+        while expected - sentBytes > Self.frameBytes {
+            socket.send(.data(Data(count: Self.frameBytes))) { _ in }
+            sentBytes += Self.frameBytes
+        }
     }
 
     func push(_ buffer: AVAudioPCMBuffer) {
@@ -231,6 +263,7 @@ private final class Uplink: @unchecked Sendable {
             let frame = pending.prefix(Self.frameBytes)
             pending.removeFirst(Self.frameBytes)
             socket.send(.data(Data(frame))) { _ in }   // failures surface on receive()
+            sentBytes += Self.frameBytes
         }
     }
 
