@@ -1,3 +1,4 @@
+import Accelerate
 import CoreImage
 import Foundation
 import Observation
@@ -47,7 +48,7 @@ struct Match {
 /// People come from the bundled people.json; face samples and avatars live in Documents.
 @Observable final class Store {
     private(set) var people: [Person] = []
-    private(set) var gallery: [String: [[Float]]] = [:]
+    private(set) var gallery: [String: [[Float]]] = [:] { didSet { indexDirty = true } }
     private(set) var avatars: [String: UIImage] = [:]
     private(set) var lastSeen: [String: Date] = [:]
     /// Every time each person was recognized, oldest first.
@@ -56,10 +57,11 @@ struct Match {
     /// Small copies of avatars for the lens; every lens update ships the image over Bluetooth.
     @ObservationIgnored private var lensAvatars: [String: UIImage] = [:]
 
-    /// Bump whenever the embedding space changes (crop rule, de-rolling, model). Samples saved in
-    /// an older space are not comparable with new ones, and mixing them flattens every score —
-    /// which is exactly the failure this guards against.
-    private static let galleryVersion = 2
+    /// Bump whenever the embedding space changes (crop rule, de-rolling, alignment, model).
+    /// Samples saved in an older space are not comparable with new ones, and mixing them flattens
+    /// every score — which is exactly the failure this guards against. v3 = eye-aligned canonical
+    /// crops; everything enrolled before that was in the roll-corrected-square space.
+    private static let galleryVersion = 3
     private static let versionKey = "galleryVersion"
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -120,6 +122,8 @@ struct Match {
             if avatars[person.id] == nil { seedAvatar(person.id) }
             loadReferences(person.id)
         }
+        pruneGallery()
+        loadCohort()
     }
 
     /// Re-reads the roster after a push. Embeddings stay: the expensive part is the face work, and
@@ -172,7 +176,7 @@ struct Match {
         guard !fresh.isEmpty else { return }
         for url in fresh {
             guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
-                  let face = FaceEngine.faces(in: image).first else { continue }
+                  let face = FaceEngine.faces(in: image).first, face.usable else { continue }
             gallery[id, default: []].append(face.embedding)
         }
         save()
@@ -272,15 +276,18 @@ struct Match {
 
     /// A name has to be earned: close enough outright, and clear of the runner-up.
     ///
-    /// Re-measured on the bundled references in the de-rolled space (the earlier 0.62/0.02 numbers
-    /// came from a three-photo sample and do not hold): same person scores 0.570 at worst and
-    /// 0.802 typically, different people reach 0.794 at worst and 0.589 typically. The absolute
-    /// score alone cannot separate those tails — the margin over the runner-up does the real work,
-    /// and it is ~0.26 for a true match versus ~0.00 for a coin flip.
-    ///
-    /// Both are overridable from UserDefaults so they can be tuned on the phone without a rebuild.
+    /// Re-measured on the bundled references in the aligned space. The absolute score alone cannot
+    /// separate the tails — the margin over the runner-up does the real work. Both are overridable
+    /// from UserDefaults so they can be tuned on a running phone without a rebuild.
     var minScore: Float { Tuning.float("minScore", 0.72) }
     var minGap: Float { Tuning.float("minGap", 0.05) }
+    /// How much the top person must also beat the rejection cohort by. 0 disables it; it is only
+    /// meaningful once `Cohort/cohort_NN.jpg` strangers are bundled (see `cohort`).
+    var minCohortGap: Float { Tuning.float("minCohortGap", 0) }
+    /// A person's score is the mean of their best `matchTopK` samples, not their single best one.
+    /// `max` meant one bad gallery photo — a group shot that enrolled the wrong face — could name
+    /// that person forever, and nothing would ever undo it.
+    var matchTopK: Int { max(1, Tuning.int("matchTopK", 2)) }
 
     /// A deliberate press still means "tell me who that is", but nearest-neighbour on its own will
     /// always name somebody: it was naming people at 0.45 with the runner-up 0.006 behind, which is
@@ -296,16 +303,143 @@ struct Match {
         let ranked = ranked(embedding)
         guard let top = ranked.first, top.score >= score else { return nil }
         if let runnerUp = ranked.dropFirst().first, top.score - runnerUp.score < gap { return nil }
+        // Open set: everyone in the room is scored against a roster of four, so a stranger is
+        // always *closest* to someone. A cohort of faces that are definitely nobody gives the
+        // score a floor to clear — without one, "nobody here is on the roster" is unsayable.
+        let cohortGap = minCohortGap
+        if cohortGap > 0, let stranger = cohortBest(embedding), top.score - stranger < cohortGap { return nil }
         return top
     }
 
-    /// Every enrolled person is a candidate.
+    // MARK: The matcher
+
+    /// The gallery, flattened: one contiguous buffer of `dims`-wide rows plus who owns each row.
+    /// `[String: [[Float]]]` meant a dictionary walk and a fresh `zip`/`reduce` allocation per
+    /// sample per face per frame. One flat buffer and vDSP is the same arithmetic without the
+    /// pointer chasing, and it is what lets the roster grow: measured 0.2 ms at 100 people and
+    /// 27.7 ms at 10,000 with the old loop, so the matcher was never going to be the wall — but
+    /// there is no reason to pay for it either.
+    private struct Index {
+        var flat: [Float] = []
+        var owners: [String] = []
+        var dims = 0
+    }
+    @ObservationIgnored private var index = Index()
+    @ObservationIgnored private var indexDirty = true
+
+    private func rebuildIndex() {
+        var flat: [Float] = [], owners: [String] = []
+        var dims = 0
+        for person in contacts {
+            for sample in gallery[person.id] ?? [] {
+                if dims == 0 { dims = sample.count }
+                guard sample.count == dims, dims > 0 else { continue }
+                flat.append(contentsOf: sample)
+                owners.append(person.id)
+            }
+        }
+        flat.reserveCapacity(owners.count * dims)
+        index = Index(flat: flat, owners: owners, dims: dims)
+        indexDirty = false
+    }
+
+    /// Cosine similarity of `embedding` against every stored sample, in one pass.
+    private func similarities(_ embedding: [Float]) -> [Float] {
+        if indexDirty { rebuildIndex() }
+        guard index.dims == embedding.count, !index.owners.isEmpty else { return [] }
+        var scores = [Float](repeating: 0, count: index.owners.count)
+        let dims = vDSP_Length(index.dims)
+        index.flat.withUnsafeBufferPointer { matrix in
+            embedding.withUnsafeBufferPointer { probe in
+                guard let m = matrix.baseAddress, let v = probe.baseAddress else { return }
+                for row in 0..<index.owners.count {
+                    vDSP_dotpr(m + row * index.dims, 1, v, 1, &scores[row], dims)
+                }
+            }
+        }
+        return scores
+    }
+
+    /// Every enrolled person is a candidate, scored by the mean of their best `matchTopK` samples.
     func ranked(_ embedding: [Float]) -> [Match] {
-        contacts.compactMap { person -> Match? in
-            guard let samples = gallery[person.id], !samples.isEmpty else { return nil }
-            let best = samples.map { zip($0, embedding).reduce(0) { $0 + $1.0 * $1.1 } }.max() ?? 0
-            return Match(person: person, score: best)
+        let scores = similarities(embedding)
+        guard !scores.isEmpty else { return [] }
+        var byPerson: [String: [Float]] = [:]
+        for (row, owner) in index.owners.enumerated() { byPerson[owner, default: []].append(scores[row]) }
+        let k = matchTopK
+        return contacts.compactMap { person -> Match? in
+            guard let all = byPerson[person.id], !all.isEmpty else { return nil }
+            let top = all.sorted(by: >).prefix(min(k, all.count))
+            return Match(person: person, score: top.reduce(0, +) / Float(top.count))
         }.sorted { $0.score > $1.score }
+    }
+
+    // MARK: Open-set rejection cohort
+
+    /// Faces of people who are definitely *not* on the roster, bundled as `Cohort/cohort_NN.jpg`.
+    /// Empty today — the mechanism is here so that adding a few hundred stranger photos is a build
+    /// away, with no code change and no threshold archaeology.
+    @ObservationIgnored private(set) var cohort: [[Float]] = []
+
+    private func loadCohort() {
+        guard cohort.isEmpty else { return }
+        let urls = (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("cohort_") }
+        for url in urls {
+            guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
+                  let face = FaceEngine.faces(in: image).first, face.usable else { continue }
+            cohort.append(face.embedding)
+        }
+    }
+
+    private func cohortBest(_ embedding: [Float]) -> Float? {
+        guard !cohort.isEmpty else { return nil }
+        var best: Float = -1
+        for sample in cohort where sample.count == embedding.count {
+            var score: Float = 0
+            vDSP_dotpr(sample, 1, embedding, 1, &score, vDSP_Length(embedding.count))
+            best = max(best, score)
+        }
+        return best < 0 ? nil : best
+    }
+
+    // MARK: Gallery hygiene
+
+    /// Drops reference samples that look more like somebody else than like their own owner.
+    ///
+    /// `loadReferences` enrols the largest face in each reference photo with no check at all, so
+    /// one group shot quietly files a stranger under your name — and because scoring used `max`,
+    /// that one bad row could name them forever. A sample is only dropped when it is *clearly*
+    /// misfiled: closer to another person than to its own, by a real margin. In memory only, so it
+    /// is recomputed every launch and `pruneGallery: false` puts it back.
+    private func pruneGallery() {
+        guard Tuning.bool("pruneGallery", true) else { return }
+        for (id, samples) in gallery where samples.count >= 3 {
+            var keep: [[Float]] = []
+            for (i, sample) in samples.enumerated() {
+                var own: Float = -1, other: Float = -1
+                for (j, mine) in samples.enumerated() where i != j {
+                    var s: Float = 0
+                    vDSP_dotpr(sample, 1, mine, 1, &s, vDSP_Length(min(sample.count, mine.count)))
+                    own = max(own, s)
+                }
+                for (otherID, theirs) in gallery where otherID != id {
+                    for sampleB in theirs {
+                        var s: Float = 0
+                        vDSP_dotpr(sample, 1, sampleB, 1, &s, vDSP_Length(min(sample.count, sampleB.count)))
+                        other = max(other, s)
+                    }
+                }
+                if other > own + 0.03 {
+                    SpeedLog.record(["event": "galleryPrune", "person": id, "sample": i,
+                                     "own": (Double(own) * 1000).rounded() / 1000,
+                                     "other": (Double(other) * 1000).rounded() / 1000])
+                } else {
+                    keep.append(sample)
+                }
+            }
+            if keep.count != samples.count { gallery[id] = keep }
+        }
     }
 
     private func save() {
