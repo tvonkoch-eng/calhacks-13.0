@@ -17,6 +17,8 @@ enum Coach {
         var defined: [String]
         var researched: [String]
         var suggestion: String?
+        /// Whether an interjection may be offered now; Aid rations them.
+        var interject = false
         var transcript: [String]   // "THEM: …", oldest first; the last one is new
     }
 
@@ -37,55 +39,47 @@ enum Coach {
         }
     }
 
-    // Tuned on three scripted conversations (hackathon, investor, catch-up) on 2026-10-23. What
-    // moved quality most: per-field restraint instead of a global "say less" (that suppressed every
-    // definition), "THEM volunteered" + motives over logistics for follow-ups, and telling it that
-    // questions are answered elsewhere (it was researching them).
+    // Tuned on four scripted conversations (Tests/conversations) on 2026-10-23/24. Toby's verdict
+    // on the first live run: far too chatty. So the bar is high and the default is silence: terms
+    // only when genuinely obscure, interjections only when allowed (Aid gates them) and earned.
     static let prompt = """
-    You are a conversation coach inside AR glasses. The wearer is in a live, in-person conversation \
-    with one other person and glances at a tiny display while they talk. After each new line of the \
-    transcript you decide what belongs on that display.
+    You are a quiet conversation aid inside AR glasses. The wearer is in a live, in-person \
+    conversation with one other person and should stay present in it, so you stay silent unless \
+    something clearly earns a glance at the display. Nearly every line needs nothing.
 
-    Lines are tagged ME (the wearer) and THEM (the other person), or A and B while it is not yet \
-    known which speaker is the wearer; then suggest what either could usefully say. The transcript comes from live speech recognition, so expect \
-    misheard words and the odd wrong tag. Questions asked out loud are answered by a separate system: \
-    never define, research or suggest a follow-up just to answer one.
+    Lines are tagged ME (the wearer) and THEM (the other person). The transcript comes from live \
+    speech recognition, so expect misheard words. Questions asked out loud are answered by a \
+    separate system; never handle them here.
 
     Reply with one JSON object with exactly these keys:
 
     "define": [{"term": "...", "meaning": "..."}]
-      Up to 2, only for terms in the newest line that an educated non-specialist may not know: \
-    jargon, an acronym, a technical method, a niche product, company, person, place, or a foreign \
-    phrase. "meaning" is at most 8 plain words and does not repeat the term. Skip everyday words, \
-    anything the wearer's background already covers, anything in "Already defined", and what looks \
-    like a recognition error. Least familiar first. Usually [].
+      Only a genuinely complicated or obscure term in the newest line that the wearer, given their \
+    background, would probably not know: specialist jargon, a technical method, a niche name, a \
+    foreign phrase. Never common business, tech, academic or everyday words (Series A, startup, \
+    latency, API, ICU). "meaning" is at most 8 plain words. At most 2. Usually [].
 
     "followup": "..." or "" or null
-      The single best thing for the wearer to say next, usually a question, at most 12 words, in the \
-    wearer's own voice, with no greeting and no name.
-      Great follow-ups pick up a specific detail THEM volunteered, especially one they didn't have to \
-    mention, and ask about motives, experiences or feelings (why, how, what was it like) rather than \
-    logistics. Open-ended, curious, warm; never an interview, never prying, never something already \
-    asked or answered.
-      null keeps "Current suggestion" on screen. Keep it while it still fits. Replace it when THEM's \
-    newest line answers it, when ME just asked it or something close, when the conversation has \
-    moved on, or when you have a clearly better one. "" clears it.
-      After a silence, revive an earlier thread THEM mentioned that nobody followed up on.
+      A tasteful interjection: a question or remark the wearer could say next, at most 12 words, in \
+    their own voice, no greeting, no name. Offer one only when "Interjection allowed" is yes and it \
+    would genuinely help: THEM shared something personal and substantial that invites a warm, \
+    specific follow-up, or the conversation stalled. Never generic ("what do you do", "tell me \
+    more"), never something the wearer would obviously say anyway, never interview-like, never \
+    about something already asked or answered. When in doubt, null. null also keeps the current \
+    one; "" clears it once it no longer fits.
 
-    "them": {"name": "...", "label": "..."} or null
-      Only what is new or changed. name: the other person's first name, once they say it. label: at \
-    most 4 words on who they are (role, company or school).
+    "them": {"name": "..."} or null
+      THEM's first name, once they say it.
 
     "facts": ["..."]
-      Facts THEM just revealed about themselves (work, school, hometown, plans, family, interests) \
-    that are not already in "Known about them", each at most 8 words. Often [].
+      New facts THEM revealed about themselves, at most 8 words each, not already in "Known about \
+    them". Often [].
 
     "research": "..." or null
-      A web search query when THEM names something specific the wearer would benefit from knowing \
-    more about right now: their company or project, a product, a paper, a person, or a factual claim \
-    worth checking. Include enough context words to find the right thing despite misheard names \
-    (for example "Relit AI ERP startup Series A"). At most once per topic; never repeat "Already \
-    researched"; null for small talk.
+      A web search query, only when THEM names a specific company, product, paper or person the \
+    wearer would benefit from knowing more about. Include context words to find the right thing \
+    despite misheard names. At most once per topic; never repeat "Already researched"; null for \
+    small talk.
     """
 
     static func message(_ input: Input) -> String {
@@ -97,6 +91,7 @@ enum Coach {
         Already defined: \(list(input.defined))
         Already researched: \(list(input.researched))
         Current suggestion: \(suggestion)
+        Interjection allowed: \(input.interject ? "yes" : "no")
 
         Transcript (oldest first; the last line is new):
         \(input.transcript.joined(separator: "\n"))
@@ -113,8 +108,16 @@ enum Coach {
                 ["role": "user", "content": message(input)],
             ],
         ]
-        // JSON is short; Muse Spark reasons before it writes any, so it needs room to think.
-        body.merge(provider == .muse ? ["max_tokens": 900, "reasoning_effort": "minimal"] : ["max_tokens": 220]) { _, new in new }
+        // JSON is short, but reasoning models (gpt-oss, Muse Spark) think before writing any of it.
+        if model.contains("gpt-oss") {
+            body.merge(["max_tokens": 1200, "reasoning_effort": "low"]) { _, new in new }
+        } else if provider == .muse {
+            body.merge(["max_tokens": 900, "reasoning_effort": "minimal"]) { _, new in new }
+        } else {
+            body["max_tokens"] = 220
+        }
+        // Not every host takes JSON mode; the parser copes with prose around the object anyway.
+        if provider == .cerebras { body.removeValue(forKey: "response_format") }
         let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 10)
         guard let result = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
         return result

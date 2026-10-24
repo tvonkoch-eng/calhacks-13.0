@@ -559,6 +559,18 @@ enum Talk {
 
     /// Seconds of quiet that count as a lull worth rescuing.
     private static let lull: TimeInterval = 6
+    /// Interjections are rationed: none until we know who's who and the conversation has had a few
+    /// lines, then at most one a minute (sooner only to rescue a lull).
+    private static let openingLines = 4
+    private static let interjectionGap: TimeInterval = 60
+    @ObservationIgnored private var lastInterjection = Date.distantPast
+
+    private func interjectionAllowed(lull: Bool) -> Bool {
+        guard roles.known else { return false }
+        let since = Date().timeIntervalSince(lastInterjection)
+        return lull ? lines.count >= 2 && since >= Self.interjectionGap / 2
+                    : lines.count >= Self.openingLines && since >= Self.interjectionGap
+    }
 
     /// One call at a time; anything heard meanwhile folds into one more call right after.
     private func coachSoon() {
@@ -572,6 +584,7 @@ enum Talk {
             return
         }
         let input = coachInput()
+        let interject = input.interject
         let backup = config.backup
         lastCoach = Date()
         coachTask = Task { [weak self] in
@@ -587,7 +600,7 @@ enum Talk {
                     advice = try await Coach.ask(input, provider: backup.provider, key: backup.key, model: backup.model)
                 }
                 self?.timings["coach", default: []].append(Int(Date().timeIntervalSince(started) * 1000))
-                self?.apply(advice)
+                self?.apply(advice, interject: interject)
             } catch LLM.Failure.rateLimited {
                 // Already blocked above; the retry fires when the block lifts.
             } catch {
@@ -633,15 +646,17 @@ enum Talk {
     private func coachInput() -> Coach.Input {
         var transcript = transcriptLines(last: 12)
         if !partial.isEmpty { transcript.append("\(predictedTag()) (still talking): \(partial)") }
+        let lull = silent
         if silent {
             transcript.append("(silence, \(Int(Self.lull)) seconds)")
             silent = false
         }
         return Coach.Input(wearer: config.wearer, background: config.background, known: them.summary, defined: defined,
-                           researched: researched, suggestion: lens.followup, transcript: transcript)
+                           researched: researched, suggestion: lens.followup, interject: interjectionAllowed(lull: lull),
+                           transcript: transcript)
     }
 
-    private func apply(_ advice: Coach.Advice) {
+    private func apply(_ advice: Coach.Advice, interject: Bool) {
         let now = Date()
         for term in advice.define where !defined.contains(where: { $0.caseInsensitiveCompare(term.term) == .orderedSame }) {
             defined.append(term.term)
@@ -660,7 +675,8 @@ enum Talk {
         case .say(let text):
             // Advice is computed on the transcript as it was; if the wearer has since said it, it's stale.
             let said = lines.suffix(2).contains { roles.tag($0.speaker) != "THEM" && Talk.echoes($0.text, text) }
-            if !said, Talk.normalized(text) != Talk.normalized(lens.followup ?? "") {
+            if interject, !said, Talk.normalized(text) != Talk.normalized(lens.followup ?? "") {
+                lastInterjection = now
                 compositor.pin(text, at: now)
                 log(.followup, text)
             }
@@ -675,7 +691,7 @@ enum Talk {
             them.label = label
             log(.learned, label)
         }
-        compositor.setHeader(them.header)
+        compositor.setHeader(them.name)
         for fact in advice.facts where !(them.facts + [them.label ?? ""]).contains(where: { Talk.same($0, fact) }) {
             them.facts.append(fact)
             log(.learned, fact)

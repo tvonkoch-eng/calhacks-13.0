@@ -1,11 +1,10 @@
 import Foundation
 
 /// What the lens shows during a conversation. Three things, no more:
-/// - `header`: who you're talking to, once they've said it ("Priya · Berkeley CS").
+/// - `header`: who you're talking to, once they've said their name.
 /// - `card`: one passing card — an answer, a definition or a research note — that times out.
-/// - `followup`: one pinned suggestion for what to say next, which stays put while cards come and
-///   go. It is the thing most worth keeping in view: a definition that pops up for eight seconds
-///   must not knock a good question off the display.
+/// - `followup`: a rare interjection, pinned while cards come and go: a definition that pops up for
+///   eight seconds must not knock a good question off the display.
 struct LensView: Equatable {
     var header: String?
     var card: Card?
@@ -49,7 +48,8 @@ struct Compositor {
     static let minDwell: TimeInterval = 2.5
     static let answerDwell: TimeInterval = 5
     static let maxWait: TimeInterval = 8
-    static let followupLife: TimeInterval = 120
+    /// An interjection is for the moment it was offered; then it fades.
+    static let followupLife: TimeInterval = 45
 
     private var shownAt = Date.distantPast
     private var expiresAt: Date?

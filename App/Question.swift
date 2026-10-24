@@ -69,6 +69,8 @@ enum QuestionGate {
         "do you like", "do you feel", "how do you feel", "what time are we", "whos coming",
         "what about you", "how about you", "and you", "what about yourself", "how did you end up",
         "how did you get into", "what brings you", "what are you working on", "what are you up to",
+        "how was it", "how was that", "how did it go", "how did that go", "what was it like",
+        "what was that like", "how is that going", "hows that going", "how is it", "hows it",
     ]
 
     /// "how do you think about …", "what would you choose": asking for the listener's view.
@@ -92,6 +94,15 @@ enum QuestionGate {
             break
         }
         guard !clause.isEmpty else { return nil }
+        // "congrats, how was it?": with a question mark, a few leading words before the question
+        // word are an interjection. Without one, "the guy who wrote it" is not a question.
+        if explicitMark, !peeled {
+            let words = clause.split(separator: " ").map(String.init)
+            if let first = words.first, !wh.contains(first), !aux.contains(first),
+               let at = words.prefix(4).firstIndex(where: { wh.contains($0) }), at > 0 {
+                clause = words[at...].joined(separator: " ")
+            }
+        }
         if personal.contains(where: { clause == $0 || clause.hasPrefix($0 + " ") }) { return nil }
 
         let words = clause.split(separator: " ").map(String.init)

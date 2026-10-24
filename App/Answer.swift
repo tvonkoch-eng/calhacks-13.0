@@ -27,7 +27,8 @@ enum Provider: String {
     var model: String {
         switch self {
         case .groq: "qwen/qwen3.8-27b"
-        case .cerebras: "llama-3.3-70b"
+        // gpt-oss-120b: OpenAI's open-weight model; Cerebras serves it fastest of any host.
+        case .cerebras: "gpt-oss-120b"
         // gpt-4.1-mini: 20/20 answer-vs-SKIP, median first token 0.66 s (2026-10-23). gpt-4o-mini
         // and gpt-5.4-mini answered "did you see the keynote"; gpt-5.4-nano failed 6 of 20.
         case .openai: "gpt-4.1-mini"
@@ -37,12 +38,13 @@ enum Provider: String {
         }
     }
 
-    /// Muse Spark is a reasoning model with no way to turn reasoning off: at 48 tokens it spends
-    /// the whole budget thinking and returns no content. `minimal` effort plus room to think fixes it.
-    var extras: [String: Any] {
+    /// Reasoning models think before they answer: at 48 tokens they spend the whole budget
+    /// thinking and return no content. Low effort plus room to think fixes it.
+    func extras(model: String) -> [String: Any] {
+        if model.contains("gpt-oss") { return ["max_tokens": 600, "reasoning_effort": "low"] }
         switch self {
-        case .muse: ["max_tokens": 400, "reasoning_effort": "minimal"]
-        default: ["max_tokens": 48]
+        case .muse: return ["max_tokens": 400, "reasoning_effort": "minimal"]
+        default: return ["max_tokens": 48]
         }
     }
 }
@@ -151,7 +153,7 @@ struct Answerer {
                                 ? question : "Conversation so far:\n\(context)\n\nQuestion: \(question)"],
                         ],
                     ]
-                    body.merge(provider.extras) { _, extra in extra }
+                    body.merge(provider.extras(model: model)) { _, extra in extra }
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)

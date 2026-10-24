@@ -87,6 +87,8 @@ do {
     check(QuestionGate.candidate(in: "how did you end") == nil, "\"how did you end (up…)\" is personal, even as a fragment")
     check(QuestionGate.candidate(in: "how do you say thank you in Japanese")?.confidence == .strong, "generic-you how-to still passes")
     check(QuestionGate.candidate(in: "Oh, interesting, how do you think about the regulation side?") == nil, "asking their view is personal")
+    check(QuestionGate.candidate(in: "Uh, congrats, how was it?") == nil, "a check-in about their experience is personal")
+    check(QuestionGate.candidate(in: "How was the Eiffel Tower built?") != nil, "but a factual how-was question passes")
 }
 
 // Who's who.
