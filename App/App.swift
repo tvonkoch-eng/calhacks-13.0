@@ -922,28 +922,9 @@ struct LensMirror: View {
         }
     }
 
-    @ViewBuilder private var card: some View {
-        switch shot.kind {
-        case .aid:
-            VStack(alignment: .leading, spacing: 12) {
-                if shot.group.count >= 2 {
-                    groupRow
-                } else if let id = shot.photo {
-                    HStack(spacing: 10) {
-                        if let photo = avatar(id) {
-                            Image(uiImage: photo)
-                                .resizable().aspectRatio(contentMode: .fill)
-                                .frame(width: m.icon, height: m.icon)
-                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(shot.name ?? "").font(.system(size: m.meta))
-                            Text(shot.headline ?? "").font(.system(size: m.meta)).foregroundStyle(secondary)
-                        }
-                    }
-                } else if let header = shot.name {
-                    Text(header).font(.system(size: m.meta)).foregroundStyle(secondary)
-                }
+    /// The aid's card content: the answer or definition, work in flight, the line to say next.
+    @ViewBuilder private var aidBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
                 if let title = shot.answer {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 10) {
@@ -967,6 +948,67 @@ struct LensMirror: View {
                         Text(followup).font(.system(size: m.body))
                     }
                 }
+        }
+    }
+
+    @ViewBuilder private var card: some View {
+        switch shot.kind {
+        case .split:
+            // The lens split: the aid's card on top, who you're talking to at the bottom.
+            VStack(alignment: .leading, spacing: 12) {
+                if shot.answer != nil || !shot.working.isEmpty || shot.followup != nil {
+                    aidBody
+                        .padding(m.pad)
+                        .modifier(LensCardBackground(radius: m.radius))
+                }
+                Spacer(minLength: 0)
+                if shot.group.count >= 2 {
+                    groupRow
+                        .padding(m.pad)
+                        .modifier(LensCardBackground(radius: m.radius))
+                } else if let id = shot.photo {
+                    HStack(spacing: 12) {
+                        if let photo = avatar(id) {
+                            Image(uiImage: photo)
+                                .resizable().aspectRatio(contentMode: .fill)
+                                .frame(width: m.icon, height: m.icon)
+                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(shot.name ?? "").font(.system(size: m.heading, weight: .semibold))
+                            Text(shot.headline ?? "").font(.system(size: m.body))
+                            if let context = shot.context {
+                                Text(context).font(.system(size: m.meta)).foregroundStyle(secondary)
+                            }
+                        }
+                    }
+                    .padding(m.pad)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .modifier(LensCardBackground(radius: m.radius))
+                }
+            }
+
+        case .aid:
+            VStack(alignment: .leading, spacing: 12) {
+                if shot.group.count >= 2 {
+                    groupRow
+                } else if let id = shot.photo {
+                    HStack(spacing: 10) {
+                        if let photo = avatar(id) {
+                            Image(uiImage: photo)
+                                .resizable().aspectRatio(contentMode: .fill)
+                                .frame(width: m.icon, height: m.icon)
+                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(shot.name ?? "").font(.system(size: m.meta))
+                            Text(shot.headline ?? "").font(.system(size: m.meta)).foregroundStyle(secondary)
+                        }
+                    }
+                } else if let header = shot.name {
+                    Text(header).font(.system(size: m.meta)).foregroundStyle(secondary)
+                }
+                aidBody
             }
             .padding(m.pad)
             .modifier(LensCardBackground(radius: m.radius))

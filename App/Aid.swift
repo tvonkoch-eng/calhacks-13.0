@@ -462,7 +462,7 @@ enum Talk {
     func reset() {
         answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel()
         lines = []; turns = []; events = []; them = Them(); roles = Roles(); partial = ""; status = ""
-        compositor.clear(); defined = []; firedText = ""; generation += 1
+        compositor.clear(); defined = []; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
         coachPending = false; coachBlockedUntil = nil; closedInTurn = 0
         wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""
         publish()
@@ -692,6 +692,7 @@ enum Talk {
             // Nothing goes up until there is an answer: a "…" for every question-shaped phrase was
             // half of everything on the lens, and most of those turned out to be SKIPs.
             guard !turn.answer.isEmpty else { return }
+            answeredAt = now
             compositor.show(Card(kind: .answer, title: turn.answer, detail: Self.echo(turn.question),
                                  live: turn.state != .done, id: turn.card), at: now)
         case .skipped, .failed:
@@ -799,6 +800,7 @@ enum Talk {
     }
 
     private func put(_ card: Card) {
+        if card.kind == .answer { answeredAt = Date() }
         compositor.show(card, at: Date())
         publish()
     }
@@ -814,6 +816,10 @@ enum Talk {
     @ObservationIgnored private var lastSpeech = Date()
     @ObservationIgnored private var silenceTask: Task<Void, Never>?
     @ObservationIgnored private var defined: [String] = []
+    /// Requests the coach rebuilt, so one garbled question is asked once.
+    @ObservationIgnored private var asked: [String] = []
+    /// When an answer last went up (any lane), so a rebuilt request doesn't repeat one.
+    @ObservationIgnored private var answeredAt = Date.distantPast
 
     /// One call at a time; anything heard meanwhile folds into one more call right after.
     private func coachSoon() {
@@ -930,6 +936,16 @@ enum Talk {
             compositor.show(Card(kind: .definition, title: term.term, detail: term.meaning, id: nextCard), at: now)
             log(.define, term.term, detail: term.meaning)
         }
+        // The recognizer garbled a request the gate or the answer model let go: the coach's clean
+        // version goes to the tool model (answer, device tool or Fetch), unless something already
+        // answered this turn.
+        if let ask = advice.ask, Date().timeIntervalSince(answeredAt) > 8, lookupTask == nil,
+           turns.first?.live != true, !asked.contains(where: { Talk.same($0, ask) }) {
+            asked.append(ask)
+            answeredAt = now
+            log(.lookup, ask, detail: "rebuilt from what was heard")
+            toolRound(ask, command: false)
+        }
         // Shown only while its moment lasts: speech ends a lull (`wanted` is cleared), so a line that
         // arrives after they started talking again stays off the lens.
         if moment != nil, wanted != nil {
@@ -1027,6 +1043,7 @@ enum Talk {
             return
         }
         log(.lookup, question, detail: "looking up with \(researcher.name)")
+        answeredAt = Date()
         nextCard += 1
         let card = nextCard, started = Date()
         compositor.startWork(id: card, label: config.toolbox?.working("research", arguments: "{}") ?? "Looking it up", at: started)

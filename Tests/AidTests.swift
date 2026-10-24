@@ -237,6 +237,8 @@ do {
     check(two?.suggest == nil, "an empty suggestion is none")
     let say = Coach.parse(#"{"suggest": "What was the Transpac like?"}"#)
     check(say?.suggest == "What was the Transpac like?" && say?.define.isEmpty == true, "missing keys are fine")
+    let ask = Coach.parse(#"{"ask": "How much did Figure AI raise in its latest round?", "define": [], "suggest": null}"#)
+    check(ask?.ask == "How much did Figure AI raise in its latest round?", "a rebuilt request")
     check(Coach.parse("no json here") == nil, "prose without JSON is rejected")
     let input = Coach.Input(wearer: "Toby", background: "finance student", known: "Priya · evals founder; Wearer promised: send the deck",
                             defined: [], suggested: ["How did the seed close?"], moment: "a silence", transcript: [])

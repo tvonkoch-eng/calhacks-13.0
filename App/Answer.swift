@@ -78,7 +78,8 @@ struct Answerer {
     You help someone wearing smart glasses during a live, in-person conversation. The input is a \
     live speech transcript of a question someone just asked out loud, sometimes after what's known \
     about the other person and the last few lines of the conversation. The question may be cut off \
-    mid-sentence — infer the obvious full question and answer that. Speech recognition mishears \
+    mid-sentence — infer the obvious full question and answer that. The audio is often imperfect, \
+    so read through misheard or missing words to what was clearly meant. Speech recognition mishears \
     jargon: read "the sharp on a market making book" as the Sharpe ratio, and so on, when the \
     conversation makes the meaning clear.
 

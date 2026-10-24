@@ -84,7 +84,10 @@ import Observation
         aid = Self.makeAid(wearer: wearer)
         speakers = Speakers(wearer: wearer)
         // New key on purpose: the glasses default of the last build shouldn't carry over.
-        listener.mic = Listener.storedMic
+        // Always the iPhone mic at launch: streaming the glasses' mic through the camera stream
+        // kills both video and audio (DAT 1.0.1). The menu can still pick Glasses for one session.
+        listener.mic = .phone
+        UserDefaults.standard.set(Listener.Mic.phone.rawValue, forKey: "mic")
         listener.onLog = { SpeedLog.record($0) }
         listener.onPartial = { [weak self] text in
             guard let self else { return }
@@ -95,14 +98,15 @@ import Observation
         wire(aid)
     }
 
-    /// Quiet by default (tuning knobs, no rebuild): explicit questions only, and no coach. The coach
-    /// (definitions, lines to say, its own lookups) misfired in a real conversation about our own
-    /// product: it researched "Meta AR glasses frame rate", decided a person mentioned was the one
-    /// talking, and its calls used up the rate limit the answers needed.
+    /// Tuning knobs, no rebuild: explicit questions only, and the coach on. The coach was off after
+    /// it misfired in a real conversation about our own product (it researched "Meta AR glasses
+    /// frame rate" and named THEM after someone mentioned); both are gone by construction now: no
+    /// coach lookups, names only from introductions or face ID, suggestions only in a lull, on
+    /// "Lens, what should I ask?" or when a face is recognised. `aidCoach` false turns it off live.
     private static func makeAid(wearer: String) -> Aid {
         var config = Aid.Config.fromBundle(wearer: wearer)
         config.explicitOnly = Tuning.bool("aidExplicitOnly", true)
-        if !Tuning.bool("aidCoach", false) { config.coach = nil }
+        if !Tuning.bool("aidCoach", true) { config.coach = nil }
         return Aid(config: config)
     }
 

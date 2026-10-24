@@ -11,7 +11,7 @@ struct LensShot: Equatable {
     /// Which card this is. The layouts differ, not just the words: the idle state is a floating
     /// row with no card behind it; `aid` (conversation aid, with or without who you're talking to)
     /// replaces the row entirely; `compact` is the person shrunk to one line while the aid listens.
-    enum Kind: Equatable { case idle, person, message, aid, compact }
+    enum Kind: Equatable { case idle, person, message, aid, compact, split }
     /// A detail line that carries an icon on the lens (school / work / from / interests).
     struct Row: Equatable {
         var icon: String
@@ -29,6 +29,8 @@ struct LensShot: Equatable {
     var working: [String] = []
     var name: String?
     var headline: String?
+    /// One line of context under the person at the bottom of the split lens.
+    var context: String?
     /// Person id, so the mirror can look the avatar up the same way the card did.
     var photo: String?
     /// The card is up but its photo hasn't been written yet: the photo's box holds a placeholder.
@@ -52,28 +54,39 @@ struct LensShot: Equatable {
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
 /// who they are and three lines of background.
 enum LensCards {
-    /// The conversation aid's card. With `person` (the face you're talking to is known) a small
-    /// strip on top says who; without, the aid's own header (a name they said) as meta. Then the
-    /// passing card, title as heading and detail as body, and the pinned line to say next behind
-    /// a speech bubble. No Identify row: the aid is brief, and the capture button still identifies.
-    static func aid(_ view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false,
-                    avatar: (String) -> UIImage?) -> FlexBox {
-        let shot = Self.shot(aid: view, person: person, group: group, meSpeaking: meSpeaking)
-        let photo = person.flatMap { avatar($0.id) }
-        return FlexBox(direction: .column, spacing: 12) {
+    /// The lens while the aid listens: the aid on top, who you're talking to pinned at the bottom.
+    /// The root grows to the panel's height and a growing spacer sits between the halves, so the
+    /// person stays at the bottom edge whether or not the aid has anything up. The person reads
+    /// bigger than the old strip (name as heading, role as body), since it's always there.
+    static func split(_ view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false,
+                      avatar: (String) -> UIImage?) -> FlexBox {
+        let shot = Self.shot(split: view, person: person, group: group, meSpeaking: meSpeaking)
+        let hasAid = shot.answer != nil || !shot.working.isEmpty || shot.followup != nil
+        return FlexBox(direction: .column, spacing: 14) {
+            if hasAid { aidBox(shot) }
+            FlexBox(direction: .column) {}.flexGrow(1)
             if group.count >= 2 {
-                groupRow(group, meSpeaking: meSpeaking, avatar: avatar)
+                groupRow(group, meSpeaking: meSpeaking, avatar: avatar).padding(20).background(.card)
             } else if let person {
-                FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
-                    if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                    FlexBox(direction: .column, spacing: 2) {
-                        Text(person.name, style: .meta)
-                        Text(person.headline, style: .meta, color: .secondary).flexShrink(1)
-                    }
+                FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
+                    if let photo = avatar(person.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                    FlexBox(direction: .column, spacing: 3) {
+                        Text(person.name, style: .heading)
+                        Text(person.headline, style: .body).flexShrink(1)
+                        if let context = shot.context { Text(context, style: .meta, color: .secondary).flexShrink(1) }
+                    }.flexShrink(1)
                 }
-            } else if let header = shot.name {
-                Text(header, style: .meta, color: .secondary)
+                .padding(20)
+                .background(.card)
             }
+        }
+        .flexGrow(1)
+    }
+
+    /// The aid's half: the passing card (title as heading, detail as body), work in flight, and
+    /// the line to say next behind a speech bubble.
+    private static func aidBox(_ shot: LensShot) -> FlexBox {
+        FlexBox(direction: .column, spacing: 10) {
             if let title = shot.answer {
                 FlexBox(direction: .column, spacing: 4) {
                     if let icon = shot.cardIcon.flatMap(IconName.init(rawValue:)) {
@@ -100,7 +113,7 @@ enum LensCards {
                 }
             }
         }
-        .padding(22)
+        .padding(20)
         .background(.card)
     }
 
@@ -132,54 +145,10 @@ enum LensCards {
         }
     }
 
-    /// The group while the aid listens with nothing to show: one line per person, so it's clear
-    /// at a glance that this is a conversation with all of them.
-    static func compact(group: [Member], meSpeaking: Bool, avatar: (String) -> UIImage?) -> FlexBox {
-        let shown = Array(group.prefix(3))
-        return FlexBox(direction: .column, spacing: 10) {
-            for member in shown {
-                FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
-                    if member.speaking {
-                        Icon(name: .speechBubble, style: .outline)
-                    } else if let photo = avatar(member.id) {
-                        Image(image: photo, sizePreset: .icon, cornerRadius: .medium)
-                    }
-                    FlexBox(direction: .column, spacing: 2) {
-                        Text(member.name, style: .body, color: member.speaking || !meSpeaking ? .primary : .secondary)
-                        Text(member.headline, style: .meta, color: .secondary).flexShrink(1)
-                    }
-                }
-            }
-            if group.count > shown.count {
-                Text("+\(group.count - shown.count) more", style: .meta, color: .secondary)
-            }
-        }
-        .padding(20)
-        .background(.card)
-    }
-
     /// "Finding Target nearby · 6s", then "· almost there" once past the estimate. The lens can't
     /// animate on its own, so the glasses re-send this once a second while work is in flight.
     static func workLine(_ work: Work, at now: Date) -> String {
         work.remaining(at: now).map { "\(work.label) \u{00B7} \($0)s" } ?? "\(work.label) \u{00B7} almost there"
-    }
-
-    /// Who you're talking to, shrunk to one line once their card has been read and the aid is
-    /// listening: photo, name, what they do.
-    static func compact(_ person: Person, avatar: (String) -> UIImage?, identifying: Bool, connected: Int,
-                        identify: @escaping @Sendable () -> Void) -> FlexBox {
-        let photo = avatar(person.id)
-        return FlexBox(direction: .column, spacing: 14) {
-            FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
-                if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                FlexBox(direction: .column, spacing: 2) {
-                    Text(person.name, style: .body)
-                    Text(person.headline, style: .meta, color: .secondary).flexShrink(1)
-                }
-            }
-        }
-        .padding(20)
-        .background(.card)
     }
 
     /// The identity experience on the lens. Idle: nothing. With someone identified: a card with
@@ -344,20 +313,16 @@ enum LensCards {
         return shot
     }
 
-    static func shot(compact group: [Member], meSpeaking: Bool) -> LensShot {
-        var shot = LensShot(kind: .compact)
-        shot.group = group
-        shot.meSpeaking = meSpeaking
-        return shot
-    }
-
-    static func shot(compact person: Person, identifying: Bool, connected: Int) -> LensShot {
-        var shot = LensShot(kind: .compact)
-        shot.name = person.name
-        shot.headline = person.headline
-        shot.photo = person.id
-        shot.connected = connected
-        shot.button = identifying ? "Identifying" : "Identify"
+    /// The split lens, as the mirror sees it.
+    static func shot(split view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false) -> LensShot {
+        var shot = shot(aid: view, person: person, group: group, meSpeaking: meSpeaking)
+        shot.kind = .split
+        if let person, group.count < 2 {
+            // The one line that says why they matter: how you know them, else their first highlight,
+            // else their first detail (school, work…).
+            shot.context = [person.tie, person.highlights?.first, person.details.first?.text]
+                .compactMap { $0 }.first { !$0.isEmpty }
+        }
         return shot
     }
 
