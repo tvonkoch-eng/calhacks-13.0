@@ -1,1 +1,1 @@
-agents: push here, never tar/rsync over the Mac tree
+agents: read AGENTS.md at the repo root. push here, never tar/rsync over the Mac tree.
