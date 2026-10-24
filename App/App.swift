@@ -6,6 +6,7 @@ struct CalHacksApp: App {
     @State private var store = Store()
     @State private var glasses = Glasses()
     @State private var assistant = Assistant()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         Glasses.configure()
@@ -21,9 +22,15 @@ struct CalHacksApp: App {
                 .environment(glasses)
                 .environment(assistant)
                 .onOpenURL { glasses.handle($0) }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { Task { await assistant.ensureListening() } }
+                }
                 .task {
                     glasses.store = store
                     assistant.glasses = glasses
+                    assistant.store = store
+                    // Listening is on from launch; the mic pill turns it off.
+                    Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
                     // when a push lands; Store re-reads the roster on the same notification.
                     NotificationCenter.default.addObserver(forName: Tuning.changed, object: nil, queue: .main) { _ in
@@ -33,6 +40,8 @@ struct CalHacksApp: App {
                         // needs a fresh camera to mean anything. Makes streamRes a 0.3 s change.
                         glasses.restreamIfSettingsChanged()
                     }
+                    // First names spelled right in the transcript, e.g. "Joaquin" not "Wakeen".
+                    assistant.listener.keywords = store.people.flatMap { $0.name.split(separator: " ").map(String.init) }
                     #if DEBUG
                     let env = ProcessInfo.processInfo.environment
                     if Glasses.prefersMock {
@@ -50,6 +59,17 @@ struct CalHacksApp: App {
                        let person = store.people.first(where: { $0.id == id }) {
                         glasses.preview(person)
                         if env["PREVIEW_CONFIRM"] == "1" { await glasses.lensIdentify(source: "preview") }
+                        // PREVIEW_AID="title|detail|follow-up": an aid card with the mic on, to see
+                        // the bio hand the lens to the aid after `bioHolds`.
+                        if let spec = env["PREVIEW_AID"] {
+                            let parts = spec.components(separatedBy: "|")
+                            glasses.aidArmed = true
+                            // PREVIEW_WORK="Researching the GENIUS Act": a thinking row with its countdown.
+                            let work = env["PREVIEW_WORK"].map { [Work(id: 99, label: $0, started: Date())] } ?? []
+                            glasses.showAid(LensView(card: Card(kind: .answer, title: parts[0],
+                                                                detail: parts.count > 1 ? parts[1] : ""),
+                                                     followup: parts.count > 2 ? parts[2] : nil, working: work))
+                        }
                         return
                     }
                     #endif
@@ -110,7 +130,7 @@ struct HomeView: View {
                 // 300pt panel above the header blacked out the app on device.
                 LensPanel(lens: glasses.mockLens, pov: glasses.pov, mocking: glasses.mocking,
                           connected: glasses.connected, identifying: glasses.identifying,
-                          shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
+                          cameraNote: glasses.cameraNote, shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
                 #endif
                 header
                 // Live frame size and rate off the glasses, plus recording.
@@ -135,8 +155,9 @@ struct HomeView: View {
                         notice
                             .padding(.horizontal, 20)
                             .padding(.bottom, 10)
-                        if assistant.armed, let turn = assistant.current, turn.live || !turn.answer.isEmpty {
-                            AnswerStrip(turn: turn)
+                        if assistant.armed { HeardLine().padding(.horizontal, 20).padding(.bottom, 10) }
+                        if assistant.armed, !assistant.aid.lens.isEmpty {
+                            AidStrip(view: assistant.aid.lens)
                                 .padding(.horizontal, 16)
                                 .padding(.bottom, 10)
                         }
@@ -207,6 +228,18 @@ struct HomeView: View {
                 } label: {
                     Label("Auto-recognize", systemImage: glasses.watching ? "checkmark" : "eye.slash")
                 }
+                Section("Microphone") {
+                    Button {
+                        assistant.mic = .glasses
+                    } label: {
+                        Label("Glasses", systemImage: assistant.mic == .glasses ? "checkmark" : "eyeglasses")
+                    }
+                    Button {
+                        assistant.mic = .phone
+                    } label: {
+                        Label("iPhone", systemImage: assistant.mic == .phone ? "checkmark" : "iphone")
+                    }
+                }
                 #if DEBUG
                 Section("Run on") {
                     Button {
@@ -231,7 +264,7 @@ struct HomeView: View {
                 .background(Color(.secondarySystemBackground), in: Capsule())
             }
             Button {
-                if assistant.armed { assistant.disarm() } else { Task { await assistant.arm() } }
+                Task { await assistant.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: assistant.armed ? "mic.fill" : "mic.slash")
@@ -293,16 +326,19 @@ struct HomeView: View {
 
     private var actionButton: some View {
         VStack(spacing: 10) {
-            Button {
-                Task { glasses.connected ? await glasses.identify() : await glasses.connect() }
-            } label: {
-                Text(buttonTitle)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color(.systemBackground))
-                    .frame(maxWidth: .infinity, minHeight: 56)
-                    .background(Color.primary, in: Capsule())
+            // Recognition is automatic, so once connected there is nothing to press.
+            if !glasses.connected {
+                Button {
+                    Task { await glasses.connect() }
+                } label: {
+                    Text(buttonTitle)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color(.systemBackground))
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .background(Color.primary, in: Capsule())
+                }
+                .disabled(glasses.connecting)
             }
-            .disabled(glasses.identifying || glasses.connecting)
             if !glasses.connected, glasses.status != "Not connected" {
                 Text(glasses.status).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
@@ -314,21 +350,81 @@ struct HomeView: View {
 
     private var buttonTitle: String {
         if glasses.connecting { return "Connecting" }
-        if glasses.identifying { return "Recognizing" }
-        return glasses.connected ? "Identify" : "Connect glasses"
+        return "Connect glasses"
     }
 }
 
 /// The question just heard and the answer that went to the lens.
-struct AnswerStrip: View {
-    let turn: Turn
+/// Proof of life for the mic: which microphone, how loud, and the last thing it heard.
+struct HeardLine: View {
+    @Environment(Assistant.self) private var assistant
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(turn.question).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-            Text(turn.answer.isEmpty ? "\u{2026}" : turn.answer)
-                .font(.system(.body, design: .serif, weight: .medium))
-                .lineLimit(2)
+            HStack(spacing: 6) {
+                Image(systemName: "waveform").font(.caption).foregroundStyle(.red)
+                    .opacity(0.35 + 0.65 * Double(assistant.level))
+                Text(assistant.listener.input.isEmpty ? assistant.status : assistant.listener.input)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if assistant.listener.status != "Listening" {
+                    Text("· \(assistant.listener.status)").font(.caption).foregroundStyle(.orange).lineLimit(1)
+                }
+            }
+            if let heard = assistant.heard {
+                (Text(heard.tag + "  ").font(.caption2.weight(.bold)).foregroundColor(.secondary)
+                 + Text(heard.text).font(.subheadline))
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Slow work in flight: a ring that drains over the estimate, the seconds left, and a pulse once
+/// it runs past ("almost there").
+struct WorkRow: View {
+    let work: Work
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.1)) { context in
+            let elapsed = context.date.timeIntervalSince(work.started)
+            let left = max(0, 1 - elapsed / work.eta)
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle().stroke(Color(.systemFill), lineWidth: 2.5)
+                    Circle().trim(from: 0, to: left)
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 16, height: 16)
+                .opacity(left > 0 ? 1 : 0.4 + 0.6 * abs(sin(elapsed * 3)))
+                Text(work.label).font(.footnote)
+                Spacer(minLength: 4)
+                Text(work.remaining(at: context.date).map { "\($0)s" } ?? "almost there")
+                    .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// What the conversation aid has on the lens right now, on the phone.
+struct AidStrip: View {
+    let view: LensView
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let card = view.card {
+                Text(card.title)
+                    .font(.system(.body, design: .serif, weight: .medium))
+                    .lineLimit(2)
+                if !card.detail.isEmpty {
+                    Text(card.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            ForEach(view.working, id: \.id) { WorkRow(work: $0) }
+            if let followup = view.followup {
+                Label(followup, systemImage: "bubble.left").font(.footnote)
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -820,14 +916,67 @@ struct LensMirror: View {
 
     @ViewBuilder private var card: some View {
         switch shot.kind {
-        case .answer:
-            VStack(alignment: .leading, spacing: 8) {
-                Text(shot.answer ?? "").font(.system(size: m.heading, weight: .semibold))
-                if let echo = shot.echo {
-                    Text(echo).font(.system(size: m.meta)).foregroundStyle(secondary)
+        case .aid:
+            VStack(alignment: .leading, spacing: 12) {
+                if let id = shot.photo {
+                    HStack(spacing: 10) {
+                        if let photo = avatar(id) {
+                            Image(uiImage: photo)
+                                .resizable().aspectRatio(contentMode: .fill)
+                                .frame(width: m.icon, height: m.icon)
+                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(shot.name ?? "").font(.system(size: m.meta))
+                            Text(shot.headline ?? "").font(.system(size: m.meta)).foregroundStyle(secondary)
+                        }
+                    }
+                } else if let header = shot.name {
+                    Text(header).font(.system(size: m.meta)).foregroundStyle(secondary)
+                }
+                if let title = shot.answer {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 10) {
+                            if let icon = shot.cardIcon { Image(systemName: LensCards.symbol(lensIcon: icon)).font(.system(size: m.glyph)) }
+                            Text(title).font(.system(size: m.heading, weight: .semibold))
+                        }
+                        if let detail = shot.echo {
+                            Text(detail).font(.system(size: m.body)).foregroundStyle(secondary)
+                        }
+                    }
+                }
+                ForEach(Array(shot.working.enumerated()), id: \.offset) { _, line in
+                    HStack(spacing: 10) {
+                        Image(systemName: "sparkles").font(.system(size: m.glyph))
+                        Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
+                    }
+                }
+                if let followup = shot.followup {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bubble.left").font(.system(size: m.glyph))
+                        Text(followup).font(.system(size: m.body))
+                    }
                 }
             }
-            .padding(24)
+            .padding(m.pad)
+            .modifier(LensCardBackground(radius: m.radius))
+
+        case .compact:
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    if let id = shot.photo, let photo = avatar(id) {
+                        Image(uiImage: photo)
+                            .resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: m.icon, height: m.icon)
+                            .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(shot.name ?? "").font(.system(size: m.body))
+                        Text(shot.headline ?? "").font(.system(size: m.meta)).foregroundStyle(secondary)
+                    }
+                }
+            }
+            .padding(m.pad)
             .modifier(LensCardBackground(radius: m.radius))
 
         case .person:
@@ -860,7 +1009,6 @@ struct LensMirror: View {
                         Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
                     }
                 }
-                bottomRow
             }
             .padding(m.pad)
             .modifier(LensCardBackground(radius: m.radius))
@@ -873,7 +1021,6 @@ struct LensMirror: View {
                         Text(subtitle).font(.system(size: m.meta)).foregroundStyle(secondary)
                     }
                 }
-                bottomRow
             }
             .padding(m.pad)
             .modifier(LensCardBackground(radius: m.radius))
@@ -882,41 +1029,10 @@ struct LensMirror: View {
             // Nobody identified: the row floats on glass with no card behind it, and sits on the
             // same floor the card would — on a captured frame its glyphs stop 33 lens units from
             // the bottom edge, which is the panel inset and nothing else.
-            bottomRow.padding(.horizontal, 20)
+            EmptyView()
         }
     }
 
-    /// People met on the left, the one control on the right — the row the lens always carries,
-    /// except behind an answer.
-    private var bottomRow: some View {
-        HStack(alignment: .center, spacing: 8) {
-            HStack(spacing: 10) {
-                Image(systemName: "person").font(.system(size: m.glyph))
-                // The same UIImage the lens is sent, not a redraw of it.
-                if let badge = LensCards.counterBadge(shot.connected) {
-                    Image(uiImage: badge).resizable().frame(width: m.glyph, height: m.glyph)
-                }
-            }
-            Spacer(minLength: 0)
-            // The lens draws the primary button as a soft glow with white content — no filled
-            // capsule, no dark label. A transparent display spends light on the glyphs, not on a
-            // background, and the captured frame shows exactly that: the icon leads, the label
-            // follows, and the only "fill" is a gradient that fades out to the right.
-            HStack(spacing: 10) {
-                Image(systemName: shot.buttonIcon).font(.system(size: m.glyph, weight: .semibold))
-                Text(shot.button).font(.system(size: m.body, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.top, 26)
-            .padding(.bottom, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(LinearGradient(colors: [Color.white.opacity(0.17), Color.white.opacity(0)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-            )
-        }
-    }
 }
 
 /// The lens's `.background(.card)`. Sampled straight off a captured lens frame rather than
@@ -982,6 +1098,8 @@ struct LensPanel: View {
     let mocking: Bool
     let connected: Bool
     let identifying: Bool
+    /// Why there's no picture, in words: starting, paused, reconnecting.
+    var cameraNote: String = ""
     /// What was last written to the lens, for the mirror. Nil when nothing is on it.
     let shot: LensShot?
     let avatar: (String) -> UIImage?
@@ -1012,7 +1130,8 @@ struct LensPanel: View {
                     if let pov {
                         Image(uiImage: pov).resizable().aspectRatio(contentMode: .fill)
                     } else {
-                        Text(connected ? "Waiting for frames" : "Not connected")
+                        Text(cameraNote.isEmpty ? (connected ? "Starting camera…" : "Not connected") : cameraNote)
+                            .multilineTextAlignment(.center).padding(.horizontal, 8)
                             .font(.caption2).foregroundStyle(Color(.systemGray))
                     }
                 }

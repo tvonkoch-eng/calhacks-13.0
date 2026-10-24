@@ -1,0 +1,22 @@
+# Career fair. Jordan recruits for an options market maker; finance jargon Toby already knows.
+RATE: 205
+GAP: 0.15
+NOISE: -30
+VOICES: ME=Daniel THEM=Karen
+THEM: Hey, come on over! You a student here?
+ME: Yeah, financial math at UCSB.
+THEM: Oh perfect, that's literally our pipeline. I'm Jordan, I'm on the trading side at a prop shop in Chicago, mostly options market making.
+ME: Oh cool, what products?
+THEM: Mostly index options, SPX, some single names. A lot of it is managing gamma and vega intraday, so we're constantly re-hedging with futures.
+ME@-0.3: Right, right.
+THEM: And we're super latency sensitive, so the whole stack is FPGAs and kernel bypass, like sub microsecond tick to trade.
+ME: That's insane. Is it mostly C plus plus?
+THEM@-0.2: C plus plus on the hot path, kdb for research, some Python. Do you know what the Sharpe on a typical market making book is?
+ME: Uh, I'd guess pretty high?
+THEM: It can be double digits, honestly. Anyway, have you done any internships?
+ME: I did quant research last summer, mostly volatility forecasting.
+THEM: Oh nice, like GARCH stuff?
+ME: Some GARCH, some realized vol off high frequency data.
+THEM@-0.3: Love that. So we have a superday in like two weeks, you should totally apply.
+ME: I will, for sure.
+PAUSE: 3

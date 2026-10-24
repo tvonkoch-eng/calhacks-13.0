@@ -26,6 +26,8 @@ final class FaceTracker {
         private(set) var weight: Float
         /// The sharpest look we got, for the avatar and the card.
         var best: FaceHit
+        /// Attention from the latest frame: is this the face the wearer is looking at right now.
+        var attention: Float
         let firstSeen: Date
         var updated: Date
 
@@ -57,7 +59,8 @@ final class FaceTracker {
     /// with ArcFace, anybody else ~0. Only applied once a track has real evidence. `trackSplit`.
     var splitBelow: Float { Tuning.float("trackSplit", 0.1) }
     /// Boxes overlapping by at least this are the same face.
-    var minOverlap: CGFloat = 0.25
+    /// Lowered from 0.25 for 2 fps: a head moves further in the 0.5 s between frames.
+    var minOverlap: CGFloat = 0.15
 
     /// Folds this frame's faces into the tracks and returns the live set, strongest evidence first.
     @discardableResult
@@ -130,8 +133,12 @@ private extension FaceTracker.Track {
     mutating func absorb(_ hit: FaceHit, decay: Float, now: Date) {
         box = hit.box
         updated = now
+        attention = hit.attention
         if hit.sharpness > best.sharpness || !best.usable { best = hit }
         guard hit.usable else { return }
+        // Each look counts by its quality: a small or turned face is a weaker vote, so it nudges
+        // the fused probe instead of pulling it as hard as a clear frontal look.
+        var q = hit.quality
         if sum.count == hit.embedding.count {
             var d = decay
             vDSP_vsmul(sum, 1, &d, &sum, 1, vDSP_Length(sum.count))

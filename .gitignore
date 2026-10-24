@@ -2,8 +2,10 @@
 build/
 DerivedData/
 .DS_Store
+build-sim/
 Secrets.xcconfig
 dd/
+dd-sim/
 *.log
 .locks/
 
@@ -12,3 +14,5 @@ dd/
 # non-commercial research use only and the GitHub mirror is public.
 App/*.mlmodel
 App/*.mlpackage
+.venv-moss/
+.build/

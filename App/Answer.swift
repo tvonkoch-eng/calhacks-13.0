@@ -3,17 +3,19 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// Where answers come from. All three are OpenAI-compatible, so one code path covers them;
-/// pick whichever key you have. Groq and Cerebras are the ones worth using here — their
-/// time-to-first-token is ~100-250 ms, which is the whole ballgame on a wearable.
+/// Where answers come from. All four are OpenAI-compatible, so one code path covers them;
+/// pick whichever key you have. Groq and Cerebras are the fastest — their time-to-first-token is
+/// ~100-250 ms, which is the whole ballgame on a wearable. Muse is Meta's Muse Spark: always
+/// reasons first, so ~1.2 s to first token (see Tests/muse-latency.py).
 enum Provider: String {
-    case groq, cerebras, openai
+    case groq, cerebras, openai, muse
 
     var endpoint: URL {
         switch self {
         case .groq: URL(string: "https://api.groq.com/openai/v1/chat/completions")!
         case .cerebras: URL(string: "https://api.cerebras.ai/v1/chat/completions")!
         case .openai: URL(string: "https://api.openai.com/v1/chat/completions")!
+        case .muse: URL(string: "https://api.meta.ai/v1/chat/completions")!
         }
     }
 
@@ -25,8 +27,26 @@ enum Provider: String {
     var model: String {
         switch self {
         case .groq: "qwen/qwen3.8-27b"
-        case .cerebras: "llama-3.3-70b"
-        case .openai: "gpt-4o-mini"
+        // gpt-oss-120b: OpenAI's open-weight model; Cerebras serves it fastest of any host.
+        case .cerebras: "gpt-oss-120b"
+        // gpt-4.1-mini: 20/20 answer-vs-SKIP, median first token 0.66 s (2026-10-23). gpt-4o-mini
+        // and gpt-5.4-mini answered "did you see the keynote"; gpt-5.4-nano failed 6 of 20.
+        case .openai: "gpt-4.1-mini"
+        // 1.1 over 1.3: both 20/20 on answer-vs-SKIP, 1.1 median first token 1.17 s vs 1.87 s
+        // (2026-10-23, Tests/muse-latency.py). Override with ANSWER_MODEL.
+        case .muse: "muse-spark-1.1"
+        }
+    }
+
+    /// Reasoning models think before they answer: at 48 tokens they spend the whole budget
+    /// thinking and return no content. Low effort plus room to think fixes it.
+    func extras(model: String) -> [String: Any] {
+        if model.contains("gpt-oss") { return ["max_tokens": 600, "reasoning_effort": "low"] }
+        // Cerebras runs Qwen3 with thinking on by default; "none" turns it off (3 tokens, not 30).
+        if self == .cerebras, model.contains("qwen") { return ["max_tokens": 48, "reasoning_effort": "none"] }
+        switch self {
+        case .muse: return ["max_tokens": 400, "reasoning_effort": "minimal"]
+        default: return ["max_tokens": 48]
         }
     }
 }
@@ -47,25 +67,44 @@ struct Answerer {
         return Provider(rawValue: name?.lowercased() ?? "") ?? .groq
     }
 
+    static var model: String {
+        let name = Bundle.main.object(forInfoDictionaryKey: "AnswerModel") as? String
+        return (name?.isEmpty == false) ? name! : provider.model
+    }
+
     static var configured: Bool { key != nil }
 
     private static let prompt = """
     You help someone wearing smart glasses during a live, in-person conversation. The input is a \
-    live speech transcript of a question someone just asked out loud. It may be cut off mid-sentence \
-    — infer the obvious full question and answer that.
+    live speech transcript of a question someone just asked out loud, sometimes after the last few \
+    lines of the conversation. The question may be cut off mid-sentence — infer the obvious full \
+    question and answer that. Use the conversation only to work out what the question refers to. \
+    Speech recognition mishears jargon: read "the sharp on a market making book" as the Sharpe \
+    ratio, and so on, when the conversation makes the meaning clear.
 
     Answer in ONE line of at most 12 words. No preamble, no restating the question, no punctuation \
     at the end. If the answer is a number or a name, lead with it. Plain facts only.
 
     Reply with exactly SKIP, and nothing else, if the question is personal or social (about the \
-    people talking, their feelings, plans, opinions or preferences), rhetorical, a request to do \
-    something, or too fragmentary to guess at.
+    people talking, their feelings, plans, opinions or preferences, or anything the conversation \
+    shows is theirs: their company, project, school, family), rhetorical, a request to do \
+    something, too fragmentary to guess at, or needs live information you don't have (schedules, \
+    prices, scores, today's news). You do know the current date and time (below): use them for \
+    time zones, ages and countdowns. Never guess about the people talking.
     """
+
+    /// "I don't have real-time…", "Sorry, …": a refusal on the lens is worse than nothing, so it is
+    /// treated as a SKIP. Facts never start in the first person.
+    static func refuses(_ text: String) -> Bool {
+        let t = text.trimmed.uppercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        return ["I ", "I'", "SORRY", "AS AN AI", "UNFORTUNATELY"].contains { t.hasPrefix($0) }
+    }
 
     /// Instant, no network. Covers the questions that are embarrassing to be slow on.
     static func local(_ question: String) -> String? {
         let q = question.lowercased()
-        if q.contains("what time"), q.contains("it") {
+        // "what time is it in Tokyo" is not the local time: that goes to a model that knows the zone.
+        if q.contains("what time"), q.contains("it"), !q.contains(" in "), !q.contains(" there") {
             return Date().formatted(date: .omitted, time: .shortened)
         }
         if q.contains("what") , q.contains("date") || q.contains("day is") {
@@ -103,7 +142,10 @@ struct Answerer {
 
     /// Streams the answer. Yields a growing string; the last value is the whole answer.
     /// Yields nothing at all when the model says SKIP.
-    static func stream(_ question: String) -> AsyncThrowingStream<String, Error> {
+    /// `context` is the last few lines of the conversation, so "when did it come out" can resolve
+    /// "it". `provider`, `key` and `model` default to the app's configuration.
+    static func stream(_ question: String, context: String = "", provider: Provider = provider,
+                       key: String? = key, model: String = model) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let work = Task.detached {
                 do {
@@ -115,16 +157,21 @@ struct Answerer {
                     request.timeoutInterval = 8
                     request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.httpBody = try JSONSerialization.data(withJSONObject: [
-                        "model": provider.model,
+                    var body: [String: Any] = [
+                        "model": model,
                         "stream": true,
                         "temperature": 0,
-                        "max_tokens": 48,
                         "messages": [
-                            ["role": "system", "content": prompt],
-                            ["role": "user", "content": question],
+                            // Without the date, "how many days until Thanksgiving" is a guess.
+                            ["role": "system", "content": prompt + "\nIt is "
+                                + Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
+                                + " " + (TimeZone.current.abbreviation() ?? TimeZone.current.identifier) + "."],
+                            ["role": "user", "content": context.isEmpty
+                                ? question : "Conversation so far:\n\(context)\n\nQuestion: \(question)"],
                         ],
-                    ])
+                    ]
+                    body.merge(provider.extras(model: model)) { _, extra in extra }
+                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
@@ -142,11 +189,15 @@ struct Answerer {
                               let delta = choices.first?["delta"] as? [String: Any],
                               let chunk = delta["content"] as? String, !chunk.isEmpty else { continue }
                         answer += chunk
-                        // Bail the instant the model starts refusing; nothing reaches the lens.
-                        if answer.trimmed.uppercased().hasPrefix("SKIP") {
+                        // Bail the instant the model starts refusing; nothing reaches the lens. Some
+                        // models stream "SKIP" as "SK" + "IP", so hold back anything that could still
+                        // turn into it.
+                        let head = answer.trimmed.uppercased()
+                        if head.hasPrefix("SKIP") || Answerer.refuses(head) {
                             continuation.finish()
                             return
                         }
+                        if "SKIP".hasPrefix(head) || head == "I" || head == "AS" { continue }
                         continuation.yield(answer.trimmed)
                     }
                     continuation.finish()

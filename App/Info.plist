@@ -50,6 +50,8 @@
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
 	</dict>
+	<key>MuseAPIKey</key>
+	<string>$(MUSE_API_KEY)</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connects to your Meta glasses.</string>
 	<key>NSBonjourServices</key>
@@ -84,5 +86,9 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>WearerBackground</key>
+	<string>$(WEARER_BACKGROUND)</string>
+	<key>WearerName</key>
+	<string>$(WEARER_NAME)</string>
 </dict>
 </plist>

@@ -10,18 +10,9 @@ import MWDATMockDevice
 import Observation
 import UIKit
 
-/// What the lens shows during a conversation: the question we heard and the answer so far.
-struct AnswerCard: Equatable {
-    let question: String
-    let answer: String
-    let thinking: Bool
-
-    /// The lens is small. Echo just enough of the question to make the answer legible.
-    var echo: String {
-        let words = question.split(separator: " ")
-        guard words.count > 7 else { return question }
-        return words.prefix(7).joined(separator: " ") + "\u{2026}"
-    }
+/// Hands the glasses' audio buffers to whoever listens, from the SDK's callback thread.
+final class AudioSink: @unchecked Sendable {
+    var handler: (@Sendable (AVAudioPCMBuffer) -> Void)?
 }
 
 enum Identification {
@@ -42,8 +33,15 @@ enum Identification {
     var connecting = false
     var identifying = false
     var result: Identification = .ready
-    /// Takes over the lens while it is set; the identity card comes back when it clears.
-    var answer: AnswerCard?
+    /// What the conversation aid wants on the lens (App/Lens.swift). Who actually gets the lens,
+    /// the aid or the face side, is `LensPolicy`.
+    private(set) var aidLens = LensView()
+    /// The mic is on: the lens leans toward the aid, and a read person card shrinks to one line.
+    var aidArmed = false {
+        didSet { if aidArmed != oldValue { renderLens() } }
+    }
+    /// Which way the last lens write went, for the speed log and the phone.
+    private(set) var lensMode: LensMode = .identity
     /// The content of the last card handed to the lens, so the phone can mirror it live. Nil when
     /// there is no display to write to. A real pair cannot be read back; this is recorded as the
     /// card is built, which is as close to the truth as the SDK allows.
@@ -93,8 +91,11 @@ enum Identification {
     @ObservationIgnored private var frameRequest = UUID()
     @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces", qos: .userInitiated)
     @ObservationIgnored private var streamLive = false
-    /// Set when the stream reports an error or wedges; the next frame request rebuilds the camera.
-    @ObservationIgnored private var streamBroken = false
+    /// When the current camera's stream was started, so its first frame gets `firstFrameGrace`.
+    @ObservationIgnored private var streamStartedAt = Date.distantPast
+    /// The SDK's own word on the stream (streaming / paused / waitingForDevice …), for the watchdog
+    /// and the phone. Paused is the glasses' decision (folded, off your face, too hot), not a fault.
+    private(set) var streamState = "none"
     @ObservationIgnored private var cameraTokens: [any AnyListenerToken] = []
     /// Medium (504x896) at 5 fps: faces at talking distance are still ~150 px, and the radio keeps
     /// headroom for lens writes and the Neural Band.
@@ -140,6 +141,39 @@ enum Identification {
         case "medium": return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
         default: return StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: fps)
         }
+        // The glasses' mic rides the camera stream (SDK 1.0.1, experimental): 16 kHz mono PCM,
+        // no Bluetooth hands-free route, so iOS's audio is never touched.
+        let audio: MWDATCamera.AudioCodec? = streamAudio ? .pcm(sampleRate: .rate16000, numberOfChannels: 1) : nil
+        return StreamConfiguration(videoCodec: .raw, audioCodec: audio, resolution: resolution, frameRate: fps)
+    }
+
+    /// Ask the stream for the glasses' mic too. Fixed when the camera is added, so a change
+    /// restarts the session (~2 s).
+    var streamAudio = UserDefaults.standard.string(forKey: "mic") == "glasses"
+    /// Where the glasses' audio goes. Called on the SDK's thread.
+    @ObservationIgnored let audioSink = AudioSink()
+    @ObservationIgnored private var audioFrames = 0
+
+    /// Called when the glasses' audio can't be had (no permission, or streams with audio keep
+    /// dying): back to video only, so the camera keeps working, and the phone mic takes over.
+    @ObservationIgnored var onStreamAudioLost: ((String) -> Void)?
+    /// Streams with audio that died before their first frame, in a row.
+    @ObservationIgnored private var audioStreamFailures = 0
+
+    private func disableStreamAudio(reason: String) {
+        guard streamAudio else { return }
+        streamAudio = false
+        audioStreamFailures = 0
+        SpeedLog.record(["event": "streamAudioDisabled", "reason": reason])
+        onStreamAudioLost?(reason)
+    }
+
+    func setStreamAudio(_ on: Bool) {
+        guard on != streamAudio else { return }
+        streamAudio = on
+        audioStreamFailures = 0
+        SpeedLog.record(["event": "streamAudio", "on": on])
+        if connected { Task { await restartSession() } }
     }
     #if DEBUG
     /// The simulated pair, kept so switching rigs can unpair it cleanly.
@@ -147,12 +181,30 @@ enum Identification {
     #endif
     /// Set by Disconnect so we don't reconnect behind the user's back.
     @ObservationIgnored private var userDisconnected = false
-    @ObservationIgnored private var lastAutoReconnect = Date.distantPast
+    /// One pending recovery at a time, retried with backoff for as long as it takes. A recovery is
+    /// never dropped: the old 20/30 s rate limits returned without doing anything, and that is the
+    /// state the app got stuck in ("Waiting for frames" with no camera and nothing scheduled).
+    @ObservationIgnored private var recoveryTask: Task<Void, Never>? {
+        didSet { recovering = recoveryTask != nil }
+    }
+    private(set) var recovering = false
+    /// Why the camera tile has no picture, for the phone.
+    var cameraNote: String {
+        if !connected { return recovering || connecting ? "Reconnecting to your glasses…" : status }
+        if recovering { return "Camera stalled, reconnecting…" }
+        if streamState == "paused" { return "Glasses paused the camera (folded or off your face)" }
+        if streamState == "waitingForDevice" { return "Waiting for the glasses…" }
+        return "Starting camera…"
+    }
+    @ObservationIgnored private var recoveryAttempt = 0
+    /// Set while only the wearer can fix it (approve in Meta AI, grant camera, update the glasses):
+    /// retrying then would open Meta AI every 30 s. Cleared on the next connect.
+    @ObservationIgnored private var blockedOnUser = false
+    /// The camera restart is tried once per stall; if frames don't come back, the session goes.
+    @ObservationIgnored private var cameraRestartTried = false
     /// When a frame last actually arrived. The watchdog below is the only thing that notices a
     /// stream that has gone quiet without erroring — the watch path has no timeout of its own.
     @ObservationIgnored private var lastFrameAt = Date.distantPast
-    @ObservationIgnored private var lastRebuild = Date.distantPast
-    @ObservationIgnored private var lastSessionRecovery = Date.distantPast
     @ObservationIgnored private var frameWatchdog: Task<Void, Never>?
     @ObservationIgnored private var watchTask: Task<Void, Never>?
     /// Pressing Identify on the glasses while someone is on screen asks first, so a stray pinch
@@ -160,7 +212,12 @@ enum Identification {
     @ObservationIgnored private var confirming = false
     @ObservationIgnored private var confirmTask: Task<Void, Never>?
     @ObservationIgnored private var lastSend = Date.distantPast
-    @ObservationIgnored private var pendingSend: Task<Void, Never>?
+    /// Lens writes go out one at a time, newest wins. Overlapping sends made the display answer
+    /// "Superseded by new display request" (13 times in one session) and loaded the shared radio.
+    @ObservationIgnored private var queuedView: FlexBox?
+    @ObservationIgnored private var lensWriter: Task<Void, Never>?
+    @ObservationIgnored private var writeWaiters: [CheckedContinuation<Bool, Never>] = []
+    @ObservationIgnored private var lastWriteOK = false
     /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
     @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
@@ -199,9 +256,46 @@ enum Identification {
     @ObservationIgnored private var resultAt = Date.distantPast
     /// Don't announce the same person over and over.
     @ObservationIgnored private var lastShown: [String: Date] = [:]
-    @ObservationIgnored private let reannounceAfter: TimeInterval = 60
-    /// How long a card owns the lens before the watch may replace it.
-    @ObservationIgnored private let cardHolds: TimeInterval = 20
+    /// Conversation memory. Once someone has been on the lens they are "in the conversation", and
+    /// glancing back at them stays quiet for as long as they keep being seen. Only after they have
+    /// been out of view for `absentFor` does the next sighting announce them again. In a
+    /// three-person conversation that means each person is named once, not on every head turn.
+    @ObservationIgnored private var absentFor: TimeInterval { TimeInterval(Tuning.float("absentFor", 180)) }
+    /// Last confident sighting per person, shown or not.
+    @ObservationIgnored private var sighted: [String: Date] = [:]
+    /// Who the wearer is looking at right now (largest confident face in the latest frame), and
+    /// everyone confidently seen in the last few seconds. Updated quietly, without touching the
+    /// lens, so speech can attribute a voice to a face later.
+    private(set) var facing: String? {
+        didSet {
+            guard facing != oldValue else { return }
+            onFacing?(facing)
+            // Turning to or away from the person on the card can move the lens between the aid
+            // alone and the aid with who you're talking to; write only if it actually moves.
+            if aidArmed, currentMode() != lensMode { renderLens() }
+        }
+    }
+    /// Called on the main actor when the person in focus changes (nil = nobody known in view).
+    /// For code that isn't SwiftUI, e.g. the conversation aid's "who is THEM" profile.
+    @ObservationIgnored var onFacing: ((String?) -> Void)?
+    var present: [String] {
+        let now = Date()
+        return sighted.filter { now.timeIntervalSince($0.value) < 10 }.map(\.key)
+    }
+    /// How long a card owns the lens before the watch may replace it with someone else. Was 20 s,
+    /// which on the glasses meant a 21 s wait to switch from Avi to the next person.
+    @ObservationIgnored private var cardHolds: TimeInterval { TimeInterval(Tuning.float("cardHolds", 3)) }
+    /// How long a fresh identification owns the whole lens, over any aid card, before the aid may
+    /// take it back. Long enough to read a name, a headline and three lines.
+    @ObservationIgnored private var bioHolds: TimeInterval { TimeInterval(Tuning.float("bioHolds", 10)) }
+    @ObservationIgnored private var bioTask: Task<Void, Never>?
+    /// A single look this confident is enough on its own: ArcFace puts the same person at ~0.6-0.7
+    /// on a sharp frame and everyone else near 0.
+    @ObservationIgnored private var strongScore: Float { Tuning.float("strongScore", 0.55) }
+    /// Only the face you are looking at may take the lens: the most attended face in the frame,
+    /// or one within this share of it (two people side by side, both facing you). People at the
+    /// edge of the view are still recognised and tracked as present, just not announced.
+    @ObservationIgnored private var focusShare: Float { Tuning.float("focusShare", 0.7) }
 
     /// False when the Meta SDK could not start at all — notably in the Simulator, where
     /// `Wearables.configure()` fails and every later touch of `Wearables.shared` traps. Guarding
@@ -244,12 +338,14 @@ enum Identification {
         guard Self.ready else { status = "Glasses SDK unavailable here"; return }
         guard !connected, !connecting else { return }
         userDisconnected = false
+        blockedOnUser = false
         connecting = true
         defer { connecting = false }
         let wearables = Wearables.shared
         do {
             if wearables.registrationState != .registered {
                 status = "Approve in Meta AI…"
+                blockedOnUser = true
                 try await wearables.startRegistration()
                 return
             }
@@ -267,6 +363,7 @@ enum Identification {
                   !(device.linkState == .connected && device.compatibility() == .compatible) {
                 if device.compatibility() == .deviceUpdateRequired {
                     status = "Update your glasses in the Meta AI app"
+                    blockedOnUser = true
                     return
                 }
                 try await Task.sleep(for: .milliseconds(100))
@@ -275,15 +372,29 @@ enum Identification {
             let selector = SpecificDeviceSelector(device: found)
 
             do throws(PermissionError) {
+                // The glasses' mic on the stream needs its own grant; without it every stream
+                // that asks for audio dies on its first frame (18:09, five times in a row).
+                if streamAudio, try await wearables.checkPermissionStatus(.microphone) != .granted {
+                    status = "Allow microphone access in Meta AI"
+                    if try await wearables.requestPermission(.microphone) != .granted {
+                        disableStreamAudio(reason: "micPermissionDenied")
+                    }
+                }
                 if try await wearables.checkPermissionStatus(.camera) != .granted {
                     status = "Allow camera access in Meta AI"
                     guard try await wearables.requestPermission(.camera) == .granted else {
                         status = "Camera access was denied in Meta AI"
+                        blockedOnUser = true
                         return
                     }
                 }
             } catch {
                 status = Self.message(for: error)
+                // No glasses nearby is worth retrying; anything else needs the wearer.
+                switch error {
+                case .noDevice, .noDeviceWithConnection, .connectionError, .requestTimeout, .internalError: break
+                default: blockedOnUser = true
+                }
                 return
             }
 
@@ -297,20 +408,39 @@ enum Identification {
             // Subscribe before start(): a stream created afterwards can miss the .started transition.
             let states = session.stateStream()
             try session.start()
-            for await state in states where state == .started { break }
+            // Never wait forever on .started: a session that doesn't start in 10 s is retried.
+            let started = await withTaskGroup(of: Bool.self) { group in
+                group.addTask { for await state in states where state == .started { return true }; return false }
+                group.addTask { try? await Task.sleep(for: .seconds(10)); return false }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+            guard started else {
+                SpeedLog.record(["event": "connectError", "error": "sessionStartTimeout"])
+                session.stop()
+                self.session = nil
+                tokens = []
+                scheduleRecovery(reason: "sessionStartTimeout")
+                return
+            }
 
             // Standalone photo capture failed instantly on every scan (0 bytes in ~20 ms), so frames come
             // from the stream. Medium (504x896) keeps Bluetooth load down; faces at talking distance
             // are still ~150 px.
             guard let camera = try session.addCamera(config: streamConfig) else {
                 status = "Glasses camera unavailable"
+                session.stop()
+                self.session = nil
+                tokens = []
+                scheduleRecovery(reason: "noCamera")
                 return
             }
             attachCamera(camera)
             // Bring the stream up now, not on the first press: spinning it up cost ~830 ms of
             // every identify, and it is the single biggest item on the clock.
             startStream()
-            lastFrameAt = Date()
+            cameraRestartTried = false
             watchFrames()
 
             if wearables.deviceForIdentifier(found)?.supportsDisplay() == true {
@@ -339,6 +469,10 @@ enum Identification {
         } catch {
             SpeedLog.record(["event": "connectError", "error": "\(error)"])
             status = (error as? LocalizedError)?.errorDescription ?? "Couldn't connect to your glasses. Try again."
+            // Half-built: drop it, and try again rather than leave a dead session behind.
+            session?.stop()
+            teardown(status: status, keepContext: true)
+            scheduleRecovery(reason: "connectError")
         }
     }
 
@@ -361,24 +495,46 @@ enum Identification {
     }
 
     /// The device decides when a session pauses or ends (band hiccups, another app, folding the
-    /// glasses). Log every transition; on an unexpected stop, try one reconnect.
+    /// glasses). Log every transition; an unexpected stop is recovered like any other fault.
     private func sessionChanged(_ state: String, stopped: Bool) {
         SpeedLog.record(["event": "session", "state": state])
         guard stopped, connected else { return }
-        teardown(status: "Glasses disconnected")
-        reconnectSoon(reason: "sessionStopped")
+        teardown(status: "Reconnecting to your glasses…", keepContext: true)
+        scheduleRecovery(reason: "sessionStopped")
     }
 
-    /// At most one automatic reconnect every 30 s, so a device that keeps ending the session
-    /// can't put us in a loop.
-    private func reconnectSoon(reason: String) {
-        guard !userDisconnected, Date().timeIntervalSince(lastAutoReconnect) > 30 else { return }
-        lastAutoReconnect = Date()
-        SpeedLog.record(["event": "reconnect", "reason": reason])
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            await self?.connect()
+    /// The one way back from any fault: stop what's left, wait until it has actually stopped, and
+    /// connect again. Backoff 0, 2, 4, 8, 15, then every 30 s, for as long as it takes; it resets
+    /// once frames have flowed for 30 s. Only Disconnect ends it.
+    private func scheduleRecovery(reason: String) {
+        guard !userDisconnected, !blockedOnUser, recoveryTask == nil else { return }
+        let ladder: [Double] = [0, 2, 4, 8, 15, 30]
+        let delay = ladder[min(recoveryAttempt, ladder.count - 1)]
+        recoveryAttempt += 1
+        SpeedLog.record(["event": "recover", "reason": reason, "attempt": recoveryAttempt, "delayS": delay])
+        if !connected || status.hasPrefix("Connected") { status = "Reconnecting to your glasses…" }
+        recoveryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled, !self.userDisconnected else { self?.recoveryTask = nil; return }
+            await self.restartSession()
+            self.recoveryTask = nil
+            if !self.connected, !self.connecting { self.scheduleRecovery(reason: "stillDown") }
         }
+    }
+
+    private func restartSession() async {
+        if let old = session {
+            display?.stop()
+            old.stop()
+            // Starting a new session while the old one is still stopping got the new one stopped
+            // too (17:33:15 in Toby's log). Wait for the old one to finish, up to 4 s.
+            let deadline = Date().addingTimeInterval(4)
+            while old.state != .stopped, old.state != .idle, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        if connected || session != nil { teardown(status: "Reconnecting to your glasses…", keepContext: true) }
+        await connect()
     }
 
     /// Reconnect when the glasses come back (unfolded, back in range).
@@ -389,7 +545,11 @@ enum Identification {
             var available = true
             for await id in finder.activeDeviceStream() {
                 guard let self else { return }
-                if id != nil, !available, !self.connected, !self.connecting { self.reconnectSoon(reason: "glassesAvailable") }
+                if id != nil, !available, !self.connected, !self.connecting {
+                    // Back in range: skip the backoff.
+                    self.recoveryTask?.cancel(); self.recoveryTask = nil; self.recoveryAttempt = 0
+                    self.scheduleRecovery(reason: "glassesAvailable")
+                }
                 available = id != nil
             }
         }
@@ -397,6 +557,9 @@ enum Identification {
 
     func disconnect() {
         userDisconnected = true
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        recoveryAttempt = 0
         display?.stop()
         session?.stop()
         teardown(status: "Not connected")
@@ -430,10 +593,13 @@ enum Identification {
             let scan = await scanFaces(image)
             hits = scan.hits
             timing = scan.timing
+            // A press is more looks at the same faces the watcher has been following.
+            tracker.update(scan.hits)
         } while hits.isEmpty && frames < 3
         log["frames"] = frames
         log["captureMs"] = ms(since: start)
-        guard frames > 0 else {
+        let fused = bestTrack()
+        guard frames > 0 || fused != nil else {
             result = .noFace
             log["outcome"] = "noImage"
             await finish(&log, start: start)
@@ -447,7 +613,15 @@ enum Identification {
         let matchStart = CFAbsoluteTimeGetCurrent()
         // Everyone in the frame is a candidate. The person you just turned to is not reliably the
         // biggest face, and matching the largest one only ever identified a single person.
-        let pick = bestKnown(hits)
+        // One frame is a weak vote (a face in ~1 of 3 low frames, single-frame scores ~0.1 below
+        // the fused ones), so the fused track wins whenever it names someone.
+        var pick = bestKnown(hits)
+        if let fused {
+            pick = (fused.track.best, fused.match)
+            announced.insert(fused.track.id)
+            log["fused"] = true
+            log["looks"] = fused.track.looks
+        }
         if let pick {
             result = pick.match.map { .known($0, pick.hit) } ?? .unknown(pick.hit)
         } else {
@@ -456,7 +630,7 @@ enum Identification {
         recordSeen()
         log["matchMs"] = ms(since: matchStart)
         if let hit = pick?.hit {
-            let ranked = store.ranked(hit.embedding)
+            let ranked = store.ranked(fused.map { $0.track.probe } ?? hit.embedding)
             log["person"] = ranked.first?.person.id
             log["score"] = ranked.first.map { (Double($0.score) * 1000).rounded() / 1000 }
             log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
@@ -465,6 +639,7 @@ enum Identification {
         // anyone — which made the log read as if matching was working while the lens said "not sure".
         log["outcome"] = pick == nil ? "noFace" : (pick?.match == nil ? "unknown" : "known")
         log["embedder"] = FaceEngine.embedder.name
+        log["detector"] = FaceEngine.detectorName
         await finish(&log, start: start)
     }
 
@@ -485,6 +660,14 @@ enum Identification {
         // immediately re-announce whoever you just identified by hand.
         resultAt = Date()
         lastShown[match.person.id] = Date()
+        sighted[match.person.id] = Date()
+        // The bio's turn ends on its own; hand the lens back to the aid (or shrink the card) then.
+        bioTask?.cancel()
+        bioTask = Task { [weak self, bioHolds] in
+            try? await Task.sleep(for: .seconds(bioHolds + 0.05))
+            guard !Task.isCancelled else { return }
+            self?.renderLens()
+        }
     }
 
     /// Re-match the last face after it was saved to someone.
@@ -504,6 +687,13 @@ enum Identification {
     func preview(_ person: Person) {
         result = .known(Match(person: person, score: 1), nil)
         store?.markSeen(person.id)
+        // As if just identified and still in view, so the bio → aid hand-off can be watched.
+        resultAt = Date()
+        sighted[person.id] = Date()
+        bioTask = Task { [weak self, bioHolds] in
+            try? await Task.sleep(for: .seconds(bioHolds + 0.05))
+            self?.renderLens()
+        }
         // No display to write to in a screenshot run, so fill the mirror directly — it is the
         // same description `hud()` would have built.
         lensShot = LensCards.shot(result: result, identifying: false, confirming: confirming,
@@ -623,24 +813,38 @@ enum Identification {
         renderLens()
     }
 
-    /// Put a conversation answer on the lens, or clear it and fall back to the identity card.
-    func showAnswer(_ card: AnswerCard?) {
-        guard card != answer else { return }
-        answer = card
+    /// The aid's lens changed. It goes up now unless a fresh identification holds the lens (then
+    /// it shows once that has been read, if it is still current).
+    func showAid(_ view: LensView) {
+        guard view != aidLens else { return }
+        aidLens = view
         renderLens()
+        countdown?.cancel()
+        countdown = nil
+        guard !view.working.isEmpty else { return }
+        // The countdown ticks on the lens: one re-send a second while something is in flight.
+        countdown = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled, !self.aidLens.working.isEmpty else { return }
+                if self.lensMode == .aid || self.lensMode == .both { self.renderLens() }
+            }
+        }
     }
+    @ObservationIgnored private var countdown: Task<Void, Never>?
 
     private func classify(_ face: FaceHit) -> Identification {
         guard let store else { return .noFace }
         return store.match(face.embedding).map { .known($0, face) } ?? .unknown(face)
     }
 
-    private func teardown(status: String) {
+    /// `keepContext`: a reconnect, not a goodbye. The person on the card and the aid's lens survive
+    /// it, so the lens comes back showing what it showed.
+    private func teardown(status: String, keepContext: Bool = false) {
         inputTask?.cancel()
         inputTask = nil
         tokens = []
         releaseCameraTokens()
-        streamBroken = false
         camera = nil
         display = nil
         displayReady = false
@@ -653,6 +857,7 @@ enum Identification {
         answer = nil
         result = .ready
         streamLive = false
+        streamState = "none"
         frameWatchdog?.cancel()
         frameWatchdog = nil
         lensShot = nil
@@ -689,19 +894,18 @@ enum Identification {
 
     // MARK: - Camera
 
-    /// The next frame from the glasses camera, starting the stream if it isn't running.
+    /// The next frame from the glasses camera, for a press. Never repairs anything itself: a
+    /// press used to rebuild the camera on a stale error flag, and that tore down a session that
+    /// was delivering 2 fps (17:33:14 in Toby's log). Faults are the watchdog's job.
     private func nextFrame() async -> CIImage? {
-        if let image = await frame() { return image }
-        // Wedged. Rebuild the camera off the session and give it one more go.
-        streamBroken = true
-        if let image = await frame() { return image }
-        // Five seconds of nothing through a brand-new camera: the session is the problem.
-        recoverSession(reason: "noFrames")
-        return nil
+        guard camera != nil else {
+            scheduleRecovery(reason: "pressNoCamera")
+            return nil
+        }
+        return await frame()
     }
 
     private func frame() async -> CIImage? {
-        if streamBroken || camera == nil { rebuildCamera() }
         guard camera != nil else { return nil }
         startStream()
         let request = UUID()
@@ -739,24 +943,57 @@ enum Identification {
     }
 
     /// The watch path waits on frames that simply arrive, so a silent stream looks exactly like an
-    /// empty room — no timeout fires and nothing recovers until someone presses the button. This
-    /// notices the silence instead: rebuild the camera, and if that was already tried, take the
-    /// session with it.
+    /// empty room. This notices the silence and repairs it, and it is the only thing that does:
+    /// first a camera restart, then the session, then the session again with backoff. It never
+    /// stops watching while connected, and never leaves the app connected without a camera.
     private func watchFrames() {
         frameWatchdog?.cancel()
         frameWatchdog = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                guard let self else { return }
-                guard self.connected, self.streamLive, !self.identifying else { continue }
-                let quiet = Date().timeIntervalSince(self.lastFrameAt)
-                guard quiet > 6 else { continue }
-                SpeedLog.record(["event": "frameStall", "quietMs": (quiet * 1000).rounded()])
-                if Date().timeIntervalSince(self.lastRebuild) < 12 {
-                    self.recoverSession(reason: "frameStall")
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
+                guard self.connected, self.recoveryTask == nil else { continue }
+                // A still in flight can pause video for a moment; don't call that a stall.
+                guard !self.photoBusy, Date().timeIntervalSince(self.lastPhotoAt) > 4 else { continue }
+                guard self.camera != nil else {
+                    self.scheduleRecovery(reason: "noCamera")
+                    continue
+                }
+                let now = Date()
+                let flowing = self.lastFrameAt > self.streamStartedAt
+                // Frames for 30 s straight: whatever went wrong before is over.
+                if flowing, now.timeIntervalSince(self.lastFrameAt) < 2,
+                   now.timeIntervalSince(self.streamStartedAt) > 30, self.recoveryAttempt > 0 || self.cameraRestartTried {
+                    self.recoveryAttempt = 0
+                    self.cameraRestartTried = false
+                }
+                // Paused is the glasses' call (folded, off your face, thermal). Give it a minute.
+                let paused = self.streamState == "paused" || self.streamState == "waitingForDevice"
+                let quiet = now.timeIntervalSince(flowing ? self.lastFrameAt : self.streamStartedAt)
+                // A stream the SDK itself calls stopped won't come back by waiting.
+                let dead = self.streamState == "stopped"
+                let limit = paused ? 60 : dead ? 3 : (flowing ? self.stallAfter : self.firstFrameGrace)
+                guard quiet > limit else { continue }
+                SpeedLog.record(["event": "frameStall", "quietMs": (quiet * 1000).rounded(),
+                                 "flowing": flowing, "stream": self.streamState])
+                // Audio on and the stream died within seconds of starting, twice: the glasses won't
+                // stream audio. Drop it rather than lose the camera too. (Not "before any frame":
+                // these streams get one frame out before the critical error, 18:22.)
+                let diedYoung = dead && self.lastFrameAt.timeIntervalSince(self.streamStartedAt) < 5
+                if self.streamAudio, diedYoung {
+                    self.audioStreamFailures += 1
+                    if self.audioStreamFailures >= 2 { self.disableStreamAudio(reason: "streamDiesWithAudio") }
+                } else if flowing, !dead {
+                    self.audioStreamFailures = 0
+                }
+                // On real glasses a camera restart "succeeds" and the new stream dies on its first
+                // frame (Critical error, 17:48:09), while a session restart is back streaming in
+                // ~2 s. So real glasses go straight to the session; only the simulator tries the camera.
+                if self.cameraRestartTried || !self.mocking {
+                    self.scheduleRecovery(reason: "frameStall")
                 } else {
-                    self.rebuildCamera()
-                    self.startStream()
+                    self.cameraRestartTried = true
+                    await self.restartCamera()
                 }
             }
         }
@@ -766,32 +1003,35 @@ enum Identification {
         guard let camera, !streamLive else { return }
         camera.stream.start()
         streamLive = true
+        streamStartedAt = Date()
     }
 
-    /// Replaces the camera after a stream error. Stopping a stream is one-way: the SDK answers a
-    /// later start() with "Critical error, the stream should end" and never sends another frame,
-    /// which is why every identify after the first one used to time out. Recovery is a fresh
-    /// addCamera on the same session.
-    ///
-    /// It does NOT stop the old camera. Doing that is the same one-way stop by another name: live
-    /// on Toby's phone this loop ran nine times, each rebuild answered by another critical error,
-    /// and the session never produced a frame again. Drop the reference and let it go; when even a
-    /// fresh camera stays quiet, `recoverSession` replaces the whole session instead.
-    private func rebuildCamera() {
+    /// A fresh camera on the same session: the cheap repair. The old code added a new camera while
+    /// the old one was still active, which the SDK refuses (capabilityAlreadyActive): it failed 4
+    /// times out of 4. Stop the old one and wait for it to report stopped first. If that still
+    /// fails, the session goes.
+    private func restartCamera() async {
         guard let session else { return }
-        SpeedLog.record(["event": "cameraRebuild"])
-        lastRebuild = Date()
+        SpeedLog.record(["event": "cameraRestart"])
+        let old = camera
         releaseCameraTokens()
         camera = nil
         streamLive = false
-        streamBroken = false
-        guard let fresh = (try? session.addCamera(config: streamConfig)) ?? nil else {
-            SpeedLog.record(["event": "cameraRebuildFailed"])
-            recoverSession(reason: "addCameraFailed")
-            return
+        streamState = "none"
+        if let old {
+            old.stop()
+            let deadline = Date().addingTimeInterval(3)
+            while old.state != .stopped, Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
         }
-        attachCamera(fresh)
-        lastFrameAt = Date()
+        do {
+            guard let fresh = try session.addCamera(config: streamConfig) else { throw CancellationError() }
+            attachCamera(fresh)
+            startStream()
+            SpeedLog.record(["event": "cameraRestartOK"])
+        } catch {
+            SpeedLog.record(["event": "cameraRestartFailed", "error": "\(error)"])
+            scheduleRecovery(reason: "cameraRestartFailed")
+        }
     }
 
     private func attachCamera(_ camera: Camera) {
@@ -832,11 +1072,31 @@ enum Identification {
                 await self.autoScan(ci)
             }
         })
-        cameraTokens.append(camera.stream.errorPublisher.listen { [weak self] error in
+        // Logged only. "Critical error, the stream should end" arrived at 17:32:17 and frames kept
+        // coming at 2 fps for another minute; treating it as fatal is what broke a working stream.
+        // If frames really stop, the watchdog sees it.
+        cameraTokens.append(camera.stream.errorPublisher.listen { error in
             let message = error.localizedDescription
+            Task { @MainActor in SpeedLog.record(["event": "streamError", "error": message]) }
+        })
+        if streamAudio {
+            let sink = audioSink
+            cameraTokens.append(camera.stream.audioFramePublisher.listen { [weak self] frame in
+                sink.handler?(frame.pcmBuffer)
+                Task { @MainActor in self?.audioFrames += 1 }
+            })
+        }
+        cameraTokens.append(camera.stream.photoDataPublisher.listen { [weak self] photo in
+            let data = photo.data
+            Task { @MainActor in self?.resumePhoto(data) }
+        })
+        cameraTokens.append(camera.stream.statePublisher.listen { [weak self] state in
             Task { @MainActor in
-                SpeedLog.record(["event": "streamError", "error": message])
-                self?.streamBroken = true
+                guard let self else { return }
+                let name = "\(state)"
+                guard name != self.streamState else { return }
+                self.streamState = name
+                SpeedLog.record(["event": "stream", "state": name])
             }
         })
         self.camera = camera
@@ -879,6 +1139,7 @@ enum Identification {
                                   "sizes": frameSizes.map { "\($0.key)x\($0.value)" }.sorted().joined(separator: ","),
                                   "frames": statsFrames,
                                   "fps": (Double(statsFrames) / seconds * 10).rounded() / 10]
+        if streamAudio { log["audioFrames"] = audioFrames; audioFrames = 0 }
         if !sharpSamples.isEmpty {
             let sorted = sharpSamples.sorted()
             log["sharpP10"] = (Double(sorted[max(0, sorted.count / 10)]) * 1000).rounded() / 1000
@@ -899,7 +1160,7 @@ enum Identification {
         guard Tuning.bool("liveRestream", false) else { return }
         guard connected, let live = liveStreamSettings, live != streamSettings else { return }
         SpeedLog.record(["event": "restream", "from": live, "to": streamSettings])
-        rebuildCamera()
+        Task { await restartCamera() }
     }
 
     // MARK: - Auto-identify
@@ -907,8 +1168,8 @@ enum Identification {
     /// True when a watch scan should run on this frame, and claims the slot if so.
     private func claimAutoScan() -> Bool {
         guard watching, connected, !identifying, !autoBusy, store != nil else { return false }
-        // A live conversation answer owns the lens; never fight it for the frame.
-        guard answer == nil else { return false }
+        // Aid cards on the lens never pause scanning: `facing`/`present` stay current, which is
+        // what the aid's "who is THEM" reads, and a fresh identification may take the lens back.
         // NOTE: a card being up no longer stops the scan. It used to return false for the whole
         // 20 s `cardHolds`, so turning to a new person meant waiting out the old one with the
         // camera effectively off. `cardHolds` now gates only the *display* (see mayShow), and the
@@ -921,8 +1182,9 @@ enum Identification {
 
     /// Whether a new person may take the lens right now.
     private func mayShow(_ id: String) -> Bool {
-        guard answer == nil, !identifying else { return false }
-        if let last = lastShown[id], Date().timeIntervalSince(last) < reannounceAfter { return false }
+        // A fresh identification wins the lens over aid cards, so an aid card no longer blocks this.
+        guard !identifying else { return false }
+        if lastShown[id] != nil, let seen = sighted[id], Date().timeIntervalSince(seen) < absentFor { return false }
         // Someone else is on the card; leave them there for a beat before swapping.
         if case .known(let current, _) = result, current.person.id != id,
            Date().timeIntervalSince(resultAt) < cardHolds { return false }
@@ -944,8 +1206,12 @@ enum Identification {
         let scan = await scanFaces(image)
         guard let store else { return }
         for hit in scan.hits where hit.sharpness > 0 { sharpSamples.append(hit.sharpness) }
-        let live = tracker.update(scan.hits)
-        guard !live.isEmpty else { return }
+        let frameTime = Date()
+        let live = tracker.update(scan.hits, now: frameTime)
+        guard !live.isEmpty else {
+            if facing != nil { facing = nil }
+            return
+        }
 
         // Strongest evidence first; the first track that clears the bar and is allowed on screen wins.
         // A track that already had its turn keeps being matched: memory no longer fades, so its
@@ -1015,21 +1281,148 @@ enum Identification {
     /// second person in the frame matchable at all. The blur gate inside `scan` pays for itself
     /// twice: it skips the embed on frames that could never produce a right answer, and it stops
     /// those frames producing a *wrong* one.
+    // MARK: - High-resolution confirmation
+    //
+    // The stream is 2 fps and the SDK delivers it at 360x640 more often than the 504x896 asked
+    // for, so a face at talking distance is ~50-80 px: enough to find and follow, not enough to
+    // name reliably. A stream match named Mirabelle (0.63) on a small face at the edge of view when
+    // she wasn't there. So the stream only finds and tracks; a new face in focus gets one or two
+    // full-resolution stills (stream.capturePhoto) and is named only if the still matches clearly.
+    // If stills don't work on this pair, naming falls back to the stream with a minimum face size.
+
+    @ObservationIgnored private var photoConfirm: Bool { Tuning.bool("photoConfirm", true) }
+    /// Below this many pixels wide in the stream frame, a stream-only match is never announced.
+    @ObservationIgnored private var minAnnouncePx: CGFloat { CGFloat(Tuning.float("minAnnouncePx", 56)) }
+    @ObservationIgnored private var frameWidth: CGFloat = 360
+    /// Per track: the confirmed person id, or "" when the still showed nobody on the roster.
+    @ObservationIgnored private var photoVerdict: [Int: String] = [:]
+    @ObservationIgnored private var photoMatch: [Int: Match] = [:]
+    @ObservationIgnored private var photoHit: [Int: FaceHit] = [:]
+    @ObservationIgnored private var photoTries: [Int: Int] = [:]
+    @ObservationIgnored private var photoBusy = false
+    @ObservationIgnored private var lastPhotoAt = Date.distantPast
+    @ObservationIgnored private var photoFailures = 0
+    @ObservationIgnored private var photoUnavailableUntil = Date.distantPast
+    @ObservationIgnored private var photoWaiter: CheckedContinuation<Data?, Never>?
+    @ObservationIgnored private var photoRequest = UUID()
+
+    private var usePhotos: Bool { photoConfirm && camera != nil && Date() > photoUnavailableUntil }
+
+    private func facePx(_ track: FaceTracker.Track) -> CGFloat { track.best.box.width * frameWidth }
+
+    private func requestPhoto(_ track: FaceTracker.Track) {
+        guard !photoBusy, (photoTries[track.id] ?? 0) < 2, Date().timeIntervalSince(lastPhotoAt) > 1.5 else { return }
+        photoBusy = true
+        photoTries[track.id, default: 0] += 1
+        lastPhotoAt = Date()
+        let id = track.id, box = track.box
+        Task { await confirmByPhoto(track: id, box: box) }
+    }
+
+    private func confirmByPhoto(track id: Int, box: CGRect) async {
+        defer { photoBusy = false; lastPhotoAt = Date() }
+        let start = CFAbsoluteTimeGetCurrent()
+        var log: [String: Any] = ["event": "photoConfirm", "track": id, "try": photoTries[id] ?? 1]
+        guard let data = await takePhoto(), let image = CIImage(data: data) else {
+            photoFailures += 1
+            log["outcome"] = "noPhoto"
+            log["ms"] = ms(since: start)
+            if photoFailures >= 2 {
+                // This pair won't take stills mid-stream: name from the stream (with the size
+                // floor) for a while instead of waiting on photos that never come.
+                photoUnavailableUntil = Date().addingTimeInterval(300)
+                log["photosOff"] = 300
+            }
+            SpeedLog.record(log)
+            return
+        }
+        photoFailures = 0
+        log["bytes"] = data.count
+        log["width"] = Int(image.extent.width)
+        log["height"] = Int(image.extent.height)
+        log["photoMs"] = ms(since: start)
+        let scan = await withCheckedContinuation { done in
+            worker.async { done.resume(returning: FaceEngine.scan(image, limit: 4, rank: .attention, minFace: 40)) }
+        }
+        log["faces"] = scan.hits.count
+        // The still and the stream frame cover nearly the same view; take the face nearest where
+        // the tracked one was, else the most attended.
+        let center = CGPoint(x: box.midX, y: box.midY)
+        let usable = scan.hits.filter(\.usable)
+        let hit = usable.min { hypot($0.box.midX - center.x, $0.box.midY - center.y) < hypot($1.box.midX - center.x, $1.box.midY - center.y) }
+        guard let hit, let store else {
+            log["outcome"] = "noFace"
+            if (photoTries[id] ?? 0) >= 2 { photoVerdict[id] = "" }
+            SpeedLog.record(log)
+            return
+        }
+        let ranked = store.ranked(hit.embedding)
+        log["facePx"] = Int(hit.box.width * image.extent.width)
+        log["score"] = ranked.first.map { (Double($0.score) * 1000).rounded() / 1000 }
+        log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
+        if let match = store.confidentMatch(hit.embedding) {
+            photoVerdict[id] = match.person.id
+            photoMatch[id] = match
+            photoHit[id] = hit
+            log["person"] = match.person.id
+            log["outcome"] = "confirmed"
+        } else {
+            photoVerdict[id] = ""
+            log["outcome"] = "nobody"
+        }
+        log["ms"] = ms(since: start)
+        SpeedLog.record(log)
+    }
+
+    /// One full-resolution still off the running stream, or nil within 6 s.
+    private func takePhoto() async -> Data? {
+        guard let camera, camera.stream.capturePhoto(format: .jpeg) else { return nil }
+        let request = UUID()
+        photoRequest = request
+        return await withCheckedContinuation { done in
+            photoWaiter = done
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(6))
+                guard let self, self.photoRequest == request else { return }
+                self.resumePhoto(nil)
+            }
+        }
+    }
+
+    private func resumePhoto(_ data: Data?) {
+        photoWaiter?.resume(returning: data)
+        photoWaiter = nil
+    }
+
     private func scanFaces(_ image: CIImage) async -> (hits: [FaceHit], timing: FaceTiming) {
         await withCheckedContinuation { done in
             worker.async {
-                done.resume(returning: FaceEngine.scan(image, limit: 4))
+                done.resume(returning: FaceEngine.scan(image, limit: 4, rank: .attention, minFace: FaceEngine.minFacePx))
             }
         }
     }
 
     /// The face in this frame with the strongest match; when nobody is known, the largest face.
+    /// The strongest named match among faces seen in the last `maxAge`, using fused evidence.
+    private func bestTrack() -> (track: FaceTracker.Track, match: Match)? {
+        guard let store else { return nil }
+        var best: (track: FaceTracker.Track, match: Match)?
+        for track in tracker.tracks
+        where track.looks > 0 && Date().timeIntervalSince(track.updated) <= tracker.maxAge {
+            guard let match = store.match(track.probe) else { continue }
+            // The face you are looking at, not whoever happens to score highest.
+            if let current = best, track.attention <= current.track.attention { continue }
+            best = (track, match)
+        }
+        return best
+    }
+
     private func bestKnown(_ hits: [FaceHit]) -> (hit: FaceHit, match: Match?)? {
         guard let store, let largest = hits.first else { return nil }
         var best: (hit: FaceHit, match: Match)?
         for hit in hits {
             guard let match = store.match(hit.embedding) else { continue }
-            if let current = best, match.score <= current.match.score { continue }
+            if let current = best, hit.attention <= current.hit.attention { continue }
             best = (hit, match)
         }
         if let best { return (best.hit, best.match) }
@@ -1040,13 +1433,49 @@ enum Identification {
 
     private func renderLens() {
         guard displayReady else { return }
-        // A live answer owns the lens. It is the thing the wearer needs in the next half second.
-        if let card = answer {
-            lensShot = LensCards.shot(answer: card)
-            send(LensCards.answer(card))
-            return
+        send(lensView())
+    }
+
+    /// The person on the card, if the face side has one.
+    private var knownPerson: Person? {
+        if case .known(let match, _) = result { return match.person }
+        return nil
+    }
+
+    /// The whole lens as it should be right now: `LensPolicy` picks the face side, the aid, or
+    /// both, and this builds that card and its mirror.
+    private func currentMode() -> LensMode {
+        let person = knownPerson
+        let around = person.map { facing == $0.id || present.contains($0.id) } ?? false
+        return LensPolicy.mode(identifying: identifying, confirming: confirming, known: person != nil, around: around,
+                               sinceIdentified: Date().timeIntervalSince(resultAt), bioHolds: bioHolds,
+                               aidArmed: aidArmed, aidEmpty: aidLens.isEmpty)
+    }
+
+    private func lensView() -> FlexBox {
+        let person = knownPerson
+        let mode = currentMode()
+        lensMode = mode
+        let connected = store?.connectedCount ?? 0
+        let avatar: (String) -> UIImage? = { [store] in store?.lensAvatar($0) }
+        switch mode {
+        case .identity:
+            return hud()
+        case .aid, .both:
+            let partner = mode == .both ? person : nil
+            lensShot = LensCards.shot(aid: aidLens, person: partner)
+            return LensCards.aid(aidLens, person: partner, avatar: avatar)
+        case .compact:
+            guard let person else { return hud() }
+            lensShot = LensCards.shot(compact: person, identifying: identifying, connected: connected)
+            return LensCards.compact(person, avatar: avatar, identifying: identifying, connected: connected,
+                                     identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } })
+        case .idle:
+            lensShot = LensCards.shot(result: .ready, identifying: false, confirming: confirming, connected: connected)
+            return LensCards.hud(result: .ready, avatar: avatar, identifying: false, confirming: confirming,
+                                 connected: connected,
+                                 identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } })
         }
-        send(hud())
     }
 
     /// The identity HUD as it stands right now. Both lens writers go through here, so this is
@@ -1065,51 +1494,52 @@ enum Identification {
         )
     }
 
-    /// Rate-limited lens write. The first frame of an answer goes out immediately; the stream of
-    /// token updates behind it collapses into one frame every `minSendInterval`, last value wins.
+    /// Lens writes, one at a time and newest wins: a burst of updates (an answer streaming in)
+    /// collapses to the latest card every `minSendInterval`, and no write ever overlaps another.
     private func send(_ view: FlexBox) {
-        pendingSend?.cancel()
-        let wait = minSendInterval - Date().timeIntervalSince(lastSend)
-        guard wait > 0 else {
-            lastSend = Date()
-            Task { await self.write(view) }
-            return
-        }
-        pendingSend = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(wait))
-            guard !Task.isCancelled, let self, let display = self.display else { return }
-            self.lastSend = Date()
-            _ = display
-            await self.write(view)
+        queuedView = view
+        guard lensWriter == nil else { return }
+        lensWriter = Task { [weak self] in
+            while let self, !Task.isCancelled, self.queuedView != nil {
+                let wait = self.minSendInterval - Date().timeIntervalSince(self.lastSend)
+                if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                guard !Task.isCancelled, let view = self.queuedView else { break }
+                self.queuedView = nil
+                self.lastSend = Date()
+                self.lastWriteOK = await self.write(view)
+            }
+            self?.lensWriter = nil
+            self?.finishWrites(self?.lastWriteOK ?? false)
         }
     }
 
-    private func write(_ view: FlexBox) async {
-        guard let display else { return }
+    private func finishWrites(_ ok: Bool) {
+        let waiters = writeWaiters
+        writeWaiters = []
+        for waiter in waiters { waiter.resume(returning: ok) }
+    }
+
+    @discardableResult
+    private func write(_ view: FlexBox) async -> Bool {
+        guard let display else { return false }
         let start = CFAbsoluteTimeGetCurrent()
         do {
             try await display.send(view)
             let elapsed = ms(since: start)
             if elapsed > 1000 { SpeedLog.record(["event": "lensSlow", "ms": elapsed]) }
-        } catch {
-            SpeedLog.record(["event": "lensError", "error": "\(error)"])
-        }
-    }
-
-    /// Sends the identity card and waits for it (timed in the speed log); false when there's no
-    /// lens or a conversation answer currently owns it.
-    private func sendLens() async -> Bool {
-        guard let display, displayReady, answer == nil else { return false }
-        let view = hud()
-        pendingSend?.cancel()
-        lastSend = Date()
-        do {
-            try await display.send(view)
+            return true
         } catch {
             SpeedLog.record(["event": "lensError", "error": "\(error)"])
             return false
         }
-        return true
+    }
+
+    /// Puts the lens as it now stands through the same queue (a fresh result wins it, see
+    /// `LensPolicy`) and waits until it is on the glasses, so the speed log can time it.
+    private func sendLens() async -> Bool {
+        guard display != nil, displayReady else { return false }
+        send(lensView())
+        return await withCheckedContinuation { writeWaiters.append($0) }
     }
 }
 
