@@ -290,6 +290,8 @@ enum Identification {
     @ObservationIgnored private var sentShot: LensShot?
     /// True while the lens bench owns the display.
     private(set) var benching = false
+    /// The card is on the lens with a placeholder; its photo is the next write.
+    @ObservationIgnored private var photoPending = false
     /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
     @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
@@ -1946,20 +1948,19 @@ enum Identification {
             return
         }
         guard display != nil, displayReady, !benching else { return }
-        let nameShot = LensCards.shot(name: person)
-        lensShot = nameShot
-        sentShot = nameShot
+        photoPending = true
         let start = CFAbsoluteTimeGetCurrent()
-        send(LensCards.name(person))
+        guard renderLens() else { photoPending = false; return }
         Task { [weak self] in
             guard let self else { return }
-            let nameOK = await self.writesDone()
-            var log: [String: Any] = ["event": "lensTiming", "person": person.id, "nameMs": ms(since: start), "nameOK": nameOK]
-            if nameOK, self.knownPerson?.id == person.id {
-                let fullStart = CFAbsoluteTimeGetCurrent()
+            let cardOK = await self.writesDone()
+            var log: [String: Any] = ["event": "lensTiming", "person": person.id, "cardMs": ms(since: start), "cardOK": cardOK]
+            self.photoPending = false
+            if cardOK, self.knownPerson?.id == person.id {
+                let photoStart = CFAbsoluteTimeGetCurrent()
                 if self.renderLens() {
-                    log["fullOK"] = await self.writesDone()
-                    log["fullMs"] = ms(since: fullStart)
+                    log["photoOK"] = await self.writesDone()
+                    log["photoMs"] = ms(since: photoStart)
                 }
             }
             SpeedLog.record(log)
@@ -1985,16 +1986,16 @@ enum Identification {
                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage()
         }
         guard let blank else { return [:] }
-        func full(_ person: Person, photo: Bool) -> FlexBox {
+        func card(_ person: Person, pending: Bool) -> FlexBox {
             let hit = FaceHit(embedding: [], crop: blank, area: 0, box: .zero, sharpness: 0, aligned: false)
             return LensCards.hud(result: .known(Match(person: person, score: 1), hit),
-                                 avatar: { [store] in photo ? store.lensAvatar($0) : nil },
-                                 identifying: false, confirming: false, connected: 0, identify: {})
+                                 avatar: { [store] in store.lensPhoto($0) },
+                                 identifying: false, confirming: false, connected: 0, photoPending: pending, identify: {})
         }
         let shapes: [(String, (Person) -> FlexBox)] = [
             ("name", { LensCards.name($0) }),
-            ("fullNoPhoto", { full($0, photo: false) }),
-            ("full", { full($0, photo: true) }),
+            ("cardPlaceholder", { card($0, pending: true) }),
+            ("cardPhoto", { card($0, pending: false) }),
         ]
         var medians: [String: Double] = [:]
         for (name, make) in shapes {
@@ -2068,12 +2069,14 @@ enum Identification {
         let connected = store?.connectedCount ?? 0
         lensShot = LensCards.shot(result: result, identifying: identifying,
                                   confirming: confirming, connected: connected)
+        lensShot?.photoPending = photoPending
         return LensCards.hud(
             result: result,
-            avatar: { [store] in store?.lensAvatar($0) },
+            avatar: { [store] in store?.lensPhoto($0) },
             identifying: identifying,
             confirming: confirming,
             connected: connected,
+            photoPending: photoPending,
             identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } }
         )
     }

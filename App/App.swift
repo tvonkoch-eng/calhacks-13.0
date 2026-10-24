@@ -998,12 +998,18 @@ struct LensMirror: View {
 
         case .person:
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .center, spacing: 14) {
-                    if let id = shot.photo, let photo = avatar(id) {
+                HStack(alignment: .top, spacing: 16) {
+                    // The lens gives the photo a third of the card; until its write lands, the same
+                    // box holds a grey placeholder.
+                    if shot.photoPending {
+                        RoundedRectangle(cornerRadius: m.icon * 0.3, style: .continuous)
+                            .fill(Color(white: 0.28))
+                            .frame(width: m.icon * 2, height: m.icon * 2)
+                    } else if let id = shot.photo, let photo = avatar(id) {
                         Image(uiImage: photo)
                             .resizable().aspectRatio(contentMode: .fill)
-                            .frame(width: m.icon, height: m.icon)
-                            .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                            .frame(width: m.icon * 2, height: m.icon * 2)
+                            .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.3, style: .continuous))
                     }
                     VStack(alignment: .leading, spacing: 3) {
                         Text(shot.name ?? "").font(.system(size: m.heading, weight: .semibold))

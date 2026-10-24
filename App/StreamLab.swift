@@ -34,9 +34,9 @@ struct StreamLabView: View {
                     Task { bench = await glasses.lensBench() }
                 }
                 .disabled(glasses.benching || !glasses.connected || glasses.replaying)
-                ForEach(["name", "fullNoPhoto", "full"], id: \.self) { shape in
+                ForEach(["name", "cardPlaceholder", "cardPhoto"], id: \.self) { shape in
                     if let ms = bench[shape] {
-                        LabeledContent(shape == "name" ? "Name only" : shape == "full" ? "Full card" : "Full, no photo",
+                        LabeledContent(shape == "name" ? "Name only" : shape == "cardPhoto" ? "Card with large photo" : "Card, photo placeholder",
                                        value: "\(Int(ms.rounded())) ms")
                     }
                 }

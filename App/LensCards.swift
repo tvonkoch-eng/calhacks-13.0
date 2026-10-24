@@ -31,6 +31,8 @@ struct LensShot: Equatable {
     var headline: String?
     /// Person id, so the mirror can look the avatar up the same way the card did.
     var photo: String?
+    /// The card is up but its photo hasn't been written yet: the photo's box holds a placeholder.
+    var photoPending = false
     var primary: [String] = []
     var details: [Row] = []
     var secondary: [String] = []
@@ -189,6 +191,7 @@ enum LensCards {
         identifying: Bool,
         confirming: Bool,
         connected: Int,
+        photoPending: Bool = false,
         identify: @escaping @Sendable () -> Void
     ) -> FlexBox {
         // One description of the card, rendered here and mirrored on the phone.
@@ -198,7 +201,10 @@ enum LensCards {
         switch result {
         case .known(let match, _):
             let person = match.person
-            let photo = avatar(person.id)
+            // The photo is the heavy part of a write (~430 ms at 288 px on the lens bench, text ~45 ms),
+            // so the card goes up first with a placeholder in the photo's box — a 4x4 grey image
+            // stretched to the same size, a few bytes — and the photo follows as a second write.
+            let photo = photoPending ? Self.placeholder : avatar(person.id)
             // Three text styles exist, with no weights and no colors, so hierarchy is order and
             // emphasis is scarcity: exactly one line is .body -- what they do now -- and the eye
             // finds it because nothing else on the card looks like it.
@@ -209,12 +215,19 @@ enum LensCards {
             // re-reads the rows, because the lens draws an icon per kind and the mirror does not.
             let details = shot.details.isEmpty ? [] : Array(person.details.prefix(3))
             return FlexBox(direction: .column, spacing: 14) {
-                FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
-                    if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                FlexBox(direction: .row, spacing: 16, crossAlignment: .start) {
+                    // Large: the photo fills a third of the card's width.
+                    if let photo {
+                        FlexBox(direction: .column) {
+                            Image(image: photo, sizePreset: .fill, cornerRadius: .medium)
+                        }
+                        .flexGrow(1)
+                    }
                     FlexBox(direction: .column, spacing: 3) {
                         Text(person.name, style: .heading)
                         Text(person.headline, style: .body).flexShrink(1)
                     }
+                    .flexGrow(2)
                 }
                 FlexBox(direction: .column, spacing: 7) {
                     for line in primary {
@@ -288,6 +301,16 @@ enum LensCards {
 
     /// The first write when a face is named: the name and headline alone, no photo, so it reaches
     /// the glasses ahead of the full card, which follows as a second write.
+    /// Stands in for the photo until it has been written: same box, almost no bytes.
+    static let placeholder: UIImage = {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4), format: format).image { context in
+            UIColor(white: 0.28, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }
+    }()
+
     static func name(_ person: Person) -> FlexBox {
         FlexBox(direction: .column, spacing: 3) {
             Text(person.name, style: .heading)
