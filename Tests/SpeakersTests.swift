@@ -97,5 +97,22 @@ do {
     check(!s.ownVoiceTrusted, "every voice matched: the glasses hear everyone, stop trusting them")
 }
 
+// Glasses mic streaming: the wearer is far louder at the glasses than at the phone.
+do {
+    var s = Speakers(wearer: "Toby")
+    s.looking(at: "avi", at: at(0))
+    // Gaps (glasses dB - phone dB): wearer ~ +18, Avi ~ +3. No split learned for the first lines.
+    var v = s.resolve(label: "A", text: "So tell me about the startup", start: at(1), end: at(2), gap: 18)
+    check(v.who == .person("avi") && !v.sure, "one line can't be judged by level yet (\(v))")
+    _ = s.resolve(label: "B", text: "We do payments for restaurants", start: at(3), end: at(5), gap: 3)
+    _ = s.resolve(label: "A", text: "How many customers do you have", start: at(6), end: at(7), gap: 17)
+    _ = s.resolve(label: "B", text: "About two hundred so far", start: at(8), end: at(9), gap: 4)
+    check(s.gapSplitPoint() != nil, "two groups of gaps: a split")
+    v = s.resolve(label: "B", text: "What's the interest rate right now?", start: at(10), end: at(11), gap: 2.5)
+    check(v.who == .person("avi") && v.sure, "small gap: Avi's question (\(v))")
+    v = s.resolve(label: "B", text: "Nice, I'm going to grab coffee", start: at(12), end: at(13), gap: 19)
+    check(v.who == .me && v.sure, "big gap on Avi's label: diarization lumped the wearer in, level says wearer (\(v))")
+}
+
 print(failures == 0 ? "ok" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

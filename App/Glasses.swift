@@ -71,7 +71,11 @@ enum Identification {
     @ObservationIgnored private var speech: Speech?
     @ObservationIgnored private var speechFailures = 0
     @ObservationIgnored private var speechResults = 0
-    @ObservationIgnored private var wantsSpeech: Bool { Tuning.bool("glassesSpeech", true) && speechFailures < 3 }
+    /// Not while the stream carries the glasses' mic: two consumers of one mic is asking for the
+    /// stream to die, and the level gap between glasses and phone does the job then.
+    @ObservationIgnored private var wantsSpeech: Bool {
+        Tuning.bool("glassesSpeech", true) && speechFailures < 3 && (!streamAudio || Tuning.bool("speechWithStreamAudio", false))
+    }
     /// Which way the last lens write went, for the speed log and the phone.
     private(set) var lensMode: LensMode = .identity
     /// The content of the last card handed to the lens, so the phone can mirror it live. Nil when
@@ -153,8 +157,15 @@ enum Identification {
         }
         // The glasses' mic rides the camera stream (SDK 1.0.1, experimental): 16 kHz mono PCM,
         // no Bluetooth hands-free route, so iOS's audio is never touched.
-        let audio: MWDATCamera.AudioCodec? = streamAudio ? .pcm(sampleRate: .rate16000, numberOfChannels: 1) : nil
+        let audio: MWDATCamera.AudioCodec? = streamAudio ? .pcm(sampleRate: audioRate, numberOfChannels: 1) : nil
         return StreamConfiguration(videoCodec: .raw, audioCodec: audio, resolution: resolution, frameRate: fps)
+    }
+
+    /// The glasses' mic sample rate. 16 kHz is all speech needs; if streams with it keep dying,
+    /// 48 kHz gets one try (the SDK's audio path is experimental and untested at each rate here)
+    /// before audio is dropped. Remembered, so a rate that works is used from the start next time.
+    private var audioRate: MWDATCamera.AudioSampleRate {
+        UserDefaults.standard.integer(forKey: "glassesAudioRate") == 48_000 ? .rate48000 : .rate16000
     }
 
     /// Ask the stream for the glasses' mic too. Fixed when the camera is added, so a change
@@ -169,6 +180,25 @@ enum Identification {
     @ObservationIgnored var onStreamAudioLost: ((String) -> Void)?
     /// Streams with audio that died before their first frame, in a row.
     @ObservationIgnored private var audioStreamFailures = 0
+
+    @ObservationIgnored private var audioStatsFrom = Date()
+    @ObservationIgnored private var audioSamples = 0
+    @ObservationIgnored private var audioChunks = 0
+
+    /// Is the glasses' audio really arriving, and at what rate: logged every 10 s while it does.
+    private func noteAudio(samples: Int, rate: Int) {
+        audioFrames += 1
+        audioChunks += 1
+        audioSamples += samples
+        let span = Date().timeIntervalSince(audioStatsFrom)
+        guard span >= 10 else { return }
+        SpeedLog.record(["event": "glassesAudio", "frames": audioChunks, "rate": rate,
+                         "secondsOfAudio": (Double(audioSamples) / Double(max(rate, 1)) * 10).rounded() / 10,
+                         "overSeconds": (span * 10).rounded() / 10])
+        audioChunks = 0
+        audioSamples = 0
+        audioStatsFrom = Date()
+    }
 
     private func disableStreamAudio(reason: String) {
         guard streamAudio else { return }
@@ -1034,7 +1064,16 @@ enum Identification {
                 let diedYoung = dead && self.lastFrameAt.timeIntervalSince(self.streamStartedAt) < 5
                 if self.streamAudio, diedYoung {
                     self.audioStreamFailures += 1
-                    if self.audioStreamFailures >= 2 { self.disableStreamAudio(reason: "streamDiesWithAudio") }
+                    if self.audioStreamFailures >= 2 {
+                        if self.audioRate == .rate16000 {
+                            UserDefaults.standard.set(48_000, forKey: "glassesAudioRate")
+                            self.audioStreamFailures = 0
+                            SpeedLog.record(["event": "streamAudioRate", "to": 48_000, "reason": "streamDiesWithAudio"])
+                        } else {
+                            UserDefaults.standard.removeObject(forKey: "glassesAudioRate")
+                            self.disableStreamAudio(reason: "streamDiesWithAudio")
+                        }
+                    }
                 } else if flowing, !dead {
                     self.audioStreamFailures = 0
                 }
@@ -1132,7 +1171,8 @@ enum Identification {
             let sink = audioSink
             cameraTokens.append(camera.stream.audioFramePublisher.listen { [weak self] frame in
                 sink.handler?(frame.pcmBuffer)
-                Task { @MainActor in self?.audioFrames += 1 }
+                let samples = Int(frame.pcmBuffer.frameLength), rate = Int(frame.pcmBuffer.format.sampleRate)
+                Task { @MainActor in self?.noteAudio(samples: samples, rate: rate) }
             })
         }
         cameraTokens.append(camera.stream.photoDataPublisher.listen { [weak self] photo in

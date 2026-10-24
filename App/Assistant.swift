@@ -112,6 +112,15 @@ import Observation
     var current: Turn? { aid.current }
     /// The glasses' own transcription: "On", "Off", or why not.
     var ownVoice: String { glasses?.ownVoice ?? "Off" }
+    /// How the wearer is being told apart, for the phone: nil when nothing beyond the defaults.
+    var voiceID: (label: String, working: Bool)? {
+        if mic == .glasses {
+            let arriving = !listener.input.contains("not arriving")
+            return (arriving ? "Voice ID · glasses mic" : "Glasses mic not arriving", arriving)
+        }
+        if ownVoice == "On" { return ("Voice ID", true) }
+        return ownVoice == "Off" ? nil : (ownVoice, false)
+    }
 
     func arm() async {
         guard !armed else { return }
@@ -224,7 +233,9 @@ import Observation
         let start = turnStarted ?? end.addingTimeInterval(-max(1, Double(text.split(separator: " ").count) * 0.35))
         turnStarted = nil
         let match = speakers.ownVoiceMatch(text, start: start, end: end)
-        let verdict = speakers.resolve(label: muse, text: text, start: start, end: end)
+        // Glasses mic on: how much louder this line was there than at the phone underneath.
+        let gap = listener.mic == .glasses ? listener.meter.gap(from: start, to: end) : nil
+        let verdict = speakers.resolve(label: muse, text: text, start: start, end: end, gap: gap)
         let label: String?
         switch verdict.who {
         case .me: label = Self.me
@@ -236,6 +247,7 @@ import Observation
         var entry: [String: Any] = ["event": "speaker", "muse": muse ?? "-", "who": name(for: label),
                                     "sure": verdict.sure, "why": verdict.why, "words": text.split(separator: " ").count]
         if let match { entry["ownVoice"] = (Double(match) * 100).rounded() / 100 }
+        if let gap { entry["gapDb"] = (Double(gap) * 10).rounded() / 10 }
         if !speakers.ownVoiceTrusted { entry["ownVoiceTrusted"] = false }
         SpeedLog.record(entry)
 
