@@ -23,6 +23,7 @@ struct CalHacksApp: App {
                 .onOpenURL { glasses.handle($0) }
                 .task {
                     glasses.store = store
+                    assistant.store = store
                     assistant.glasses = glasses
                     // Knobs that are read once rather than per use have to be re-applied by hand
                     // when a push lands; Store re-reads the roster on the same notification.
@@ -33,6 +34,8 @@ struct CalHacksApp: App {
                         // needs a fresh camera to mean anything. Makes streamRes a 0.3 s change.
                         glasses.restreamIfSettingsChanged()
                     }
+                    // First names spelled right in the transcript, e.g. "Joaquin" not "Wakeen".
+                    assistant.listener.keywords = store.people.flatMap { $0.name.split(separator: " ").map(String.init) }
                     #if DEBUG
                     let env = ProcessInfo.processInfo.environment
                     if Glasses.prefersMock {
@@ -50,6 +53,15 @@ struct CalHacksApp: App {
                        let person = store.people.first(where: { $0.id == id }) {
                         glasses.preview(person)
                         if env["PREVIEW_CONFIRM"] == "1" { await glasses.lensIdentify(source: "preview") }
+                        // PREVIEW_AID="title|detail|follow-up": an aid card with the mic on, to see
+                        // the bio hand the lens to the aid after `bioHolds`.
+                        if let spec = env["PREVIEW_AID"] {
+                            let parts = spec.components(separatedBy: "|")
+                            glasses.aidArmed = true
+                            glasses.showAid(LensView(card: Card(kind: .answer, title: parts[0],
+                                                                detail: parts.count > 1 ? parts[1] : ""),
+                                                     followup: parts.count > 2 ? parts[2] : nil))
+                        }
                         return
                     }
                     #endif
@@ -131,8 +143,8 @@ struct HomeView: View {
                         notice
                             .padding(.horizontal, 20)
                             .padding(.bottom, 10)
-                        if assistant.armed, let turn = assistant.current, turn.live || !turn.answer.isEmpty {
-                            AnswerStrip(turn: turn)
+                        if assistant.armed, !assistant.aid.lens.isEmpty {
+                            AidStrip(view: assistant.aid.lens)
                                 .padding(.horizontal, 16)
                                 .padding(.bottom, 10)
                         }
@@ -310,15 +322,23 @@ struct HomeView: View {
 }
 
 /// The question just heard and the answer that went to the lens.
-struct AnswerStrip: View {
-    let turn: Turn
+/// What the conversation aid has on the lens right now, on the phone.
+struct AidStrip: View {
+    let view: LensView
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(turn.question).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-            Text(turn.answer.isEmpty ? "\u{2026}" : turn.answer)
-                .font(.system(.body, design: .serif, weight: .medium))
-                .lineLimit(2)
+            if let card = view.card {
+                Text(card.title)
+                    .font(.system(.body, design: .serif, weight: .medium))
+                    .lineLimit(2)
+                if !card.detail.isEmpty {
+                    Text(card.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            if let followup = view.followup {
+                Label(followup, systemImage: "bubble.left").font(.footnote)
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -810,14 +830,59 @@ struct LensMirror: View {
 
     @ViewBuilder private var card: some View {
         switch shot.kind {
-        case .answer:
-            VStack(alignment: .leading, spacing: 8) {
-                Text(shot.answer ?? "").font(.system(size: m.heading, weight: .semibold))
-                if let echo = shot.echo {
-                    Text(echo).font(.system(size: m.meta)).foregroundStyle(secondary)
+        case .aid:
+            VStack(alignment: .leading, spacing: 12) {
+                if let id = shot.photo {
+                    HStack(spacing: 10) {
+                        if let photo = avatar(id) {
+                            Image(uiImage: photo)
+                                .resizable().aspectRatio(contentMode: .fill)
+                                .frame(width: m.icon, height: m.icon)
+                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(shot.name ?? "").font(.system(size: m.meta))
+                            Text(shot.headline ?? "").font(.system(size: m.meta)).foregroundStyle(secondary)
+                        }
+                    }
+                } else if let header = shot.name {
+                    Text(header).font(.system(size: m.meta)).foregroundStyle(secondary)
+                }
+                if let title = shot.answer {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title).font(.system(size: m.heading, weight: .semibold))
+                        if let detail = shot.echo {
+                            Text(detail).font(.system(size: m.body)).foregroundStyle(secondary)
+                        }
+                    }
+                }
+                if let followup = shot.followup {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bubble.left").font(.system(size: m.glyph))
+                        Text(followup).font(.system(size: m.body))
+                    }
                 }
             }
-            .padding(24)
+            .padding(m.pad)
+            .modifier(LensCardBackground(radius: m.radius))
+
+        case .compact:
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    if let id = shot.photo, let photo = avatar(id) {
+                        Image(uiImage: photo)
+                            .resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: m.icon, height: m.icon)
+                            .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(shot.name ?? "").font(.system(size: m.body))
+                        Text(shot.headline ?? "").font(.system(size: m.meta)).foregroundStyle(secondary)
+                    }
+                }
+                bottomRow
+            }
+            .padding(m.pad)
             .modifier(LensCardBackground(radius: m.radius))
 
         case .person:

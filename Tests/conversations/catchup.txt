@@ -1,0 +1,9 @@
+THEM: I just got back from Lisbon. It was my sister's wedding.
+ME: Oh, congrats! How was it?
+THEM: Amazing. We ate pastel de nata every single day, and we did a day trip to Sintra.
+ME: That sounds incredible.
+THEM: Yeah. Work has been crazy since, though. I'm an ICU nurse at UCSF and we're really short-staffed.
+ME: That sounds exhausting.
+THEM: It is. Anyway, what have you been up to?
+ME: Mostly this hackathon, honestly.
+PAUSE: 7

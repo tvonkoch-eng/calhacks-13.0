@@ -8,9 +8,10 @@ import UIKit
 /// renders this and the panel on the phone draws this, both from the same instance captured at
 /// the moment the card was built. The content therefore cannot drift; only the pixels differ.
 struct LensShot: Equatable {
-    /// Which of the lens's four cards this is. The layouts differ, not just the words: the idle
-    /// state is a floating row with no card behind it, and an answer replaces the row entirely.
-    enum Kind: Equatable { case idle, person, message, answer }
+    /// Which card this is. The layouts differ, not just the words: the idle state is a floating
+    /// row with no card behind it; `aid` (conversation aid, with or without who you're talking to)
+    /// replaces the row entirely; `compact` is the person shrunk to one line while the aid listens.
+    enum Kind: Equatable { case idle, person, message, aid, compact }
     /// A detail line that carries an icon on the lens (school / work / from / interests).
     struct Row: Equatable {
         var icon: String
@@ -18,9 +19,10 @@ struct LensShot: Equatable {
     }
 
     var kind: Kind = .idle
-    /// Set when a live conversation answer owns the lens; the identity fields are then unused.
+    /// Conversation aid: the passing card's title and detail, and the pinned line to say next.
     var answer: String?
     var echo: String?
+    var followup: String?
     var name: String?
     var headline: String?
     /// Person id, so the mirror can look the avatar up the same way the card did.
@@ -39,15 +41,59 @@ struct LensShot: Equatable {
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
 /// who they are and three lines of background.
 enum LensCards {
-    /// A conversation answer: the answer big, the question it answers small underneath.
-    static func answer(_ card: AnswerCard) -> FlexBox {
-        let headline = card.answer.isEmpty ? "\u{2026}" : card.answer
-        let echo = card.echo
-        return FlexBox(direction: .column, spacing: 8) {
-            Text(headline, style: .heading)
-            Text(echo, style: .meta, color: .secondary)
+    /// The conversation aid's card. With `person` (the face you're talking to is known) a small
+    /// strip on top says who; without, the aid's own header (a name they said) as meta. Then the
+    /// passing card, title as heading and detail as body, and the pinned line to say next behind
+    /// a speech bubble. No Identify row: the aid is brief, and the capture button still identifies.
+    static func aid(_ view: LensView, person: Person?, avatar: (String) -> UIImage?) -> FlexBox {
+        let shot = Self.shot(aid: view, person: person)
+        let photo = person.flatMap { avatar($0.id) }
+        return FlexBox(direction: .column, spacing: 12) {
+            if let person {
+                FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                    if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                    FlexBox(direction: .column, spacing: 2) {
+                        Text(person.name, style: .meta)
+                        Text(person.headline, style: .meta, color: .secondary).flexShrink(1)
+                    }
+                }
+            } else if let header = shot.name {
+                Text(header, style: .meta, color: .secondary)
+            }
+            if let title = shot.answer {
+                FlexBox(direction: .column, spacing: 4) {
+                    Text(title, style: .heading).flexShrink(1)
+                    if let detail = shot.echo { Text(detail, style: .body, color: .secondary).flexShrink(1) }
+                }
+            }
+            if let followup = shot.followup {
+                FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                    Icon(name: .speechBubble, style: .outline)
+                    Text(followup, style: .body).flexShrink(1)
+                }
+            }
         }
-        .padding(24)
+        .padding(22)
+        .background(.card)
+    }
+
+    /// Who you're talking to, shrunk to one line once their card has been read and the aid is
+    /// listening: photo, name, what they do, over the usual Identify row.
+    static func compact(_ person: Person, avatar: (String) -> UIImage?, identifying: Bool, connected: Int,
+                        identify: @escaping @Sendable () -> Void) -> FlexBox {
+        let photo = avatar(person.id)
+        let bottom = bottomRow(label: identifying ? "Identifying" : "Identify", icon: .eye, connected: connected, identify: identify)
+        return FlexBox(direction: .column, spacing: 14) {
+            FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
+                if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                FlexBox(direction: .column, spacing: 2) {
+                    Text(person.name, style: .body)
+                    Text(person.headline, style: .meta, color: .secondary).flexShrink(1)
+                }
+            }
+            bottom
+        }
+        .padding(20)
         .background(.card)
     }
 
@@ -160,9 +206,28 @@ enum LensCards {
         return shot
     }
 
-    /// A conversation answer, as the mirror sees it.
-    static func shot(answer card: AnswerCard) -> LensShot {
-        LensShot(kind: .answer, answer: card.answer.isEmpty ? "\u{2026}" : card.answer, echo: card.echo)
+    /// The aid's card, as the mirror sees it.
+    static func shot(aid view: LensView, person: Person?) -> LensShot {
+        var shot = LensShot(kind: .aid)
+        shot.name = person?.name ?? view.header
+        shot.headline = person?.headline
+        shot.photo = person?.id
+        if let card = view.card {
+            shot.answer = card.title
+            shot.echo = card.detail.isEmpty ? nil : card.detail
+        }
+        shot.followup = view.followup
+        return shot
+    }
+
+    static func shot(compact person: Person, identifying: Bool, connected: Int) -> LensShot {
+        var shot = LensShot(kind: .compact)
+        shot.name = person.name
+        shot.headline = person.headline
+        shot.photo = person.id
+        shot.connected = connected
+        shot.button = identifying ? "Identifying" : "Identify"
+        return shot
     }
 
     /// The SF Symbol that stands in for a lens icon on the phone. The lens icon set is Meta's own;

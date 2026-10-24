@@ -10,20 +10,6 @@ import MWDATMockDevice
 import Observation
 import UIKit
 
-/// What the lens shows during a conversation: the question we heard and the answer so far.
-struct AnswerCard: Equatable {
-    let question: String
-    let answer: String
-    let thinking: Bool
-
-    /// The lens is small. Echo just enough of the question to make the answer legible.
-    var echo: String {
-        let words = question.split(separator: " ")
-        guard words.count > 7 else { return question }
-        return words.prefix(7).joined(separator: " ") + "\u{2026}"
-    }
-}
-
 enum Identification {
     case ready
     case noFace
@@ -42,8 +28,15 @@ enum Identification {
     var connecting = false
     var identifying = false
     var result: Identification = .ready
-    /// Takes over the lens while it is set; the identity card comes back when it clears.
-    var answer: AnswerCard?
+    /// What the conversation aid wants on the lens (App/Lens.swift). Who actually gets the lens,
+    /// the aid or the face side, is `LensPolicy`.
+    private(set) var aidLens = LensView()
+    /// The mic is on: the lens leans toward the aid, and a read person card shrinks to one line.
+    var aidArmed = false {
+        didSet { if aidArmed != oldValue { renderLens() } }
+    }
+    /// Which way the last lens write went, for the speed log and the phone.
+    private(set) var lensMode: LensMode = .identity
     /// The content of the last card handed to the lens, so the phone can mirror it live. Nil when
     /// there is no display to write to. A real pair cannot be read back; this is recorded as the
     /// card is built, which is as close to the truth as the SDK allows.
@@ -179,7 +172,13 @@ enum Identification {
     /// everyone confidently seen in the last few seconds. Updated quietly, without touching the
     /// lens, so speech can attribute a voice to a face later.
     private(set) var facing: String? {
-        didSet { if facing != oldValue { onFacing?(facing) } }
+        didSet {
+            guard facing != oldValue else { return }
+            onFacing?(facing)
+            // Turning to or away from the person on the card can move the lens between the aid
+            // alone and the aid with who you're talking to; write only if it actually moves.
+            if aidArmed, currentMode() != lensMode { renderLens() }
+        }
     }
     /// Called on the main actor when the person in focus changes (nil = nobody known in view).
     /// For code that isn't SwiftUI, e.g. the conversation aid's "who is THEM" profile.
@@ -191,6 +190,10 @@ enum Identification {
     /// How long a card owns the lens before the watch may replace it with someone else. Was 20 s,
     /// which on the glasses meant a 21 s wait to switch from Avi to the next person.
     @ObservationIgnored private var cardHolds: TimeInterval { TimeInterval(Tuning.float("cardHolds", 3)) }
+    /// How long a fresh identification owns the whole lens, over any aid card, before the aid may
+    /// take it back. Long enough to read a name, a headline and three lines.
+    @ObservationIgnored private var bioHolds: TimeInterval { TimeInterval(Tuning.float("bioHolds", 6)) }
+    @ObservationIgnored private var bioTask: Task<Void, Never>?
     /// A single look this confident is enough on its own: ArcFace puts the same person at ~0.6-0.7
     /// on a sharp frame and everyone else near 0.
     @ObservationIgnored private var strongScore: Float { Tuning.float("strongScore", 0.55) }
@@ -486,6 +489,13 @@ enum Identification {
         resultAt = Date()
         lastShown[match.person.id] = Date()
         sighted[match.person.id] = Date()
+        // The bio's turn ends on its own; hand the lens back to the aid (or shrink the card) then.
+        bioTask?.cancel()
+        bioTask = Task { [weak self, bioHolds] in
+            try? await Task.sleep(for: .seconds(bioHolds + 0.05))
+            guard !Task.isCancelled else { return }
+            self?.renderLens()
+        }
     }
 
     /// Re-match the last face after it was saved to someone.
@@ -505,6 +515,13 @@ enum Identification {
     func preview(_ person: Person) {
         result = .known(Match(person: person, score: 1), nil)
         store?.markSeen(person.id)
+        // As if just identified and still in view, so the bio → aid hand-off can be watched.
+        resultAt = Date()
+        sighted[person.id] = Date()
+        bioTask = Task { [weak self, bioHolds] in
+            try? await Task.sleep(for: .seconds(bioHolds + 0.05))
+            self?.renderLens()
+        }
         // No display to write to in a screenshot run, so fill the mirror directly — it is the
         // same description `hud()` would have built.
         lensShot = LensCards.shot(result: result, identifying: false, confirming: confirming,
@@ -623,10 +640,11 @@ enum Identification {
         renderLens()
     }
 
-    /// Put a conversation answer on the lens, or clear it and fall back to the identity card.
-    func showAnswer(_ card: AnswerCard?) {
-        guard card != answer else { return }
-        answer = card
+    /// The aid's lens changed. It goes up now unless a fresh identification holds the lens (then
+    /// it shows once that has been read, if it is still current).
+    func showAid(_ view: LensView) {
+        guard view != aidLens else { return }
+        aidLens = view
         renderLens()
     }
 
@@ -648,7 +666,8 @@ enum Identification {
         connected = false
         pendingSend?.cancel()
         pendingSend = nil
-        answer = nil
+        aidLens = LensView()
+        bioTask?.cancel()
         result = .ready
         streamLive = false
         frameWatchdog?.cancel()
@@ -890,8 +909,8 @@ enum Identification {
     /// True when a watch scan should run on this frame, and claims the slot if so.
     private func claimAutoScan() -> Bool {
         guard watching, connected, !identifying, !autoBusy, store != nil else { return false }
-        // A conversation answer on the lens no longer pauses scanning: `mayShow` keeps the card off
-        // the lens, but `facing`/`present` stay current, which is what speech attribution reads.
+        // Aid cards on the lens never pause scanning: `facing`/`present` stay current, which is
+        // what the aid's "who is THEM" reads, and a fresh identification may take the lens back.
         // NOTE: a card being up no longer stops the scan. It used to return false for the whole
         // 20 s `cardHolds`, so turning to a new person meant waiting out the old one with the
         // camera effectively off. `cardHolds` now gates only the *display* (see mayShow), and the
@@ -904,7 +923,8 @@ enum Identification {
 
     /// Whether a new person may take the lens right now.
     private func mayShow(_ id: String) -> Bool {
-        guard answer == nil, !identifying else { return false }
+        // A fresh identification wins the lens over aid cards, so an aid card no longer blocks this.
+        guard !identifying else { return false }
         if lastShown[id] != nil, let seen = sighted[id], Date().timeIntervalSince(seen) < absentFor { return false }
         // Someone else is on the card; leave them there for a beat before swapping.
         if case .known(let current, _) = result, current.person.id != id,
@@ -1035,13 +1055,49 @@ enum Identification {
 
     private func renderLens() {
         guard displayReady else { return }
-        // A live answer owns the lens. It is the thing the wearer needs in the next half second.
-        if let card = answer {
-            lensShot = LensCards.shot(answer: card)
-            send(LensCards.answer(card))
-            return
+        send(lensView())
+    }
+
+    /// The person on the card, if the face side has one.
+    private var knownPerson: Person? {
+        if case .known(let match, _) = result { return match.person }
+        return nil
+    }
+
+    /// The whole lens as it should be right now: `LensPolicy` picks the face side, the aid, or
+    /// both, and this builds that card and its mirror.
+    private func currentMode() -> LensMode {
+        let person = knownPerson
+        let around = person.map { facing == $0.id || present.contains($0.id) } ?? false
+        return LensPolicy.mode(identifying: identifying, known: person != nil, around: around,
+                               sinceIdentified: Date().timeIntervalSince(resultAt), bioHolds: bioHolds,
+                               aidArmed: aidArmed, aidEmpty: aidLens.isEmpty)
+    }
+
+    private func lensView() -> FlexBox {
+        let person = knownPerson
+        let mode = currentMode()
+        lensMode = mode
+        let connected = store?.connectedCount ?? 0
+        let avatar: (String) -> UIImage? = { [store] in store?.lensAvatar($0) }
+        switch mode {
+        case .identity:
+            return hud()
+        case .aid, .both:
+            let partner = mode == .both ? person : nil
+            lensShot = LensCards.shot(aid: aidLens, person: partner)
+            return LensCards.aid(aidLens, person: partner, avatar: avatar)
+        case .compact:
+            guard let person else { return hud() }
+            lensShot = LensCards.shot(compact: person, identifying: identifying, connected: connected)
+            return LensCards.compact(person, avatar: avatar, identifying: identifying, connected: connected,
+                                     identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } })
+        case .idle:
+            lensShot = LensCards.shot(result: .ready, identifying: false, confirming: confirming, connected: connected)
+            return LensCards.hud(result: .ready, avatar: avatar, identifying: false, confirming: confirming,
+                                 connected: connected,
+                                 identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } })
         }
-        send(hud())
     }
 
     /// The identity HUD as it stands right now. Both lens writers go through here, so this is
@@ -1091,11 +1147,11 @@ enum Identification {
         }
     }
 
-    /// Sends the identity card and waits for it (timed in the speed log); false when there's no
-    /// lens or a conversation answer currently owns it.
+    /// Sends the lens as it now stands (a fresh result wins it, see `LensPolicy`) and waits for
+    /// it, so the speed log can time it; false when there's no lens.
     private func sendLens() async -> Bool {
-        guard let display, displayReady, answer == nil else { return false }
-        let view = hud()
+        guard let display, displayReady else { return false }
+        let view = lensView()
         pendingSend?.cancel()
         lastSend = Date()
         do {

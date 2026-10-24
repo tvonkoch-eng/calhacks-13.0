@@ -43,10 +43,24 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: Recognizes your teammates' faces on device.
-        NSMicrophoneUsageDescription: Listens for questions so answers can appear on your glasses.
-        NSSpeechRecognitionUsageDescription: Transcribes speech on device to spot questions as they are asked.
-        AnswerAPIKey: $(ANSWER_API_KEY)
+        NSMicrophoneUsageDescription: Listens for questions so answers can appear on your glasses. Audio is transcribed by Meta's Muse Voice Transcribe.
+        # Conversation aid lanes (App/Aid.swift, Aid.Config.fromBundle); filled from Secrets.xcconfig.
+        MuseAPIKey: $(MUSE_API_KEY)
         AnswerProvider: $(ANSWER_PROVIDER)
+        AnswerAPIKey: $(ANSWER_API_KEY)
+        AnswerModel: $(ANSWER_MODEL)
+        AnswerPerMinute: $(ANSWER_PER_MINUTE)
+        CoachProvider: $(COACH_PROVIDER)
+        CoachAPIKey: $(COACH_API_KEY)
+        CoachModel: $(COACH_MODEL)
+        BackupProvider: $(BACKUP_PROVIDER)
+        BackupAPIKey: $(BACKUP_API_KEY)
+        BackupModel: $(BACKUP_MODEL)
+        ResearchProvider: $(RESEARCH_PROVIDER)
+        ResearchAPIKey: $(RESEARCH_API_KEY)
+        ResearchModel: $(RESEARCH_MODEL)
+        WearerBackground: $(WEARER_BACKGROUND)
+        WearerName: $(WEARER_NAME)
         NSBluetoothAlwaysUsageDescription: Connects to your Meta glasses.
         NSLocalNetworkUsageDescription: Lets your phone find and connect to your glasses over Wi-Fi.
         NSBonjourServices: [_bonjour._tcp]

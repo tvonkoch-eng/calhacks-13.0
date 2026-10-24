@@ -1,6 +1,6 @@
 #!/bin/sh
-# Offline checks on the question gate and the speculative fire/refire policy. No Xcode target, no
-# simulator — the logic under test is pure Foundation, so it builds and runs in a couple of seconds.
+# Offline checks: the question gate, the speculative fire/refire policy, and the conversation aid's
+# pure rules (lens slots, roles, text rules, coach JSON). No Xcode target, no simulator, no network.
 #   sh Tests/run.sh
 set -e
 cd "$(dirname "$0")/.."
@@ -13,4 +13,14 @@ for test in QuestionGate Speculation; do
   printf '%s: ' "$test"
   "$out/$test/run"
 done
+mkdir -p "$out/Aid"
+cp Tests/AidTests.swift "$out/Aid/main.swift"
+swiftc -O "$out/Aid/main.swift" App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift -o "$out/Aid/run"
+printf 'Aid: '
+"$out/Aid/run"
+mkdir -p "$out/LensPolicy"
+cp Tests/LensPolicyTests.swift "$out/LensPolicy/main.swift"
+swiftc -O "$out/LensPolicy/main.swift" App/LensPolicy.swift App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift -o "$out/LensPolicy/run"
+printf 'LensPolicy: '
+"$out/LensPolicy/run"
 rm -rf "$out"
