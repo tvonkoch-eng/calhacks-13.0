@@ -9,18 +9,18 @@ import UIKit
 enum Identification {
     case ready
     case noFace
-    case unknown(FaceHit)
+    case unknown(FaceHit, closest: Match?)
     case known(Match, FaceHit)
 }
 
-/// Meta glasses session. Press to identify (lens button, glasses capture button, or the phone):
-/// match the newest camera frame, fall back to a full photo, and put the person's card on the lens.
+/// Meta glasses session. Nothing streams: pressing Identify (lens button, glasses capture
+/// button, or the phone) takes one photo, matches the largest face, and shows the card on the lens.
 @MainActor @Observable final class Glasses {
     var status = "Not connected"
     var connected = false
     var connecting = false
     var identifying = false
-    var frame: UIImage?
+    var snapshot: UIImage?
     var result: Identification = .ready
 
     @ObservationIgnored var store: Store?
@@ -31,6 +31,7 @@ enum Identification {
     @ObservationIgnored private var tokens: [any AnyListenerToken] = []
     @ObservationIgnored private var inputTask: Task<Void, Never>?
     @ObservationIgnored private var photoWaiter: CheckedContinuation<CIImage?, Never>?
+    @ObservationIgnored private var frameWaiter: CheckedContinuation<CIImage?, Never>?
     @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces")
 
     static func configure() {
@@ -88,25 +89,26 @@ enum Identification {
             try session.start()
             await started.value
 
-            guard let camera = try session.addCamera(config: StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 2)) else {
+            // The stream is never started except as a one-frame fallback; photos come from camera.photo.
+            guard let camera = try session.addCamera(config: StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 15)) else {
                 status = "Glasses camera unavailable"
                 return
             }
-            tokens.append(camera.stream.videoFramePublisher.listen { [weak self] frame in
-                guard let image = frame.makeUIImage() else { return }
-                Task { @MainActor in self?.frame = image }
+            tokens.append(camera.photo.photoDataPublisher.listen { [weak self] capture in
+                let image = CIImage(data: capture.imageData, options: [.applyOrientationProperty: true])
+                Task { @MainActor in self?.resumePhoto(image) }
             })
-            tokens.append(camera.stream.photoDataPublisher.listen { [weak self] photo in
-                let image = CIImage(data: photo.data, options: [.applyOrientationProperty: true])
+            tokens.append(camera.photo.errorPublisher.listen { [weak self] error in
                 Task { @MainActor in
-                    self?.photoWaiter?.resume(returning: image)
-                    self?.photoWaiter = nil
+                    self?.status = error.localizedDescription
+                    self?.resumePhoto(nil)
                 }
             })
-            tokens.append(camera.stream.errorPublisher.listen { [weak self] error in
-                Task { @MainActor in self?.status = error.localizedDescription }
+            tokens.append(camera.stream.videoFramePublisher.listen { [weak self] frame in
+                guard let image = frame.makeUIImage().flatMap({ CIImage(image: $0) }) else { return }
+                Task { @MainActor in self?.resumeFrame(image) }
             })
-            camera.stream.start()
+            camera.photo.start()
             self.camera = camera
 
             if let id = selector.activeDevice, wearables.deviceForIdentifier(id)?.supportsDisplay() == true {
@@ -130,6 +132,7 @@ enum Identification {
     }
 
     func disconnect() {
+        display?.stop()
         session?.stop()
         teardown(status: "Not connected")
     }
@@ -137,29 +140,43 @@ enum Identification {
     func identify() async {
         guard connected, !identifying, let store else { return }
         identifying = true
-        defer { identifying = false }
-
-        var faces = await detect(frame.flatMap { CIImage(image: $0) })
-        if faces.isEmpty, let photo = await capturePhoto() {
-            faces = await detect(photo)
-        }
-        if let face = faces.first {
-            result = store.match(face.embedding).map { .known($0, face) } ?? .unknown(face)
-        } else {
-            result = .noFace
-        }
         renderLens()
+        defer {
+            identifying = false
+            renderLens()
+        }
+
+        var image = await capturePhoto()
+        if image == nil { image = await grabFrame() }
+        guard let image else {
+            result = .noFace
+            status = "Couldn't get a photo from the glasses"
+            return
+        }
+        snapshot = UIImage(ciImage: image).rendered()
+        let faces = await detect(image)
+        result = faces.first.map(classify) ?? .noFace
     }
 
     /// Re-match the last face after it was saved to someone.
     func rematch() {
-        guard let store else { return }
         switch result {
-        case .known(_, let face), .unknown(let face):
-            result = store.match(face.embedding).map { .known($0, face) } ?? .unknown(face)
+        case .known(_, let face), .unknown(let face, _):
+            result = classify(face)
             renderLens()
         default: break
         }
+    }
+
+    func dismiss() {
+        result = .ready
+        renderLens()
+    }
+
+    private func classify(_ face: FaceHit) -> Identification {
+        guard let store else { return .noFace }
+        if let match = store.match(face.embedding) { return .known(match, face) }
+        return .unknown(face, closest: store.closest(face.embedding))
     }
 
     private func teardown(status: String) {
@@ -171,10 +188,9 @@ enum Identification {
         displayReady = false
         session = nil
         connected = false
-        frame = nil
         result = .ready
-        photoWaiter?.resume(returning: nil)
-        photoWaiter = nil
+        resumePhoto(nil)
+        resumeFrame(nil)
         self.status = status
     }
 
@@ -194,63 +210,71 @@ enum Identification {
         }
     }
 
-    private func detect(_ image: CIImage?) async -> [FaceHit] {
-        guard let image else { return [] }
+    // MARK: - Camera
+
+    private func capturePhoto() async -> CIImage? {
+        guard let photo = camera?.photo else { return nil }
         return await withCheckedContinuation { done in
+            photoWaiter = done
+            photo.capturePhoto(resolution: .medium, quality: .medium)
+            Task {
+                try? await Task.sleep(for: .seconds(8))
+                resumePhoto(nil)
+            }
+        }
+    }
+
+    /// Fallback when photo capture isn't available: run the stream just long enough for one frame.
+    private func grabFrame() async -> CIImage? {
+        guard let camera else { return nil }
+        camera.photo.stop()
+        camera.stream.start()
+        let frame = await withCheckedContinuation { done in
+            frameWaiter = done
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                resumeFrame(nil)
+            }
+        }
+        camera.stream.stop()
+        camera.photo.start()
+        return frame
+    }
+
+    private func resumePhoto(_ image: CIImage?) {
+        photoWaiter?.resume(returning: image)
+        photoWaiter = nil
+    }
+
+    private func resumeFrame(_ image: CIImage?) {
+        frameWaiter?.resume(returning: image)
+        frameWaiter = nil
+    }
+
+    private func detect(_ image: CIImage) async -> [FaceHit] {
+        await withCheckedContinuation { done in
             worker.async { done.resume(returning: FaceEngine.faces(in: image)) }
         }
     }
 
-    private func capturePhoto() async -> CIImage? {
-        guard let stream = camera?.stream else { return nil }
-        return await withCheckedContinuation { done in
-            photoWaiter = done
-            guard stream.capturePhoto(format: .jpeg) else {
-                photoWaiter = nil
-                done.resume(returning: nil)
-                return
-            }
-            Task {
-                try? await Task.sleep(for: .seconds(6))
-                photoWaiter?.resume(returning: nil)
-                photoWaiter = nil
-            }
-        }
-    }
+    // MARK: - Lens
 
     private func renderLens() {
         guard let display, displayReady else { return }
-        let identify: @Sendable () -> Void = { [weak self] in Task { @MainActor in await self?.identify() } }
-        let button = Button(label: "Identify", style: .secondary, iconName: .eye, onClick: identify)
-        let view: FlexBox
-        switch result {
-        case .known(let match, _):
-            let person = match.person
-            let facts = Array(person.facts.prefix(2))
-            view = FlexBox(direction: .column, spacing: 8) {
-                Text(person.name, style: .heading)
-                Text(person.role, style: .body, color: .secondary)
-                for fact in facts { Text(fact, style: .meta) }
-                button
-            }
-        case .unknown:
-            view = FlexBox(direction: .column, spacing: 8) {
-                Text("Not in your contacts", style: .heading)
-                button
-            }
-        case .noFace:
-            view = FlexBox(direction: .column, spacing: 8) {
-                Text("No face found", style: .heading)
-                Text("Face them and try again", style: .body, color: .secondary)
-                button
-            }
-        case .ready:
-            view = FlexBox(direction: .column, spacing: 8) {
-                Text("Ready", style: .heading)
-                Text("Look at someone, then identify", style: .body, color: .secondary)
-                button
-            }
-        }
-        Task { try? await display.send(view.padding(20).background(.card)) }
+        let view = identifying ? LensCards.working() : LensCards.card(
+            for: result,
+            avatar: { [store] in store?.avatars[$0] },
+            hasFaces: store?.hasFaces ?? false,
+            identify: { [weak self] in Task { @MainActor in await self?.identify() } },
+            dismiss: { [weak self] in Task { @MainActor in self?.dismiss() } }
+        )
+        Task { try? await display.send(view) }
+    }
+}
+
+private extension UIImage {
+    /// CIImage-backed UIImages don't render in SwiftUI reliably; bake to a CGImage.
+    func rendered() -> UIImage {
+        UIGraphicsImageRenderer(size: size).image { _ in draw(in: CGRect(origin: .zero, size: size)) }
     }
 }

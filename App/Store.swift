@@ -4,11 +4,22 @@ import Observation
 import UIKit
 
 struct Person: Codable, Identifiable, Hashable {
+    enum Kind { case school, work, from, interests }
+
     let id: String
     var name: String
     var role: String
-    var facts: [String]
+    var school: String?
+    var work: String?
+    var from: String?
+    var interests: String?
     var isMe: Bool?
+
+    /// Background lines in display order.
+    var details: [(kind: Kind, text: String)] {
+        [(Kind.school, school), (.work, work), (.from, from), (.interests, interests)]
+            .compactMap { kind, text in text.map { (kind, $0) } }
+    }
 }
 
 struct Match {
@@ -72,16 +83,25 @@ struct Match {
         save()
     }
 
+    var hasFaces: Bool { gallery.values.contains { !$0.isEmpty } }
+
+    /// Closest person regardless of threshold (for showing why something was "unknown").
+    func closest(_ embedding: [Float]) -> Match? { ranked(embedding).first }
+
     /// Best cosine similarity per person; a match needs to clear the threshold and beat the runner-up.
     func match(_ embedding: [Float]) -> Match? {
-        let ranked = people.compactMap { person -> Match? in
+        let ranked = ranked(embedding)
+        guard let top = ranked.first, top.score >= threshold else { return nil }
+        if ranked.count > 1, top.score - ranked[1].score < 0.02 { return nil }
+        return top
+    }
+
+    private func ranked(_ embedding: [Float]) -> [Match] {
+        people.compactMap { person -> Match? in
             guard let samples = gallery[person.id], !samples.isEmpty else { return nil }
             let best = samples.map { zip($0, embedding).reduce(0) { $0 + $1.0 * $1.1 } }.max() ?? 0
             return Match(person: person, score: best)
         }.sorted { $0.score > $1.score }
-        guard let top = ranked.first, top.score >= threshold else { return nil }
-        if ranked.count > 1, top.score - ranked[1].score < 0.02 { return nil }
-        return top
     }
 
     private func save() {

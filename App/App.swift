@@ -30,8 +30,8 @@ struct GlassesView: View {
         NavigationStack {
             VStack(spacing: 16) {
                 ZStack {
-                    if let frame = glasses.frame {
-                        Image(uiImage: frame).resizable().scaledToFill()
+                    if let snapshot = glasses.snapshot {
+                        Image(uiImage: snapshot).resizable().scaledToFill()
                     } else {
                         Color(.secondarySystemBackground)
                         Image(systemName: "eyeglasses").font(.system(size: 44)).foregroundStyle(.secondary)
@@ -41,6 +41,14 @@ struct GlassesView: View {
                 .frame(height: 280)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
 
+                if !store.hasFaces {
+                    NavigationLink { PeopleView() } label: {
+                        MessageCard(title: "No face photos saved", detail: "Nobody can be recognized yet. Add photos for each person.") {
+                            Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
                 resultCard
                 Spacer()
 
@@ -79,8 +87,11 @@ struct GlassesView: View {
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         case .noFace:
             MessageCard(title: "No face found", detail: "Face the person and try again.")
-        case .unknown(let face):
-            MessageCard(title: "Not in your contacts", detail: nil) { SaveFaceMenu(face: face, label: "Save as…") }
+        case .unknown(let face, let closest):
+            MessageCard(title: "Not in your contacts",
+                        detail: closest.map { "Closest: \($0.person.name) \($0.score.formatted(.number.precision(.fractionLength(2)))), needs \(store.threshold.formatted(.number.precision(.fractionLength(2))))" }) {
+                SaveFaceMenu(face: face, label: "Save as…")
+            }
         case .known(let match, let face):
             VStack(alignment: .trailing, spacing: 6) {
                 MatchCard(match: match)
@@ -150,6 +161,7 @@ struct PeopleView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom) { StrictnessSlider().padding() }
         .navigationTitle("People")
         .navigationDestination(for: Person.self) { PersonView(person: $0) }
     }
@@ -209,9 +221,9 @@ struct PersonView: View {
                     }
                 }
             }
-            if !person.facts.isEmpty {
+            if !person.details.isEmpty {
                 Section("About") {
-                    ForEach(person.facts, id: \.self) { Text($0) }
+                    ForEach(person.details, id: \.text) { DetailRow(kind: $0.kind, text: $0.text) }
                 }
             }
             Section {
@@ -242,7 +254,7 @@ struct MatchCard: View {
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
                     Text(match.person.role).font(.subheadline).foregroundStyle(.secondary)
-                    ForEach(match.person.facts.prefix(3), id: \.self) { Text($0).font(.footnote) }
+                    ForEach(match.person.details, id: \.text) { DetailRow(kind: $0.kind, text: $0.text).font(.footnote) }
                 }
             } else {
                 Text("Unknown").font(.headline).foregroundStyle(.secondary)
@@ -321,5 +333,42 @@ struct EnrollView: View {
             }
             picks = []
         }
+    }
+}
+
+struct DetailRow: View {
+    let kind: Person.Kind
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(text)
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(.secondary)
+        }
+    }
+
+    private var symbol: String {
+        switch kind {
+        case .school: "graduationcap"
+        case .work: "briefcase"
+        case .from: "house"
+        case .interests: "heart"
+        }
+    }
+}
+
+struct StrictnessSlider: View {
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        @Bindable var store = store
+        HStack {
+            Text("Match strictness").font(.caption)
+            Slider(value: $store.threshold, in: 0.5...0.98)
+            Text(store.threshold, format: .number.precision(.fractionLength(2))).font(.caption.monospacedDigit())
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(.thinMaterial, in: Capsule())
     }
 }
