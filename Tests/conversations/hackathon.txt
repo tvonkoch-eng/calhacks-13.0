@@ -1,0 +1,9 @@
+THEM: Hey, I'm Priya. Are you hacking this weekend?
+ME: Yeah, I'm Toby. We're building a conversation aid for smart glasses. What about you?
+THEM: Nice. We're doing a legal tech thing. We fine-tune a LoRA adapter on contracts and do retrieval with ColBERT.
+ME: Oh cool. How did you end up in legal tech?
+THEM: I was a paralegal for two years before I switched to computer science at Berkeley.
+THEM: Honestly the hardest part is latency. Do you know how long it took to train GPT-2 originally?
+ME: No idea, honestly.
+THEM: Anyway, I fly back to Toronto on Monday, so we really need to ship tonight.
+PAUSE: 7

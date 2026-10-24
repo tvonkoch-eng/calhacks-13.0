@@ -28,7 +28,9 @@ enum Provider: String {
         switch self {
         case .groq: "qwen/qwen3.8-27b"
         case .cerebras: "llama-3.3-70b"
-        case .openai: "gpt-4o-mini"
+        // gpt-4.1-mini: 20/20 answer-vs-SKIP, median first token 0.66 s (2026-10-23). gpt-4o-mini
+        // and gpt-5.4-mini answered "did you see the keynote"; gpt-5.4-nano failed 6 of 20.
+        case .openai: "gpt-4.1-mini"
         // 1.1 over 1.3: both 20/20 on answer-vs-SKIP, 1.1 median first token 1.17 s vs 1.87 s
         // (2026-10-23, Tests/muse-latency.py). Override with ANSWER_MODEL.
         case .muse: "muse-spark-1.1"
@@ -70,15 +72,17 @@ struct Answerer {
 
     private static let prompt = """
     You help someone wearing smart glasses during a live, in-person conversation. The input is a \
-    live speech transcript of a question someone just asked out loud. It may be cut off mid-sentence \
-    — infer the obvious full question and answer that.
+    live speech transcript of a question someone just asked out loud, sometimes after the last few \
+    lines of the conversation. The question may be cut off mid-sentence — infer the obvious full \
+    question and answer that. Use the conversation only to work out what the question refers to.
 
     Answer in ONE line of at most 12 words. No preamble, no restating the question, no punctuation \
     at the end. If the answer is a number or a name, lead with it. Plain facts only.
 
     Reply with exactly SKIP, and nothing else, if the question is personal or social (about the \
-    people talking, their feelings, plans, opinions or preferences), rhetorical, a request to do \
-    something, or too fragmentary to guess at.
+    people talking, their feelings, plans, opinions or preferences, or anything the conversation \
+    shows is theirs: their company, project, school, family), rhetorical, a request to do \
+    something, or too fragmentary to guess at. Never guess about the people talking.
     """
 
     /// Instant, no network. Covers the questions that are embarrassing to be slow on.
@@ -122,10 +126,10 @@ struct Answerer {
 
     /// Streams the answer. Yields a growing string; the last value is the whole answer.
     /// Yields nothing at all when the model says SKIP.
-    /// `provider`, `key` and `model` default to the app's configuration; tools/live-mac.swift
-    /// passes its own to race providers against each other.
-    static func stream(_ question: String, provider: Provider = provider, key: String? = key,
-                       model: String = model) -> AsyncThrowingStream<String, Error> {
+    /// `context` is the last few lines of the conversation, so "when did it come out" can resolve
+    /// "it". `provider`, `key` and `model` default to the app's configuration.
+    static func stream(_ question: String, context: String = "", provider: Provider = provider,
+                       key: String? = key, model: String = model) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let work = Task.detached {
                 do {
@@ -143,7 +147,8 @@ struct Answerer {
                         "temperature": 0,
                         "messages": [
                             ["role": "system", "content": prompt],
-                            ["role": "user", "content": question],
+                            ["role": "user", "content": context.isEmpty
+                                ? question : "Conversation so far:\n\(context)\n\nQuestion: \(question)"],
                         ],
                     ]
                     body.merge(provider.extras) { _, extra in extra }
@@ -165,11 +170,15 @@ struct Answerer {
                               let delta = choices.first?["delta"] as? [String: Any],
                               let chunk = delta["content"] as? String, !chunk.isEmpty else { continue }
                         answer += chunk
-                        // Bail the instant the model starts refusing; nothing reaches the lens.
-                        if answer.trimmed.uppercased().hasPrefix("SKIP") {
+                        // Bail the instant the model starts refusing; nothing reaches the lens. Some
+                        // models stream "SKIP" as "SK" + "IP", so hold back anything that could still
+                        // turn into it.
+                        let head = answer.trimmed.uppercased()
+                        if head.hasPrefix("SKIP") {
                             continuation.finish()
                             return
                         }
+                        if "SKIP".hasPrefix(head) { continue }
                         continuation.yield(answer.trimmed)
                     }
                     continuation.finish()

@@ -1,46 +1,41 @@
 #!/bin/sh
-# Live side-by-side test on this Mac's microphone, no phone or glasses needed.
-#   sh tools/live-mac.sh [seconds]     (default 600; Ctrl-C any time for the summary)
-# Keys come from Secrets.xcconfig: MUSE_API_KEY (required), GROQ_API_KEY, DEEPGRAM_API_KEY,
-# MOSS_PROJECT_ID + MOSS_PROJECT_KEY — each missing one just turns its lane off.
-# First run: allow microphone (and speech recognition, for the APPLE lane) for your terminal app.
+# The conversation aid, live on this Mac: the phone app's Listener and Aid with the lens drawn in
+# the terminal. Keys come from Secrets.xcconfig, same as the app.
+#   sh tools/live-mac.sh                       talk to it (Mac mic)
+#   sh tools/live-mac.sh --file convo.wav      replay a recording at real time; never played aloud
+#   sh tools/live-mac.sh 300                   stop after 300 s
+# First run: allow microphone access for your terminal app.
 set -e
 cd "$(dirname "$0")/.."
 out=$(mktemp -d)
-val() { sed -n "s/^$1 *= *//p" Secrets.xcconfig | head -1; }
-cleanup() { [ -n "$moss" ] && kill "$moss" 2>/dev/null; rm -rf "$out"; }
-trap cleanup EXIT INT TERM
+trap 'rm -rf "$out"' EXIT
+
+# One Secrets.xcconfig value, following $(OTHER) references the way Xcode does.
+val() {
+  v=$(sed -n "s/^$1 *= *//p" Secrets.xcconfig | head -1)
+  case "$v" in
+    '$('*')') val "$(printf '%s' "$v" | sed 's/^\$(\(.*\))$/\1/')" ;;
+    *) printf '%s' "$v" ;;
+  esac
+}
 
 cat > "$out/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.tobiasvonkoch.calhacks13.livemac</string>
-<key>MuseAPIKey</key><string>$(val MUSE_API_KEY)</string>
-<key>GroqAPIKey</key><string>$(val GROQ_API_KEY)</string>
-<key>DeepgramAPIKey</key><string>$(val DEEPGRAM_API_KEY)</string>
-<key>NSMicrophoneUsageDescription</key><string>Live test of the question pipeline.</string>
-<key>NSSpeechRecognitionUsageDescription</key><string>Compares Apple's on-device recognizer.</string>
-</dict></plist>
+<key>NSMicrophoneUsageDescription</key><string>Listens to the conversation for the aid.</string>
 EOF
-{ echo 'import AVFoundation'; echo 'import Foundation'
-  sed -n '/^private final class Uplink/,$p' App/Listen.swift | sed 's/^private final class Uplink/final class Uplink/'; } > "$out/Uplink.swift"
-cp tools/live-mac.swift "$out/main.swift"
-echo "Building the live tool (~30 s)…"
-swiftc -O "$out/main.swift" "$out/Uplink.swift" App/Question.swift App/Answer.swift -o "$out/live" \
-  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$out/Info.plist" 2>&1 | grep -E "error" && exit 1
+for pair in MuseAPIKey:MUSE_API_KEY AnswerProvider:ANSWER_PROVIDER AnswerAPIKey:ANSWER_API_KEY AnswerModel:ANSWER_MODEL \
+            CoachProvider:COACH_PROVIDER CoachAPIKey:COACH_API_KEY CoachModel:COACH_MODEL \
+            BackupProvider:BACKUP_PROVIDER BackupAPIKey:BACKUP_API_KEY BackupModel:BACKUP_MODEL \
+            ResearchProvider:RESEARCH_PROVIDER ResearchAPIKey:RESEARCH_API_KEY ResearchModel:RESEARCH_MODEL \
+            WearerBackground:WEARER_BACKGROUND; do
+  printf '<key>%s</key><string>%s</string>\n' "${pair%%:*}" "$(val "${pair#*:}")" >> "$out/Info.plist"
+done
+echo '</dict></plist>' >> "$out/Info.plist"
 
-if curl -s -o /dev/null "http://127.0.0.1:8765/q?text=hi"; then
-  echo "Moss already running on :8765, reusing it."
-elif [ -n "$(val MOSS_PROJECT_ID)" ]; then
-  if [ ! -x .venv-moss/bin/python ]; then
-    echo "First run: installing Moss into .venv-moss …"
-    py=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)
-    "$py" -m venv .venv-moss && .venv-moss/bin/pip -q install moss
-  fi
-  echo "Starting Moss…"
-  MOSS_PROJECT_ID=$(val MOSS_PROJECT_ID) MOSS_PROJECT_KEY=$(val MOSS_PROJECT_KEY) \
-    .venv-moss/bin/python tools/moss-sidecar.py App/people.json &
-  moss=$!
-  for _ in $(seq 1 60); do curl -s -o /dev/null "http://127.0.0.1:8765/q?text=hi" && break; sleep 0.5; done
-fi
-"$out/live" "${1:-600}"
+echo "Building (~30 s)…"
+cp tools/live-mac.swift "$out/main.swift"   # top-level code must live in main.swift
+swiftc -O "$out/main.swift" App/Listen.swift App/Aid.swift App/Lens.swift App/Coach.swift App/Answer.swift App/Question.swift \
+  -o "$out/live" -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$out/Info.plist" 2>&1 | grep -E "error" && exit 1
+"$out/live" "$@"

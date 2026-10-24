@@ -1,0 +1,6 @@
+THEM: Hi, I'm Marcus. I'm the founder of a company called Rillet, we just closed our Series A.
+ME: Congrats! What does Rillet do?
+THEM: We're building an AI native ERP for finance teams. Honestly our biggest competitor is NetSuite.
+ME: That's a big incumbent.
+THEM: Yeah. Our first customers came from Y Combinator companies outgrowing QuickBooks.
+PAUSE: 8
