@@ -769,7 +769,10 @@ struct LensMetrics {
     let icon = tune("mirrorIcon", 56)
     let glyph = tune("mirrorGlyph", 26)
     let pad = tune("mirrorPad", 22)
-    let radius = tune("mirrorRadius", 28)
+    let radius = tune("mirrorRadius", 27)
+    /// The gap the real renderer leaves under the card. Measured off a captured lens frame:
+    /// 30 px of a 531 px panel, which is 34 of the lens's own 600.
+    let bottom = tune("mirrorBottom", 34)
 
     private static func tune(_ key: String, _ fallback: CGFloat) -> CGFloat {
         CGFloat(Tuning.float(key, Float(fallback)))
@@ -781,15 +784,27 @@ struct LensMirror: View {
     let avatar: (String) -> UIImage?
 
     private let m = LensMetrics()
-    private let secondary = Color(white: 0.58)
+    /// Measured, not guessed: `.secondary` text came back at 211 of 255 on a captured frame.
+    /// The lens has no colour and very little contrast range, so "dimmer" is a small step.
+    private let secondary = Color(white: 0.83)
 
     var body: some View {
         // Author everything in lens units, then shrink the finished panel into the tile.
+        //
+        // The card does NOT fill the panel. On a captured lens frame it hugs its own content,
+        // runs edge to edge horizontally, and sits on the floor of the panel with a small gap
+        // under it — so a two-line card is a strip at the bottom and a full identity card grows
+        // upward from the same baseline. Everything above it is glass you can see through.
         GeometryReader { geo in
-            card
-                .frame(width: LensMetrics.canvas, height: LensMetrics.canvas, alignment: .topLeading)
-                .scaleEffect(geo.size.width / LensMetrics.canvas, anchor: .topLeading)
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                card
+                Color.clear.frame(height: m.bottom)
+            }
+            .frame(width: LensMetrics.canvas, height: LensMetrics.canvas, alignment: .bottom)
+            .scaleEffect(geo.size.width / LensMetrics.canvas, anchor: .topLeading)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            .clipped()
         }
     }
 
@@ -863,45 +878,50 @@ struct LensMirror: View {
     /// except behind an answer.
     private var bottomRow: some View {
         HStack(alignment: .center, spacing: 8) {
-            HStack(spacing: 6) {
+            HStack(spacing: 10) {
                 Image(systemName: "person").font(.system(size: m.glyph))
                 // The same UIImage the lens is sent, not a redraw of it.
                 if let badge = LensCards.counterBadge(shot.connected) {
-                    Image(uiImage: badge).resizable()
-                        .frame(width: m.glyph * 1.3, height: m.glyph * 1.3)
+                    Image(uiImage: badge).resizable().frame(width: m.glyph, height: m.glyph)
                 }
             }
             Spacer(minLength: 0)
-            HStack(spacing: 8) {
-                Text(shot.button).font(.system(size: m.body, weight: .semibold))
+            // The lens draws the primary button as a soft glow with white content — no filled
+            // capsule, no dark label. A transparent display spends light on the glyphs, not on a
+            // background, and the captured frame shows exactly that: the icon leads, the label
+            // follows, and the only "fill" is a gradient that fades out to the right.
+            HStack(spacing: 10) {
                 Image(systemName: shot.buttonIcon).font(.system(size: m.glyph, weight: .semibold))
+                Text(shot.button).font(.system(size: m.body, weight: .semibold))
             }
-            .foregroundStyle(.black)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-            .background(Capsule().fill(.white))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(LinearGradient(colors: [Color.white.opacity(0.17), Color.white.opacity(0)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+            )
         }
     }
 }
 
-/// The lens's `.background(.card)`: a dark rounded panel that hugs its content. On glass it is
-/// translucent; on the phone the tile behind it is black, so flat dark reads the same.
+/// The lens's `.background(.card)`. Sampled straight off a captured lens frame rather than
+/// invented: the fill is a flat slate #27282D with no border at all, the corners are ~27 lens
+/// units, and the panel runs the full width of the display — it is cut off by the edge of the
+/// glass, not inset from it.
 private struct LensCardBackground: ViewModifier {
     let radius: CGFloat
+    /// Measured (39, 40, 45) on the real renderer. Not black, and slightly blue.
+    static let fill = Color(red: 39 / 255, green: 40 / 255, blue: 45 / 255)
 
     func body(content: Content) -> some View {
         content
             .foregroundStyle(.white)
-            // The lens panel is a fixed 600 x 600 surface and the root card fills it, with the
-            // content packed from the top — not a little box floating in the middle.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(Color(white: 0.08))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: radius, style: .continuous)
-                            .strokeBorder(Color(white: 0.20), lineWidth: 1)
-                    )
+                RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Self.fill)
             )
     }
 }
