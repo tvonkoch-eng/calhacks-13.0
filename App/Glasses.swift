@@ -32,7 +32,8 @@ enum Identification {
 
 /// Meta glasses session. Pressing Identify (lens button, glasses capture button, or the phone)
 /// grabs one frame from the glasses camera, matches the largest face, and shows the card on the lens.
-/// The camera stream only runs around a scan and stays warm briefly so the next one is instant.
+/// The camera stream runs only until a usable frame arrives: video on the glasses shares the radio
+/// with the lens and the Neural Band, and keeping it up made lens writes take 3-5 s and dropped the band.
 @MainActor @Observable final class Glasses {
     var status = "Not connected"
     var connected = false
@@ -56,10 +57,7 @@ enum Identification {
     @ObservationIgnored private var frameWaiter: CheckedContinuation<CIImage?, Never>?
     @ObservationIgnored private var frameRequest = UUID()
     @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces", qos: .userInitiated)
-    /// Starting the glasses stream costs ~2 s, so it stays up this long after a scan.
-    @ObservationIgnored private let warmFor: Duration = .seconds(20)
     @ObservationIgnored private var streamLive = false
-    @ObservationIgnored private var coolDown: Task<Void, Never>?
     /// Set by Disconnect so we don't reconnect behind the user's back.
     @ObservationIgnored private var userDisconnected = false
     @ObservationIgnored private var lastAutoReconnect = Date.distantPast
@@ -106,6 +104,7 @@ enum Identification {
             // Find the glasses first: asking for permissions with no glasses nearby just throws noDevice.
             let finder = AutoDeviceSelector(wearables: wearables)
             status = "Looking for your glasses"
+            SpeedLog.record(["event": "connect", "stage": "lookingForGlasses"])
             var found: DeviceIdentifier?
             for await id in finder.activeDeviceStream() {
                 if let id { found = id; break }
@@ -137,6 +136,7 @@ enum Identification {
             }
 
             status = "Starting session…"
+            SpeedLog.record(["event": "connect", "stage": "startingSession"])
             let session = try wearables.createSession(deviceSelector: selector)
             self.session = session
             tokens.append(session.statePublisher.listen { [weak self] state in
@@ -150,7 +150,7 @@ enum Identification {
             // Standalone photo capture failed instantly on every scan (0 bytes in ~20 ms), so frames come
             // from the stream. Medium (504x896) keeps Bluetooth load down; faces at talking distance
             // are still ~150 px.
-            guard let camera = try session.addCamera(config: StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 15)) else {
+            guard let camera = try session.addCamera(config: StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 7)) else {
                 status = "Glasses camera unavailable"
                 return
             }
@@ -185,6 +185,7 @@ enum Identification {
             SpeedLog.record(["event": "connected"])
             watchForGlasses()
         } catch {
+            SpeedLog.record(["event": "connectError", "error": "\(error)"])
             status = (error as? LocalizedError)?.errorDescription ?? "Couldn't connect to your glasses. Try again."
         }
     }
@@ -258,10 +259,10 @@ enum Identification {
         }
         let start = CFAbsoluteTimeGetCurrent()
         identifying = true
-        var log: [String: Any] = ["source": source, "resolution": "medium-stream", "warm": streamLive]
+        var log: [String: Any] = ["source": source, "resolution": "medium-stream"]
         defer {
             identifying = false
-            coolStream()
+            stopStream()
         }
         renderLens()
 
@@ -278,6 +279,8 @@ enum Identification {
             }
             scan = await scanLargest(image)
         } while scan.hit == nil && frames < 3
+        // Free the radio before talking to the lens.
+        stopStream()
         log["frames"] = frames
         log["captureMs"] = ms(since: start)
         guard frames > 0 else {
@@ -359,12 +362,15 @@ enum Identification {
     func lensIdentify(source: String) async {
         if case .known = result, !confirming {
             confirming = true
-            renderLens()
+            SpeedLog.record(["event": "confirmAsk", "source": source])
             confirmTask?.cancel()
             let hold: Double = source == "preview" ? 600 : 2   // preview: hold for screenshots
             confirmTask = Task { [weak self] in
+                // The 2 s starts once "Are you sure?" is actually on the lens, not when it was asked for.
+                _ = await self?.sendLens()
                 try? await Task.sleep(for: .seconds(hold))
                 guard !Task.isCancelled, let self, self.confirming else { return }
+                SpeedLog.record(["event": "confirmExpired"])
                 self.confirming = false
                 self.renderLens()
             }
@@ -405,7 +411,6 @@ enum Identification {
         pendingSend = nil
         answer = nil
         result = .ready
-        coolDown?.cancel()
         streamLive = false
         resumeFrame(nil)
         self.status = status
@@ -432,10 +437,9 @@ enum Identification {
 
     // MARK: - Camera
 
-    /// The next frame from the glasses camera, starting the stream if it's cold.
+    /// The next frame from the glasses camera, starting the stream if it isn't running.
     private func nextFrame() async -> CIImage? {
         guard let camera else { return nil }
-        coolDown?.cancel()
         if !streamLive {
             camera.stream.start()
             streamLive = true
@@ -448,22 +452,16 @@ enum Identification {
                 try? await Task.sleep(for: .seconds(5))
                 // Only time out this request, never a later one.
                 guard let self, self.frameRequest == request else { return }
+                SpeedLog.record(["event": "frameTimeout"])
                 self.resumeFrame(nil)
             }
         }
     }
 
-    /// Stop the stream once nobody has scanned for `warmFor`.
-    private func coolStream() {
-        coolDown?.cancel()
+    private func stopStream() {
         guard streamLive else { return }
-        coolDown = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(for: self.warmFor)
-            guard !Task.isCancelled, self.streamLive else { return }
-            self.camera?.stream.stop()
-            self.streamLive = false
-        }
+        camera?.stream.stop()
+        streamLive = false
     }
 
     private func resumeFrame(_ image: CIImage?) {
@@ -511,14 +509,27 @@ enum Identification {
         let wait = minSendInterval - Date().timeIntervalSince(lastSend)
         guard wait > 0 else {
             lastSend = Date()
-            Task { try? await display?.send(view) }
+            Task { await self.write(view) }
             return
         }
         pendingSend = Task { [weak self] in
             try? await Task.sleep(for: .seconds(wait))
             guard !Task.isCancelled, let self, let display = self.display else { return }
             self.lastSend = Date()
-            try? await display.send(view)
+            _ = display
+            await self.write(view)
+        }
+    }
+
+    private func write(_ view: FlexBox) async {
+        guard let display else { return }
+        let start = CFAbsoluteTimeGetCurrent()
+        do {
+            try await display.send(view)
+            let elapsed = ms(since: start)
+            if elapsed > 1000 { SpeedLog.record(["event": "lensSlow", "ms": elapsed]) }
+        } catch {
+            SpeedLog.record(["event": "lensError", "error": "\(error)"])
         }
     }
 
@@ -529,7 +540,12 @@ enum Identification {
         let view = hud()
         pendingSend?.cancel()
         lastSend = Date()
-        do { try await display.send(view) } catch { return false }
+        do {
+            try await display.send(view)
+        } catch {
+            SpeedLog.record(["event": "lensError", "error": "\(error)"])
+            return false
+        }
         return true
     }
 }
