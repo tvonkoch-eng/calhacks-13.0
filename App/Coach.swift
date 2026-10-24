@@ -29,10 +29,13 @@ enum Coach {
         var define: [(term: String, meaning: String)] = []
         /// The best thing for the wearer to say next, when one was asked for.
         var suggest: String?
+        /// THEM asked for a fact or a task in words the recognizer mangled or left implicit: the
+        /// request rebuilt as one clear question, for the answer lane to take.
+        var ask: String?
 
         static func == (a: Advice, b: Advice) -> Bool {
             a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
-                && a.suggest == b.suggest
+                && a.suggest == b.suggest && a.ask == b.ask
         }
     }
 
@@ -50,6 +53,14 @@ enum Coach {
     answer them here.
 
     Reply with one JSON object with exactly these keys:
+
+    "ask": "..." or null
+      When the newest THEM line asks for a public fact, a lookup or a task (something nearby, the \
+    weather, the news, a company's latest) but speech recognition garbled it or left it implicit \
+    ("you know how much figure raised the robot ones", "whats that stable coin bill again"): the \
+    request as one clear, self-contained question, resolving "it" or "they" from the transcript \
+    ("How much did Figure AI raise in its latest round?"). null if it is personal or social (about \
+    the people talking), rhetorical, or no request at all. Usually null.
 
     "define": [{"term": "...", "meaning": "..."}]
       At most one: the single least familiar term in the newest line that the wearer, given their \
@@ -141,6 +152,7 @@ enum Coach {
             return (term, meaning)
         }
         result.suggest = clean(object["suggest"])
+        result.ask = clean(object["ask"])
         return result
     }
 }
