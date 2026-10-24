@@ -58,6 +58,7 @@ struct Match {
     private(set) var notes: [String: String] = [:]
     /// Small copies of avatars for the lens; every lens update ships the image over Bluetooth.
     @ObservationIgnored private var lensAvatars: [String: UIImage] = [:]
+    @ObservationIgnored private var lensPhotos: [String: UIImage] = [:]
 
     /// Bump whenever the embedding space changes (crop rule, de-rolling, alignment, model).
     /// Samples saved in an older space are not comparable with new ones, and mixing them flattens
@@ -261,11 +262,27 @@ struct Match {
     var metToday: Int { lastSeen.values.filter { Calendar.current.isDateInToday($0) }.count }
     func samples(_ id: String) -> Int { gallery[id]?.count ?? 0 }
 
+    /// The large photo on a person's lens card: 192x192 pixels.
+    func lensPhoto(_ id: String) -> UIImage? {
+        if let cached = lensPhotos[id] { return cached }
+        guard let avatar = avatars[id] else { return nil }
+        let size = CGSize(width: 192, height: 192)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let large = UIGraphicsImageRenderer(size: size, format: format).image { _ in avatar.draw(in: CGRect(origin: .zero, size: size)) }
+        lensPhotos[id] = large
+        return large
+    }
+
     func lensAvatar(_ id: String) -> UIImage? {
         if let cached = lensAvatars[id] { return cached }
         guard let avatar = avatars[id] else { return nil }
         let size = CGSize(width: 96, height: 96)
-        let small = UIGraphicsImageRenderer(size: size).image { _ in avatar.draw(in: CGRect(origin: .zero, size: size)) }
+        // Scale 1: 96x96 pixels. The renderer's default is the phone's screen scale (3x, so 288x288),
+        // and the photo is ~90% of a card write: 477 ms with it, 46 ms without (lens bench, Oct 24).
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in avatar.draw(in: CGRect(origin: .zero, size: size)) }
         lensAvatars[id] = small
         return small
     }

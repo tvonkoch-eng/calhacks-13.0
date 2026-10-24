@@ -76,7 +76,7 @@ final class FaceTracker {
                 .max { $0.overlap < $1.overlap }
 
             if let candidate, candidate.overlap >= minOverlap, !tracks[candidate.index].isStranger(hit, below: splitBelow),
-               !tracks[candidate.index].jumped(to: hit.box) {
+               !(now.timeIntervalSince(tracks[candidate.index].updated) < 0.2 && tracks[candidate.index].jumped(to: hit.box)) {
                 claimed.insert(candidate.index)
                 tracks[candidate.index].absorb(hit, decay: decay, now: now)
             } else if hit.usable || hits.count == 1 {
@@ -125,7 +125,8 @@ extension FaceHit {
 
 private extension FaceTracker.Track {
     /// A face doesn't change size by 1.6x or move more than its own width between two frames; when
-    /// a box does, it is a different face that landed in the overlap window.
+    /// a box does, it is a different face that landed in the overlap window. Only checked across
+    /// back-to-back scans: after a pause (a lens write stops scanning ~0.85 s) real heads move that far.
     func jumped(to next: CGRect) -> Bool {
         let ratio = (next.width * next.height) / max(box.width * box.height, 1e-6)
         let shift = hypot(next.midX - box.midX, next.midY - box.midY)

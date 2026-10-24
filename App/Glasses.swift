@@ -289,6 +289,13 @@ enum Identification {
     @ObservationIgnored private var lensWriter: Task<Void, Never>?
     @ObservationIgnored private var writeWaiters: [CheckedContinuation<Bool, Never>] = []
     @ObservationIgnored private var lastWriteOK = false
+    /// The card last handed to the lens queue, so an update that changes nothing isn't re-sent:
+    /// every write costs 0.4-1.5 s of radio the video stream is also using.
+    @ObservationIgnored private var sentShot: LensShot?
+    /// True while the lens bench owns the display.
+    private(set) var benching = false
+    /// The card is on the lens with a placeholder; its photo is the next write.
+    @ObservationIgnored private var photoPending = false
     /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
     @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
@@ -367,11 +374,19 @@ enum Identification {
     @ObservationIgnored private var followFace: Bool { Tuning.bool("followFace", true) }
     /// The card's person keeps it while their face is at least this share of the biggest in view.
     @ObservationIgnored private var mainFaceSlack: CGFloat { CGFloat(Tuning.float("mainFaceSlack", 1.15)) }
-    /// With `followFace`, a card whose person has been out of view this long comes down: the lens
-    /// shows who is in front of you, not who was. `cardClearAfter`, seconds.
-    @ObservationIgnored private var cardClearAfter: TimeInterval { TimeInterval(Tuning.float("cardClearAfter", 0.6)) }
-    /// When the card's person was last in view (their track, or a confident match of them).
-    @ObservationIgnored private var cardSeenAt = Date.distantPast
+    /// The card stays up until a different face is in front of you, then comes down at once: a
+    /// main face whose single best look scores below this against the card's person is someone
+    /// else. Same person ~0.4+, anyone else ~0.1, so a blurred look of the same face rarely trips it.
+    /// `differentBelow`.
+    @ObservationIgnored private var differentBelow: Float { Tuning.float("differentBelow", 0.25) }
+    /// A name also goes up once the same person has been the clear top match of a track for
+    /// `streakLooks` scans in a row (score >= streakScore, ahead by >= streakGap), before the full
+    /// confident bar. Mirabelle was top from her first look and clear by 0.4 s, but her score took
+    /// 2.9 s to reach 0.38. `streakLooks: 0` turns it off.
+    @ObservationIgnored private var streakLooks: Int { Tuning.int("streakLooks", 6) }
+    @ObservationIgnored private var streakScore: Float { Tuning.float("streakScore", 0.22) }
+    @ObservationIgnored private var streakGap: Float { Tuning.float("streakGap", 0.12) }
+    @ObservationIgnored private var streaks: [Int: (person: String, count: Int)] = [:]
     /// The best match for the face in view right now, confident or not, for the live readout.
     var likeness: Likeness?
     struct Likeness: Equatable {
@@ -584,6 +599,7 @@ enum Identification {
                 tokens.append(display.statePublisher.listen { [weak self] state in
                     Task { @MainActor in
                         self?.displayReady = state == .started
+                        self?.sentShot = nil
                         self?.renderLens()
                     }
                 })
@@ -1010,6 +1026,7 @@ enum Identification {
         lensWriter?.cancel()
         lensWriter = nil
         queuedView = nil
+        sentShot = nil
         finishWrites(false)
         if !keepContext {
             aidLens = LensView()
@@ -1031,6 +1048,7 @@ enum Identification {
         pov = nil
         autoBusy = false
         tracker.reset()
+        streaks.removeAll()
         announced.removeAll()
         photoVerdict.removeAll(); photoMatch.removeAll(); photoHit.removeAll(); photoTries.removeAll()
         resumePhoto(nil)
@@ -1341,12 +1359,11 @@ enum Identification {
                     return (image, image?.fitted(to: 360))
                 }.value
                 self.autoBusy = at < busyUntil
-                let writes = self.replayLensWrites
                 let scansBefore = self.lastAutoScan
                 await self.ingest(decoded.0, small: decoded.1)
                 if self.lastAutoScan != scansBefore {
-                    let lens = self.replayLensWrites != writes ? Double(self.replayLensMs) : 0
-                    busyUntil = at.addingTimeInterval((Double(self.replayScanMs) + lens) / 1000)
+                    // Lens writes no longer hold up scanning, so a scan only costs the scan.
+                    busyUntil = at.addingTimeInterval(Double(self.replayScanMs) / 1000)
                 }
             }
             if self.replayLensDue != nil { self.replayLensDue = nil; _ = self.lensView() }
@@ -1379,6 +1396,7 @@ enum Identification {
 
     private func startReplay(_ run: FrameRun) {
         tracker.reset()
+        streaks.removeAll()
         announced.removeAll()
         dissent = nil
         sighted.removeAll()
@@ -1525,12 +1543,11 @@ enum Identification {
         return true
     }
 
-    /// Takes the card down once its person has been out of view for `cardClearAfter`. Not awaited:
-    /// clearing must not hold up the scan the way a new name's write does.
-    private func clearCardIfGone(_ now: Date) {
-        guard followFace, let card = onCard, !identifying,
-              now.timeIntervalSince(max(cardSeenAt, resultAt)) >= cardClearAfter else { return }
-        var log: [String: Any] = ["event": "autoClear", "person": card]
+    /// Takes the card down because a different face is now the main one. Not awaited: clearing
+    /// must not hold up the scan that may name the new face a frame later.
+    private func clearCard(for main: FaceTracker.Track?, now: Date, reason: String) {
+        guard let card = onCard else { return }
+        var log: [String: Any] = ["event": "autoClear", "person": card, "reason": reason, "trackLooks": main?.looks ?? 0]
         if replaying { log["replayMs"] = Int(now.timeIntervalSince(replayBase) * 1000) }
         SpeedLog.record(log)
         result = .ready
@@ -1540,6 +1557,26 @@ enum Identification {
         } else {
             renderLens()
         }
+    }
+
+    /// The streak path to a name: the same clear top match, scan after scan.
+    private func streakMatch(_ track: FaceTracker.Track, store: Store) -> Match? {
+        guard streakLooks > 0, track.updated == clockNow, track.looks > 0 else { return nil }
+        let ranked = store.ranked(track.probe)
+        guard let top = ranked.first else { return nil }
+        let gap = top.score - (ranked.dropFirst().first?.score ?? 0)
+        guard top.score >= streakScore, gap >= streakGap else { streaks[track.id] = nil; return nil }
+        let count = streaks[track.id].map { $0.person == top.person.id ? $0.count + 1 : 1 } ?? 1
+        streaks[track.id] = (top.person.id, count)
+        return count >= streakLooks ? top : nil
+    }
+
+    /// True when the main face is clearly not the card's person: it isn't the track that was
+    /// announced as them, and its latest look doesn't resemble them.
+    private func isDifferentFace(_ main: FaceTracker.Track, from card: String, store: Store) -> Bool {
+        guard announced[main.id] != card, main.best.usable, main.looks > 0 else { return false }
+        let score = store.ranked(main.probe).first { $0.person.id == card }?.score ?? 0
+        return score < differentBelow
     }
 
     /// The clearest face in view and how much it looks like its best match, every scan.
@@ -1594,7 +1631,6 @@ enum Identification {
         guard !live.isEmpty else {
             if facing != nil { facing = nil }
             if likeness != nil { likeness = nil }
-            clearCardIfGone(frameTime)
             return
         }
 
@@ -1616,9 +1652,14 @@ enum Identification {
         let cardTrack = onCard.flatMap { card in inView.first { announced[$0.id] == card } }
         var main = inView.max { facePx($0) < facePx($1) }
         if let cardTrack, let biggest = main, facePx(cardTrack) * mainFaceSlack >= facePx(biggest) { main = cardTrack }
-        if cardTrack != nil { cardSeenAt = frameTime }
+        // A different face in front of you: the old card comes down now, before the new face
+        // is even named. Nobody in view, or turning away, leaves it up.
+        if followFace, !identifying, let card = onCard, let main, facePx(main) >= minAnnouncePx,
+           isDifferentFace(main, from: card, store: store) {
+            clearCard(for: main, now: frameTime, reason: "differentFace")
+        }
         for track in live where track.weight >= minEvidence {
-            guard let match = store.confidentMatch(track.probe) else { continue }
+            guard let match = store.confidentMatch(track.probe) ?? streakMatch(track, store: store) else { continue }
             if track.updated == frameTime { seenNow.append((match.person.id, match.score)) }
             // Toby's floor: a stream match on a face this small once named someone who wasn't there.
             guard facePx(track) >= minAnnouncePx else { continue }
@@ -1644,8 +1685,6 @@ enum Identification {
         // still owns the lens. Decided before sightings are recorded, so this frame can't silence itself.
         let allowed = chosen.map { correcting ? !identifying : mayShow($0.match.person.id) } ?? false
         for seen in seenNow { sighted[seen.id] = frameTime }
-        if let card = onCard, seenNow.contains(where: { $0.id == card }) { cardSeenAt = frameTime }
-        if chosen == nil || !allowed { clearCardIfGone(frameTime) }
         onSeen?(seenNow.map(\.id))
         // Who the wearer is facing, for the aid: the clearest match in view right now.
         let looking = seenNow.max { $0.score < $1.score }?.id
@@ -1685,8 +1724,8 @@ enum Identification {
                                   "embedMs": (scan.timing.embedMs * 10).rounded() / 10,
                                   "scanMs": ms(since: start)]
         log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
-        let lensStart = CFAbsoluteTimeGetCurrent()
-        if await sendLens() { log["lensMs"] = ms(since: lensStart) }
+        // Not awaited: the next face can be scanned while this one's card is being written.
+        showCard(chosen.match.person)
         log["totalMs"] = ms(since: start)
         if replaying { log["replayMs"] = Int(clockNow.timeIntervalSince(replayBase) * 1000) }
         SpeedLog.record(log)
@@ -1846,16 +1885,97 @@ enum Identification {
 
     // MARK: - Lens
 
-    /// What was last sent, so an identical lens isn't written again: every write redraws the
-    /// whole panel, and a person turning back used to blink the answer that was up.
-    @ObservationIgnored private var sentShot: LensShot?
-
-    private func renderLens() {
-        guard displayReady else { return }
+    /// Queues the lens as it now stands. Returns false when nothing needed writing: no display,
+    /// the bench has it, or the card is the one already sent.
+    @discardableResult
+    private func renderLens() -> Bool {
+        guard displayReady, !benching else { return false }
         let view = lensView()
-        guard lensShot == nil || lensShot != sentShot else { return }
+        guard lensShot == nil || lensShot != sentShot else { return false }
         sentShot = lensShot
         send(view)
+        return true
+    }
+
+    /// Waits until the lens queue has drained; true if the last write succeeded.
+    private func writesDone() async -> Bool {
+        guard lensWriter != nil || queuedView != nil else { return lastWriteOK }
+        return await withCheckedContinuation { writeWaiters.append($0) }
+    }
+
+    /// Puts a freshly named face on the lens without holding up the scan. The name alone goes
+    /// first — a tiny write — and the full card follows once it has landed, if the card is still
+    /// theirs. Timings go to the speed log as `lensTiming`.
+    private func showCard(_ person: Person) {
+        if replaying {
+            replayLensDue = clockNow.addingTimeInterval(Double(replayLensMs) / 1000)
+            replayLensWrites += 1
+            return
+        }
+        guard display != nil, displayReady, !benching else { return }
+        photoPending = true
+        let start = CFAbsoluteTimeGetCurrent()
+        guard renderLens() else { photoPending = false; return }
+        Task { [weak self] in
+            guard let self else { return }
+            let cardOK = await self.writesDone()
+            var log: [String: Any] = ["event": "lensTiming", "person": person.id, "cardMs": ms(since: start), "cardOK": cardOK]
+            self.photoPending = false
+            if cardOK, self.knownPerson?.id == person.id {
+                let photoStart = CFAbsoluteTimeGetCurrent()
+                if self.renderLens() {
+                    log["photoOK"] = await self.writesDone()
+                    log["photoMs"] = ms(since: photoStart)
+                }
+            }
+            SpeedLog.record(log)
+        }
+    }
+
+    /// Times real lens writes, `rounds` of each card shape, alternating two people so every write
+    /// changes what is on the lens. Needs the glasses connected; nobody has to be in front of them.
+    /// Returns the median milliseconds per shape.
+    func lensBench(rounds: Int = 10) async -> [String: Double] {
+        guard let display, displayReady, !benching, let store, store.people.count >= 2 else { return [:] }
+        benching = true
+        defer {
+            benching = false
+            sentShot = nil
+            renderLens()
+        }
+        _ = await writesDone()
+        let people = Array(store.people.prefix(2))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let blank = pixel.withUnsafeMutableBytes { raw in
+            CGContext(data: raw.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage()
+        }
+        guard let blank else { return [:] }
+        func card(_ person: Person, pending: Bool) -> FlexBox {
+            let hit = FaceHit(embedding: [], crop: blank, area: 0, box: .zero, sharpness: 0, aligned: false)
+            return LensCards.hud(result: .known(Match(person: person, score: 1), hit),
+                                 avatar: { [store] in store.lensPhoto($0) },
+                                 identifying: false, confirming: false, connected: 0, photoPending: pending, identify: {})
+        }
+        let shapes: [(String, (Person) -> FlexBox)] = [
+            ("name", { LensCards.name($0) }),
+            ("cardPlaceholder", { card($0, pending: true) }),
+            ("cardPhoto", { card($0, pending: false) }),
+        ]
+        var medians: [String: Double] = [:]
+        for (name, make) in shapes {
+            var times: [Double] = []
+            for round in 0..<rounds {
+                let view = make(people[round % 2])
+                let start = CFAbsoluteTimeGetCurrent()
+                do { try await display.send(view) } catch { continue }
+                times.append(ms(since: start))
+            }
+            let sorted = times.sorted()
+            if !sorted.isEmpty { medians[name] = sorted[sorted.count / 2] }
+            SpeedLog.record(["event": "lensBench", "shape": name, "ms": sorted])
+        }
+        return medians
     }
 
     /// The person on the card, if the face side has one.
@@ -1893,12 +2013,14 @@ enum Identification {
         let connected = store?.connectedCount ?? 0
         lensShot = LensCards.shot(result: result, identifying: identifying,
                                   confirming: confirming, connected: connected)
+        lensShot?.photoPending = photoPending
         return LensCards.hud(
             result: result,
-            avatar: { [store] in store?.lensAvatar($0) },
+            avatar: { [store] in store?.lensPhoto($0) },
             identifying: identifying,
             confirming: confirming,
             connected: connected,
+            photoPending: photoPending,
             identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } }
         )
     }
