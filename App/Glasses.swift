@@ -85,17 +85,24 @@ enum Identification {
                 try await wearables.startRegistration()
                 return
             }
-            if try await wearables.checkPermissionStatus(.camera) != .granted {
-                status = "Allow camera in Meta AI…"
-                guard try await wearables.requestPermission(.camera) == .granted else {
-                    status = "Camera permission denied in Meta AI"
-                    return
-                }
-            }
+            // Find the glasses first: asking for permissions with no glasses nearby just throws noDevice.
             let selector = AutoDeviceSelector(wearables: wearables)
-            status = "Waiting for glasses…"
+            status = "Looking for your glasses"
             for await id in selector.activeDeviceStream() {
                 if id != nil { break }
+            }
+
+            do throws(PermissionError) {
+                if try await wearables.checkPermissionStatus(.camera) != .granted {
+                    status = "Allow camera access in Meta AI"
+                    guard try await wearables.requestPermission(.camera) == .granted else {
+                        status = "Camera access was denied in Meta AI"
+                        return
+                    }
+                }
+            } catch {
+                status = Self.message(for: error)
+                return
             }
 
             status = "Starting session…"
@@ -153,7 +160,25 @@ enum Identification {
             connected = true
             status = display == nil ? "Connected" : "Connected · lens on"
         } catch {
-            status = "\(error)"
+            status = (error as? LocalizedError)?.errorDescription ?? "Couldn't connect to your glasses. Try again."
+        }
+    }
+
+    /// Plain-language versions of the SDK's permission errors.
+    private static func message(for error: PermissionError) -> String {
+        switch error {
+        case .noDevice, .noDeviceWithConnection, .connectionError:
+            "Turn on your glasses and keep them near your phone"
+        case .metaAINotInstalled:
+            "Install the Meta AI app to connect your glasses"
+        case .requestInProgress:
+            "Finish the request in the Meta AI app"
+        case .requestTimeout:
+            "Meta AI didn't respond. Try again."
+        case .internalError:
+            "Couldn't reach your glasses. Try again."
+        @unknown default:
+            "Couldn't reach your glasses. Try again."
         }
     }
 
