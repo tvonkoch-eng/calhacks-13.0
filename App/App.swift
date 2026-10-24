@@ -18,7 +18,7 @@ struct CalHacksApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HomeView()
+            RootView()
                 .environment(store)
                 .environment(glasses)
                 .environment(assistant)
@@ -32,8 +32,11 @@ struct CalHacksApp: App {
                     assistant.glasses = glasses
                     assistant.store = store
                     assistant.crm = crm
-                    crm.onScheduled = { reminder in
-                        Nudges.schedule(reminder, title: crm.name(reminder.person))
+                    // Preview data is made up: it schedules no real notifications.
+                    if ProcessInfo.processInfo.environment["PREVIEW_CRM"] != "1" {
+                        crm.onScheduled = { reminder in
+                            Nudges.schedule(reminder, title: crm.name(reminder.person))
+                        }
                     }
                     crm.onCancelled = { Nudges.cancel($0) }
                     crm.onSaved = { kept in store.saved = kept.map { crm.person($0) } }
@@ -63,6 +66,25 @@ struct CalHacksApp: App {
                         if parts.count == 2, let seconds = Double(parts[1]) {
                             store.markSeen(String(parts[0]), at: .now.addingTimeInterval(-seconds))
                         }
+                    }
+                    // PREVIEW_CRM=1: two made-up people with notes, kept, to see People filled in.
+                    if env["PREVIEW_CRM"] == "1", crm.conversations.isEmpty {
+                        let maya = crm.save(Encounter(
+                            name: "Maya Chen", label: "evals startup founder",
+                            facts: ["Closed a seed round led by Lux", "Brother went to UCSB"],
+                            followups: [.init(text: "Intro Maya to an eval engineer", mine: true, dueInDays: 2)],
+                            summary: "Calibrating LLM judges is her hardest problem; hiring two eval engineers.",
+                            hook: "asked about hiring", topics: ["LLM judges", "hiring", "UCSB"],
+                            at: .now.addingTimeInterval(-3 * 3600), ended: .now.addingTimeInterval(-3 * 3600 + 540),
+                            place: "near Sproul Plaza, Berkeley"))
+                        let dana = crm.save(Encounter(
+                            name: "Dana Ruiz", label: "ICU nurse at UCSF",
+                            facts: ["Back from her sister's wedding in Lisbon"],
+                            followups: [.init(text: "Send Dana the demo video", mine: true, dueInDays: 1)],
+                            summary: "Caught up on Lisbon; the ICU is short-staffed.",
+                            hook: "owe her the demo video", topics: ["Lisbon", "work"],
+                            at: .now.addingTimeInterval(-26 * 3600), ended: .now.addingTimeInterval(-26 * 3600 + 720)))
+                        for id in [maya, dana].compactMap(\.self) { crm.keep(id) }
                     }
                     if let id = ProcessInfo.processInfo.environment["PREVIEW_PERSON"],
                        let person = store.people.first(where: { $0.id == id }) {

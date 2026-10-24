@@ -53,12 +53,14 @@ extension CRM {
 struct FollowUps: View {
     @Environment(CRM.self) private var crm
     let now: Date
+    /// The "taking notes" line; off where the live notes card already says so.
+    var showLive = true
 
     var body: some View {
         let due = crm.upcoming(now: now)
         let pending = crm.pending
         VStack(alignment: .leading, spacing: 0) {
-            if let live = crm.live {
+            if showLive, let live = crm.live {
                 HStack(spacing: 8) {
                     Circle().fill(Color.red).frame(width: 6, height: 6)
                     Text(liveLine(live)).font(.footnote).foregroundStyle(.secondary)
@@ -206,6 +208,9 @@ struct PersonCRM: View {
     @Environment(CRM.self) private var crm
     @Environment(\.dismiss) private var dismiss
     let person: Person
+    /// The consumer contact screen shows these its own way (one history, an add field).
+    var conversations = true
+    var learned = true
     @State private var draft = ""
     @FocusState private var typing: Bool
 
@@ -238,23 +243,23 @@ struct PersonCRM: View {
                 .padding(.vertical, 10)
             }
 
-            let conversations = crm.conversations(with: person.id)
-            block("Conversations") {
-                if conversations.isEmpty {
+            let talks = crm.conversations(with: person.id)
+            if conversations { block("Conversations") {
+                if talks.isEmpty {
                     Text("Talk with the mic on and each conversation with \(first) is noted here: a summary, what you learned, what you owe each other.")
                         .font(.subheadline).foregroundStyle(.secondary)
                 } else {
-                    ForEach(conversations) { conversation in
+                    ForEach(talks) { conversation in
                         NavigationLink { ConversationDetail(id: conversation.id) } label: {
                             ConversationRow(conversation: conversation)
                         }
                         .buttonStyle(.plain)
                     }
                 }
-            }
+            } }
 
             let facts = crm.facts(about: person.id)
-            if !facts.isEmpty {
+            if learned, !facts.isEmpty {
                 block("Learned") {
                     ForEach(facts) { fact in
                         VStack(spacing: 0) {

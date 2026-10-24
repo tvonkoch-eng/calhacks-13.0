@@ -384,6 +384,30 @@ struct Reminder: Codable, Identifiable, Equatable {
         save()
     }
 
+    /// Someone the wearer adds by hand ("+" on People): kept from the start, since they chose to.
+    @discardableResult func add(name: String, at now: Date = .now) -> String {
+        let id = "c-" + UUID().uuidString.prefix(8).lowercased()
+        contacts.append(Contact(id: id, name: name, consent: .saved, created: now))
+        save()
+        return id
+    }
+
+    /// The wearer renamed a contact (roster names are edited in `Store`).
+    func rename(_ person: String, to name: String) {
+        guard let i = contacts.firstIndex(where: { $0.id == person }),
+              !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        contacts[i].name = name
+        save()
+    }
+
+    /// Something the wearer knows about them, typed in rather than heard.
+    func learn(_ person: String, _ text: String, at now: Date = .now) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        facts.insert(Fact(id: UUID(), person: person, text: text, learned: now), at: 0)
+        save()
+    }
+
     /// Forget everything about someone who isn't on the roster.
     func forgetPerson(_ person: String) {
         guard roster(person) == nil else { return }
