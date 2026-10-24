@@ -263,6 +263,10 @@ enum Talk {
         /// spending a round trip on a 429.
         var perMinute: Int?
         var researcher: (any Researcher)?
+        /// Only explicit questions: an answer may be computed while they talk, but it goes up only
+        /// once the sentence closes with "?". Statements that start like questions ("what you
+        /// could do is…") got answers in a real conversation (2026-10-24).
+        var explicitOnly = false
     }
 
     private(set) var lines: [Line] = []
@@ -448,6 +452,10 @@ enum Talk {
             if endpointed { commit(nil) }
             return
         }
+        if config.explicitOnly, endpointed, !text.trimmed.hasSuffix("?") {
+            abandon()
+            return
+        }
         if toolish {
             // Never speculatively: "how far is the nearest" would search before "Target" is said.
             if endpointed { toolRound(candidate.text, command: false) }
@@ -596,9 +604,21 @@ enum Talk {
         turns[0] = turn
     }
 
+    /// Not a question after all: drop the speculation, even one that already has an answer.
+    private func abandon() {
+        defer { firedText = "" }
+        guard !firedText.isEmpty, let turn = turns.first, turn.committedAt == nil, turn.state != .skipped else { return }
+        answerTask?.cancel()
+        generation += 1
+        turns[0].state = .skipped
+        render()
+    }
+
     private func render() {
         guard let turn = turns.first else { return }
         let now = Date()
+        // Explicit questions only: hold the answer until the question has closed.
+        if config.explicitOnly, turn.committedAt == nil, turn.live || turn.state == .done { return }
         switch turn.state {
         case .thinking, .answering, .done:
             // Nothing goes up until there is an answer: a "…" for every question-shaped phrase was

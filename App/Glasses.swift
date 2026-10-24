@@ -831,6 +831,9 @@ enum Identification {
         autoBusy = false
         tracker.reset()
         announced.removeAll()
+        photoVerdict.removeAll(); photoMatch.removeAll(); photoHit.removeAll(); photoTries.removeAll()
+        resumePhoto(nil)
+        photoBusy = false
         resumeFrame(nil)
         self.status = status
     }
@@ -901,6 +904,8 @@ enum Identification {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, !Task.isCancelled else { return }
                 guard self.connected, self.recoveryTask == nil else { continue }
+                // A still in flight can pause video for a moment; don't call that a stall.
+                guard !self.photoBusy, Date().timeIntervalSince(self.lastPhotoAt) > 4 else { continue }
                 guard self.camera != nil else {
                     self.scheduleRecovery(reason: "noCamera")
                     continue
@@ -1029,6 +1034,10 @@ enum Identification {
                 Task { @MainActor in self?.audioFrames += 1 }
             })
         }
+        cameraTokens.append(camera.stream.photoDataPublisher.listen { [weak self] photo in
+            let data = photo.data
+            Task { @MainActor in self?.resumePhoto(data) }
+        })
         cameraTokens.append(camera.stream.statePublisher.listen { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
@@ -1150,20 +1159,28 @@ enum Identification {
         var seenNow: [(id: String, attention: Float)] = []
         let inFrame = live.filter { $0.updated == frameTime }
         let focus = inFrame.map(\.attention).max() ?? 0
+        frameWidth = image.extent.width
+        let photos = usePhotos
         for track in live where track.looks > 0 {
-            // A clear look at a strong match is enough on its own; anything weaker has to build up
-            // evidence over a couple of frames first.
-            // A face followed over several looks has earned the normal bar (minScore/minGap, the
-            // same one a press uses); a single look still needs the strict one. The strict bar
-            // was only ever cleared by someone looking straight into the glasses, so a person
-            // talking to you at an angle never got named.
-            let evidenced = track.weight >= minEvidence
-            guard let match = evidenced ? store.match(track.probe) : store.confidentMatch(track.probe),
-                  evidenced || match.score >= strongScore else { continue }
             let current = track.updated == frameTime
-            if current { seenNow.append((match.person.id, track.attention)) }
-            guard current, track.attention >= focus * focusShare,
-                  !announced.contains(track.id), mayShow(match.person.id) else { continue }
+            let focused = current && track.attention >= focus * focusShare
+            // What the stream alone says. A clear look at a strong match, or several looks fused.
+            let evidenced = track.weight >= minEvidence
+            let lowRes = (evidenced ? store.match(track.probe) : store.confidentMatch(track.probe))
+                .flatMap { evidenced || $0.score >= strongScore ? $0 : nil }
+            // The photo's word beats the stream's: a confirmed match, or "" for nobody on the roster.
+            let verdict = photoVerdict[track.id]
+            let big = facePx(track) >= minAnnouncePx
+            let match: Match? = verdict.map { $0.isEmpty ? nil : photoMatch[track.id] } ?? (big ? lowRes : nil)
+            if current, let match { seenNow.append((match.person.id, track.attention)) }
+            guard focused, !announced.contains(track.id) else { continue }
+            if photos, verdict == nil {
+                // A new face in focus: before naming anyone, get a real look at it. Skipped for
+                // someone already in the conversation (they wouldn't be announced anyway).
+                if lowRes.map({ mayShow($0.person.id) }) ?? (track.looks >= 2) { requestPhoto(track) }
+                continue
+            }
+            guard let match, mayShow(match.person.id) else { continue }
             if let best = chosen, track.attention <= best.track.attention { continue }
             chosen = (track, match)
         }
@@ -1181,10 +1198,12 @@ enum Identification {
         }
 
         announced.insert(chosen.track.id)
-        result = .known(chosen.match, chosen.track.best)
+        result = .known(chosen.match, photoHit[chosen.track.id] ?? chosen.track.best)
         recordSeen()
         let ranked = store.ranked(chosen.track.probe)
         var log: [String: Any] = ["event": "autoIdentify", "source": "watch",
+                                  "confirmedBy": photoVerdict[chosen.track.id] != nil ? "photo" : "stream",
+                                  "facePx": Int(facePx(chosen.track)),
                                   "detector": FaceEngine.detectorName,
                                   "attention": (Double(chosen.track.attention) * 100).rounded() / 100,
                                   "inFrame": inFrame.count,
@@ -1212,6 +1231,119 @@ enum Identification {
     /// second person in the frame matchable at all. The blur gate inside `scan` pays for itself
     /// twice: it skips the embed on frames that could never produce a right answer, and it stops
     /// those frames producing a *wrong* one.
+    // MARK: - High-resolution confirmation
+    //
+    // The stream is 2 fps and the SDK delivers it at 360x640 more often than the 504x896 asked
+    // for, so a face at talking distance is ~50-80 px: enough to find and follow, not enough to
+    // name reliably. A stream match named Mirabelle (0.63) on a small face at the edge of view when
+    // she wasn't there. So the stream only finds and tracks; a new face in focus gets one or two
+    // full-resolution stills (stream.capturePhoto) and is named only if the still matches clearly.
+    // If stills don't work on this pair, naming falls back to the stream with a minimum face size.
+
+    @ObservationIgnored private var photoConfirm: Bool { Tuning.bool("photoConfirm", true) }
+    /// Below this many pixels wide in the stream frame, a stream-only match is never announced.
+    @ObservationIgnored private var minAnnouncePx: CGFloat { CGFloat(Tuning.float("minAnnouncePx", 56)) }
+    @ObservationIgnored private var frameWidth: CGFloat = 360
+    /// Per track: the confirmed person id, or "" when the still showed nobody on the roster.
+    @ObservationIgnored private var photoVerdict: [Int: String] = [:]
+    @ObservationIgnored private var photoMatch: [Int: Match] = [:]
+    @ObservationIgnored private var photoHit: [Int: FaceHit] = [:]
+    @ObservationIgnored private var photoTries: [Int: Int] = [:]
+    @ObservationIgnored private var photoBusy = false
+    @ObservationIgnored private var lastPhotoAt = Date.distantPast
+    @ObservationIgnored private var photoFailures = 0
+    @ObservationIgnored private var photoUnavailableUntil = Date.distantPast
+    @ObservationIgnored private var photoWaiter: CheckedContinuation<Data?, Never>?
+    @ObservationIgnored private var photoRequest = UUID()
+
+    private var usePhotos: Bool { photoConfirm && camera != nil && Date() > photoUnavailableUntil }
+
+    private func facePx(_ track: FaceTracker.Track) -> CGFloat { track.best.box.width * frameWidth }
+
+    private func requestPhoto(_ track: FaceTracker.Track) {
+        guard !photoBusy, (photoTries[track.id] ?? 0) < 2, Date().timeIntervalSince(lastPhotoAt) > 1.5 else { return }
+        photoBusy = true
+        photoTries[track.id, default: 0] += 1
+        lastPhotoAt = Date()
+        let id = track.id, box = track.box
+        Task { await confirmByPhoto(track: id, box: box) }
+    }
+
+    private func confirmByPhoto(track id: Int, box: CGRect) async {
+        defer { photoBusy = false; lastPhotoAt = Date() }
+        let start = CFAbsoluteTimeGetCurrent()
+        var log: [String: Any] = ["event": "photoConfirm", "track": id, "try": photoTries[id] ?? 1]
+        guard let data = await takePhoto(), let image = CIImage(data: data) else {
+            photoFailures += 1
+            log["outcome"] = "noPhoto"
+            log["ms"] = ms(since: start)
+            if photoFailures >= 2 {
+                // This pair won't take stills mid-stream: name from the stream (with the size
+                // floor) for a while instead of waiting on photos that never come.
+                photoUnavailableUntil = Date().addingTimeInterval(300)
+                log["photosOff"] = 300
+            }
+            SpeedLog.record(log)
+            return
+        }
+        photoFailures = 0
+        log["bytes"] = data.count
+        log["width"] = Int(image.extent.width)
+        log["height"] = Int(image.extent.height)
+        log["photoMs"] = ms(since: start)
+        let scan = await withCheckedContinuation { done in
+            worker.async { done.resume(returning: FaceEngine.scan(image, limit: 4, rank: .attention, minFace: 40)) }
+        }
+        log["faces"] = scan.hits.count
+        // The still and the stream frame cover nearly the same view; take the face nearest where
+        // the tracked one was, else the most attended.
+        let center = CGPoint(x: box.midX, y: box.midY)
+        let usable = scan.hits.filter(\.usable)
+        let hit = usable.min { hypot($0.box.midX - center.x, $0.box.midY - center.y) < hypot($1.box.midX - center.x, $1.box.midY - center.y) }
+        guard let hit, let store else {
+            log["outcome"] = "noFace"
+            if (photoTries[id] ?? 0) >= 2 { photoVerdict[id] = "" }
+            SpeedLog.record(log)
+            return
+        }
+        let ranked = store.ranked(hit.embedding)
+        log["facePx"] = Int(hit.box.width * image.extent.width)
+        log["score"] = ranked.first.map { (Double($0.score) * 1000).rounded() / 1000 }
+        log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
+        if let match = store.confidentMatch(hit.embedding) {
+            photoVerdict[id] = match.person.id
+            photoMatch[id] = match
+            photoHit[id] = hit
+            log["person"] = match.person.id
+            log["outcome"] = "confirmed"
+        } else {
+            photoVerdict[id] = ""
+            log["outcome"] = "nobody"
+        }
+        log["ms"] = ms(since: start)
+        SpeedLog.record(log)
+    }
+
+    /// One full-resolution still off the running stream, or nil within 6 s.
+    private func takePhoto() async -> Data? {
+        guard let camera, camera.stream.capturePhoto(format: .jpeg) else { return nil }
+        let request = UUID()
+        photoRequest = request
+        return await withCheckedContinuation { done in
+            photoWaiter = done
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(6))
+                guard let self, self.photoRequest == request else { return }
+                self.resumePhoto(nil)
+            }
+        }
+    }
+
+    private func resumePhoto(_ data: Data?) {
+        photoWaiter?.resume(returning: data)
+        photoWaiter = nil
+    }
+
     private func scanFaces(_ image: CIImage) async -> (hits: [FaceHit], timing: FaceTiming) {
         await withCheckedContinuation { done in
             worker.async {

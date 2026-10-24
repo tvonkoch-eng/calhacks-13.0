@@ -81,9 +81,9 @@ enum Tools {
     /// Only when the research tool is offered. Without it, "needs live data" above meant SKIP, and
     /// gpt-oss kept skipping "what's the latest on the GENIUS Act?" instead of calling research.
     private static let web = """
-     For anything current or on the web (news, "the latest on", prices, scores, opening hours, \
-    recent events, a specific company or person you aren't sure about), call research instead of \
-    saying SKIP.
+     For public, current facts (news, "the latest on", prices, scores, opening hours, recent \
+    events), call research instead of saying SKIP. Never research the speakers' own product, \
+    project, company or work: SKIP those.
     """
 
     /// One round: the model answers in a line, says SKIP, or names a tool for the caller to run.

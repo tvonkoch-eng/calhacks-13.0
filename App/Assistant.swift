@@ -74,7 +74,16 @@ import Observation
         wire(aid)
     }
 
-    private static func makeAid(wearer: String) -> Aid { Aid(config: .fromBundle(wearer: wearer)) }
+    /// Quiet by default (tuning knobs, no rebuild): explicit questions only, and no coach. The coach
+    /// (definitions, lines to say, its own lookups) misfired in a real conversation about our own
+    /// product: it researched "Meta AR glasses frame rate", decided a person mentioned was the one
+    /// talking, and its calls used up the rate limit the answers needed.
+    private static func makeAid(wearer: String) -> Aid {
+        var config = Aid.Config.fromBundle(wearer: wearer)
+        config.explicitOnly = Tuning.bool("aidExplicitOnly", true)
+        if !Tuning.bool("aidCoach", false) { config.coach = nil }
+        return Aid(config: config)
+    }
 
     var status: String { armed ? (aid.status.isEmpty ? listener.status : aid.status) : "Off" }
     var level: Float { listener.level }
