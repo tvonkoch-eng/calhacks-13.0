@@ -1300,7 +1300,7 @@ struct LensPanel: View {
         // 16:9, around the lens. At that size the card is true to scale and too small to read,
         // so a tap zooms to `eyeZoomDeg` of scene around the lens and back. Either way the lens
         // keeps its true size relative to the scene behind it.
-        let window = optics.window(degrees: zoomed ? CGFloat(Tuning.float("eyeZoomDeg", 19)) : 180)
+        let window = optics.window(degrees: zoomed ? CGFloat(Tuning.float("eyeZoomDeg", 30)) : 180)
         return GeometryReader { geo in
             ZStack(alignment: .topLeading) {
                 Color.black
