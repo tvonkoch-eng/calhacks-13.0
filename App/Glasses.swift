@@ -434,17 +434,37 @@ enum Identification {
             let finder = AutoDeviceSelector(wearables: wearables)
             status = "Looking for your glasses"
             SpeedLog.record(["event": "connect", "stage": "lookingForGlasses"])
-            var found: DeviceIdentifier?
-            for await id in finder.activeDeviceStream() {
-                if let id { found = id; break }
+            // Never wait forever on the glasses: with none in sight this hung on "Looking for your
+            // glasses" with nothing in the log (20:37, four times). 15 s, then the recovery ladder.
+            let devices = finder.activeDeviceStream()
+            let found: DeviceIdentifier? = await withTaskGroup(of: DeviceIdentifier?.self) { group in
+                group.addTask { for await id in devices { if let id { return id } }; return nil }
+                group.addTask { try? await Task.sleep(for: .seconds(15)); return nil }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
             }
-            guard let found else { return }
+            guard let found else {
+                SpeedLog.record(["event": "connectError", "error": "noGlassesFound", "waitedS": 15])
+                scheduleRecovery(reason: "noGlassesFound")
+                status = "Can't find your glasses — are they on and connected in Meta AI?"
+                return
+            }
+            SpeedLog.record(["event": "connect", "stage": "glassesFound"])
             // Seen is not the same as linked: a session started before the link is up never starts.
+            let linkDeadline = Date().addingTimeInterval(15)
             while let device = wearables.deviceForIdentifier(found),
                   !(device.linkState == .connected && device.compatibility() == .compatible) {
                 if device.compatibility() == .deviceUpdateRequired {
                     status = "Update your glasses in the Meta AI app"
                     blockedOnUser = true
+                    return
+                }
+                if Date() > linkDeadline {
+                    SpeedLog.record(["event": "connectError", "error": "linkTimeout", "waitedS": 15,
+                                     "link": "\(device.linkState)", "compatibility": "\(device.compatibility())"])
+                    scheduleRecovery(reason: "linkTimeout")
+                    status = "Glasses found but not linked — check them in Meta AI"
                     return
                 }
                 try await Task.sleep(for: .milliseconds(100))
