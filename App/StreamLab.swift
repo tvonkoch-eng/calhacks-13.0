@@ -119,15 +119,19 @@ struct StreamControls: View {
                     .font(.caption)
                     .foregroundStyle(glasses.likeness?.confident == true ? Color.green : Color.secondary)
                 if let l = glasses.likeness {
+                    // One line, always: a wrapped name moved the chat and the person card below.
                     Text("\(l.name) \(Int((l.score * 100).rounded()))%")
                         .font(.caption.weight(.semibold).monospacedDigit())
+                        .lineLimit(1).layoutPriority(1)
                         .foregroundStyle(l.confident ? Color.green : Color.primary)
                     Text(l.runnerUp.map { "next \($0) −\(Int((l.gap * 100).rounded()))" } ?? "")
                         .font(.caption.monospacedDigit())
+                        .lineLimit(1)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Text("\(l.looks) looks")
                         .font(.caption2.monospacedDigit())
+                        .lineLimit(1)
                         .foregroundStyle(.tertiary)
                 } else {
                     Text("No face in view").font(.caption).foregroundStyle(.secondary)
