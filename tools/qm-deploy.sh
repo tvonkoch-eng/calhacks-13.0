@@ -57,6 +57,14 @@ FAST="-disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
 FASTSET="COMPILER_INDEX_STORE_ENABLE=NO"
 UNSIGNED="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= CODE_SIGN_ENTITLEMENTS="
 
+# xcodegen with `sources: [App]` writes an explicit reference per file, so ADDING a source file
+# or a reference photo changes the project even though project.yml does not. Fingerprint both, or
+# a new file is silently left out of the build and the compiler says "cannot find X in scope".
+layout_fp() {
+  { shasum project.yml; find App Tests -type f ! -name '.DS_Store' 2>/dev/null | sort; } \
+    | shasum | awk '{print $1}'
+}
+
 errors_from_log() {
   grep -E "(error|warning): " "$LOG" | grep -v "appintentsmetadataprocessor" | tail -25
 }
@@ -83,7 +91,7 @@ if [ "${CHECK:-0}" = "1" ]; then
   # Secrets.xcconfig is Mac-local and gitignored; the example has the same keys with empty values,
   # which is all a typecheck needs.
   cp -f "$TREE/Secrets.xcconfig" Secrets.xcconfig 2>/dev/null || cp -f Secrets.example.xcconfig Secrets.xcconfig
-  PYHASH=$(shasum project.yml | awk '{print $1}')
+  PYHASH=$(layout_fp)
   if [ "$PYHASH" != "$(cat $STATE/check.project.yml.sha 2>/dev/null)" ] || [ ! -d CalHacks.xcodeproj ]; then
     ~/bin/xcodegen generate >> "$LOG" 2>&1 || { say "CHECK_XCODEGEN_FAILED"; exit 8; }
     echo "$PYHASH" > $STATE/check.project.yml.sha
@@ -218,9 +226,9 @@ SHA=$(git rev-parse --short HEAD)
 say "source: $SHA ($(git log -1 --pretty=%s | cut -c1-60))"
 
 # ---------- 4. regenerate project only when project.yml moved ----------
-PYHASH=$(shasum project.yml | awk '{print $1}')
+PYHASH=$(layout_fp)
 if [ "$PYHASH" != "$(cat $STATE/project.yml.sha 2>/dev/null)" ] || [ ! -d CalHacks.xcodeproj ]; then
-  say "project.yml changed — running xcodegen"
+  say "project layout changed (project.yml or the file list) — running xcodegen"
   cp -f "$SWIFTPM/Package.resolved" /tmp/qm-package.resolved 2>/dev/null || true
   ~/bin/xcodegen generate >> "$LOG" 2>&1 || { say "XCODEGEN_FAILED (see $LOG)"; exit 5; }
   # Keep the pin across a regenerate, or the next build falls back to asking GitHub.
