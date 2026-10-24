@@ -265,7 +265,11 @@ struct Match {
         if let cached = lensAvatars[id] { return cached }
         guard let avatar = avatars[id] else { return nil }
         let size = CGSize(width: 96, height: 96)
-        let small = UIGraphicsImageRenderer(size: size).image { _ in avatar.draw(in: CGRect(origin: .zero, size: size)) }
+        // Scale 1: 96x96 pixels. The renderer's default is the phone's screen scale (3x, so 288x288),
+        // and the photo is ~90% of a card write: 477 ms with it, 46 ms without (lens bench, Oct 24).
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in avatar.draw(in: CGRect(origin: .zero, size: size)) }
         lensAvatars[id] = small
         return small
     }
