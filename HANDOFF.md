@@ -14,6 +14,28 @@ packed hackathon room's radio environment is the limit, prove it with logs and d
   bundle `com.tobiasvonkoch.calhacks13`. Glasses: Meta Ray-Ban Display + Neural Band, Developer Mode.
 - Latest commit **`d4ae761` has NOT been verified on the glasses yet.** Start by testing it.
 
+## Taking over on your own Mac (Joaquin)
+
+Building, installing and pulling logs all happen from the Mac that the iPhone is plugged into, and
+the iPhone has to be the one paired with the glasses in Meta AI. One-time setup:
+
+1. **Xcode 26.4+** (from the App Store), opened once so it installs its components. Then
+   `brew install xcodegen`.
+2. `git clone https://github.com/tvonkoch-eng/calhacks-13.0 && cd calhacks-13.0 && git checkout crm-redesign`
+3. **Signing:** in `project.yml` set `DEVELOPMENT_TEAM` to your own Apple team ID and change
+   `PRODUCT_BUNDLE_IDENTIFIER` to something unique (for example `com.jdelpego.calhacks13`), or get
+   added to team `VBT92TS7FT`. Do the same in `LensLab/project.yml` if you use Lens Lab.
+4. `cp Secrets.example.xcconfig Secrets.xcconfig` (face ID needs no key; only conversation assist does).
+5. **Phone:** plug in and unlock it, trust the Mac, and turn on Developer Mode
+   (Settings > Privacy & Security). Find the UDID with `xcrun devicectl list devices`.
+6. **Glasses:** in the Meta AI app on that phone, turn on Developer Mode
+   (Settings > your glasses > Developer Mode). The app asks you to approve it in Meta AI on first launch.
+7. Build, install and launch with the commands below. If you changed the bundle ID, use the new one
+   in the `launch` and log commands too.
+
+Face photos for the four of us are bundled (`App/References`, `App/Faces`), so recognition works on a
+fresh install. Saved history and the speed log live on the phone and reset when the app is deleted.
+
 ## Build and run
 
 ```sh
