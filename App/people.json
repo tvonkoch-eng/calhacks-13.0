@@ -1,0 +1,6 @@
+[
+  { "id": "toby",     "name": "Toby von Koch", "role": "You",      "facts": [], "isMe": true },
+  { "id": "joaquin",  "name": "Joaquin",       "role": "Teammate", "facts": ["Cal Hacks 13.0 team"] },
+  { "id": "mirabell", "name": "Mirabell",      "role": "Teammate", "facts": ["Cal Hacks 13.0 team"] },
+  { "id": "avi",      "name": "Avi",           "role": "Teammate", "facts": ["Cal Hacks 13.0 team"] }
+]
