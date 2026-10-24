@@ -40,7 +40,11 @@ EOF
 }
 macssh() { qm_ssh_setup || return 1; ssh mac "$@"; }
 # Open the multiplexed master now so the next call is cheap. Safe to call repeatedly.
+# Open the master with a normal short-lived connection (ControlPersist keeps it alive after
+# it exits). Never use `ssh -f -N` here: the forked ssh inherits stdout/stderr and holds the
+# pipe open, so the calling tool waits forever for EOF. That hang cost us a turn.
 qm_warm() {
   qm_ssh_setup || return 1
-  ssh -O check mac 2>/dev/null || ssh -f -N mac 2>/dev/null || true
+  ssh -O check mac >/dev/null 2>&1 && return 0
+  ssh -o ConnectTimeout=25 mac true >/dev/null 2>&1 </dev/null || true
 }
