@@ -6,6 +6,20 @@ import MWDATInputs
 import Observation
 import UIKit
 
+/// What the lens shows during a conversation: the question we heard and the answer so far.
+struct AnswerCard: Equatable {
+    let question: String
+    let answer: String
+    let thinking: Bool
+
+    /// The lens is small. Echo just enough of the question to make the answer legible.
+    var echo: String {
+        let words = question.split(separator: " ")
+        guard words.count > 7 else { return question }
+        return words.prefix(7).joined(separator: " ") + "\u{2026}"
+    }
+}
+
 enum Identification {
     case ready
     case noFace
@@ -22,6 +36,8 @@ enum Identification {
     var identifying = false
     var frame: UIImage?
     var result: Identification = .ready
+    /// Takes over the lens while it is set; the identity card comes back when it clears.
+    var answer: AnswerCard?
 
     @ObservationIgnored var store: Store?
     @ObservationIgnored private var session: DeviceSession?
@@ -32,6 +48,10 @@ enum Identification {
     @ObservationIgnored private var inputTask: Task<Void, Never>?
     @ObservationIgnored private var photoWaiter: CheckedContinuation<CIImage?, Never>?
     @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces")
+    @ObservationIgnored private var lastSend = Date.distantPast
+    @ObservationIgnored private var pendingSend: Task<Void, Never>?
+    /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
+    @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
     static func configure() {
         do { try Wearables.configure() } catch { print("Wearables.configure failed: \(error)") }
@@ -151,6 +171,13 @@ enum Identification {
         renderLens()
     }
 
+    /// Put a conversation answer on the lens, or clear it and fall back to the identity card.
+    func showAnswer(_ card: AnswerCard?) {
+        guard card != answer else { return }
+        answer = card
+        renderLens()
+    }
+
     /// Re-match the last face after it was saved to someone.
     func rematch() {
         guard let store else { return }
@@ -171,6 +198,9 @@ enum Identification {
         displayReady = false
         session = nil
         connected = false
+        pendingSend?.cancel()
+        pendingSend = nil
+        answer = nil
         frame = nil
         result = .ready
         photoWaiter?.resume(returning: nil)
@@ -219,7 +249,18 @@ enum Identification {
     }
 
     private func renderLens() {
-        guard let display, displayReady else { return }
+        guard displayReady else { return }
+
+        // A live answer owns the lens. It is the thing the wearer needs in the next half second.
+        if let card = answer {
+            let headline = card.answer.isEmpty ? "\u{2026}" : card.answer
+            send(FlexBox(direction: .column, spacing: 8) {
+                Text(headline, style: .heading)
+                Text(card.echo, style: .meta, color: .secondary)
+            })
+            return
+        }
+
         let identify: @Sendable () -> Void = { [weak self] in Task { @MainActor in await self?.identify() } }
         let button = Button(label: "Identify", style: .secondary, iconName: .eye, onClick: identify)
         let view: FlexBox
@@ -251,6 +292,24 @@ enum Identification {
                 button
             }
         }
-        Task { try? await display.send(view.padding(20).background(.card)) }
+        send(view)
+    }
+
+    /// Rate-limited lens write. The first frame of an answer goes out immediately; the stream of
+    /// token updates behind it collapses into one frame every `minSendInterval`, last value wins.
+    private func send(_ view: FlexBox) {
+        pendingSend?.cancel()
+        let wait = minSendInterval - Date().timeIntervalSince(lastSend)
+        guard wait > 0 else {
+            lastSend = Date()
+            Task { try? await display?.send(view.padding(20).background(.card)) }
+            return
+        }
+        pendingSend = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled, let self, let display = self.display else { return }
+            self.lastSend = Date()
+            try? await display.send(view.padding(20).background(.card))
+        }
     }
 }

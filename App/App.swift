@@ -5,6 +5,7 @@ import SwiftUI
 struct CalHacksApp: App {
     @State private var store = Store()
     @State private var glasses = Glasses()
+    @State private var assistant = Assistant()
 
     init() { Glasses.configure() }
 
@@ -13,9 +14,11 @@ struct CalHacksApp: App {
             GlassesView()
                 .environment(store)
                 .environment(glasses)
+                .environment(assistant)
                 .onOpenURL { glasses.handle($0) }
                 .task {
                     glasses.store = store
+                    assistant.glasses = glasses
                     await glasses.connectIfRegistered()
                 }
         }
@@ -25,6 +28,7 @@ struct CalHacksApp: App {
 struct GlassesView: View {
     @Environment(Store.self) private var store
     @Environment(Glasses.self) private var glasses
+    @Environment(Assistant.self) private var assistant
 
     var body: some View {
         NavigationStack {
@@ -43,6 +47,7 @@ struct GlassesView: View {
 
                 resultCard
                 Spacer()
+                listenStrip
 
                 if glasses.connected {
                     Button { Task { await glasses.identify() } } label: {
@@ -68,8 +73,31 @@ struct GlassesView: View {
                     if glasses.connected { Button("Disconnect") { glasses.disconnect() } }
                 }
                 ToolbarItem { NavigationLink("People") { PeopleView() } }
+                ToolbarItem(placement: .bottomBar) {
+                    NavigationLink("Transcript") { ConversationView() }
+                }
             }
         }
+    }
+
+    /// Mic state plus the question in flight. Tap through for the full log and timings.
+    @ViewBuilder private var listenStrip: some View {
+        VStack(spacing: 8) {
+            MicRow()
+            if let turn = assistant.current, turn.live || !turn.answer.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(turn.question).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(turn.answer.isEmpty ? "…" : turn.answer)
+                            .font(.subheadline.weight(.medium)).lineLimit(2)
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 
     @ViewBuilder private var resultCard: some View {

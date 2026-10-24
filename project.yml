@@ -18,6 +18,10 @@ targets:
     type: application
     platform: iOS
     sources: [App]
+    # cp Secrets.example.xcconfig Secrets.xcconfig and put your answer-model key in it.
+    configFiles:
+      Debug: Secrets.xcconfig
+      Release: Secrets.xcconfig
     dependencies:
       - package: MWDAT
         product: MWDATCore
@@ -34,10 +38,14 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: Recognizes your teammates' faces on device.
+        NSMicrophoneUsageDescription: Listens for questions so answers can appear on your glasses.
+        NSSpeechRecognitionUsageDescription: Transcribes speech on device to spot questions as they are asked.
+        AnswerAPIKey: $(ANSWER_API_KEY)
+        AnswerProvider: $(ANSWER_PROVIDER)
         NSBluetoothAlwaysUsageDescription: Connects to your Meta glasses.
         NSLocalNetworkUsageDescription: Lets your phone find and connect to your glasses over Wi-Fi.
         NSBonjourServices: [_bonjour._tcp]
-        UIBackgroundModes: [processing, bluetooth-central, bluetooth-peripheral, external-accessory]
+        UIBackgroundModes: [audio, processing, bluetooth-central, bluetooth-peripheral, external-accessory]
         UISupportedExternalAccessoryProtocols: [com.meta.ar.wearable]
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
