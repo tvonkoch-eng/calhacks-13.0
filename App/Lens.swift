@@ -1,10 +1,10 @@
 import Foundation
 
 /// What the lens shows during a conversation. Three things, no more:
-/// - `header`: who you're talking to, once they've said their name.
-/// - `card`: one passing card — an answer, a definition or a research note — that times out.
-/// - `followup`: a rare interjection, pinned while cards come and go: a definition that pops up for
-///   eight seconds must not knock a good question off the display.
+/// - `header`: who you're talking to, once face ID or an introduction says.
+/// - `card`: one passing card — an answer (looked up or not) or a definition — that times out.
+/// - `followup`: a suggestion of what to say next, pinned while cards come and go: a definition
+///   that pops up for eight seconds must not knock it off the display.
 struct LensView: Equatable {
     var header: String?
     var card: Card?
@@ -36,9 +36,9 @@ struct Work: Equatable {
 
 struct Card: Equatable {
     /// Higher wins the slot. An answer was asked for out loud; a definition explains something just
-    /// said; research is background that can wait.
+    /// said.
     enum Kind: Int, Comparable {
-        case research = 1, definition = 2, answer = 3
+        case definition = 2, answer = 3
         static func < (a: Kind, b: Kind) -> Bool { a.rawValue < b.rawValue }
     }
 
@@ -69,13 +69,13 @@ struct Card: Equatable {
 struct Compositor {
     private(set) var view = LensView()
 
-    static let ttl: [Card.Kind: TimeInterval] = [.answer: 12, .definition: 8, .research: 14]
+    static let ttl: [Card.Kind: TimeInterval] = [.answer: 12, .definition: 8]
     static let minDwell: TimeInterval = 2.5
     static let answerDwell: TimeInterval = 5
     /// How long a card may wait for the slot (or for the wearer to stop talking) before it is
     /// stale. In a fast conversation a definition is worth little five seconds on.
-    static let maxWait: [Card.Kind: TimeInterval] = [.answer: 3, .definition: 5, .research: 15]
-    /// An interjection is for the wearer's next turn (Aid clears it once they've spoken); if they
+    static let maxWait: [Card.Kind: TimeInterval] = [.answer: 3, .definition: 5]
+    /// A suggestion is for the wearer's next turn (Aid clears it once they've spoken); if they
     /// don't take it, it fades.
     static let followupLife: TimeInterval = 20
 

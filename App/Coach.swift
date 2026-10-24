@@ -3,60 +3,60 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// The slow lane. After each of the other person's turns, one call decides what the wearer should
-/// see beyond answers: a term to define, the best thing to say next, who they're talking to, and
-/// whether anything deserves a deeper look. Answers to questions stay in the fast lane (Answer.swift)
-/// because they are useless late; this lane can take half a second.
+/// The slow lane. After the other person's sentences and turns, one call looks for a term to
+/// define; at the moments Aid picks (a lull, a request, a face just recognised), the same call also
+/// writes the best thing for the wearer to say next. The coach decides *what*, Aid decides *when*.
+/// What they told us about themselves is the CRM's to keep: its recap reads the whole conversation
+/// once it's over, which beats guessing facts line by line. Answers to questions stay in the fast
+/// lane (Answer.swift) because they are useless late.
 enum Coach {
     /// What the coach sees on each call.
     struct Input {
         var wearer: String
-        /// What the wearer already knows, so obvious terms aren't defined ("CS student, knows ML").
+        /// Who the wearer is and what they know: keeps obvious terms from being defined, and gives
+        /// suggestions their common ground ("CS and financial math student, trades").
         var background = ""
-        var known: String          // "Priya · Berkeley CS student; paralegal for two years"
+        var known: String          // "Priya · evals startup founder; Berkeley CS; Last talked Oct 12: …"
         var defined: [String]
-        var researched: [String]
-        var suggestion: String?
-        /// Whether an interjection may be offered now; Aid rations them.
-        var interject = false
+        /// Suggestions already shown, so none comes round twice.
+        var suggested: [String]
+        /// Why the wearer needs a suggestion right now ("a silence"), or nil: then none is wanted.
+        var moment: String?
         var transcript: [String]   // "THEM: …", oldest first; the last one is new
     }
 
-    enum Followup: Equatable { case keep, clear, say(String) }
-
     struct Advice: Equatable {
         var define: [(term: String, meaning: String)] = []
-        var followup: Followup = .keep
-        var name: String?
-        var label: String?
-        var facts: [String] = []
-        var research: String?
+        /// The best thing for the wearer to say next, when one was asked for.
+        var suggest: String?
 
         static func == (a: Advice, b: Advice) -> Bool {
             a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
-                && a.followup == b.followup && a.name == b.name && a.label == b.label
-                && a.facts == b.facts && a.research == b.research
+                && a.suggest == b.suggest
         }
     }
 
-    // Tuned on four scripted conversations (Tests/conversations) on 2026-10-23/24. Toby's verdict
-    // on the first live run: far too chatty. So the bar is high and the default is silence: terms
-    // only when genuinely obscure, interjections only when allowed (Aid gates them) and earned.
+    // Definitions tuned on scripted conversations (Tests/conversations) on 2026-10-23/24: only
+    // genuinely obscure terms. A suggestion is asked for only at a moment Aid picked (a silence, a
+    // request, a face recognised), so it can aim for the best line rather than the safest. The
+    // coach no longer names people (a name mentioned in passing became THEM's) or looks things up
+    // (it researched our own product): names come from introductions and face ID, lookups only
+    // from questions someone asked.
     static let prompt = """
     You are a quiet conversation aid inside AR glasses. The wearer is in a live, in-person \
-    conversation with one other person and should stay present in it, so you stay silent unless \
-    something clearly earns a glance at the display. Nearly every line needs nothing.
-
-    Lines are tagged ME (the wearer) and THEM (the other person). The transcript comes from live \
-    speech recognition, so expect misheard words. Questions asked out loud are answered by a \
-    separate system; never handle them here.
+    conversation with one other person and should stay present in it. Lines are tagged ME (the \
+    wearer) and THEM (the other person). The transcript comes from live speech recognition, so \
+    expect misheard words. Questions asked out loud are answered by a separate system; never \
+    answer them here.
 
     Reply with one JSON object with exactly these keys:
 
     "define": [{"term": "...", "meaning": "..."}]
       At most one: the single least familiar term in the newest line that the wearer, given their \
-    background, would probably not know: specialist jargon, a technical method, a niche name, a \
-    foreign phrase. Anything in the wearer's own field is never defined (a finance student knows \
+    background, would probably not know: specialist jargon, a technical method, a scientific or \
+    legal concept, a foreign phrase. Only established concepts, never a specific law, company, \
+    product, person or event: those change, and you may not know the latest. Anything in the \
+    wearer's own field is never defined (a finance student knows \
     the Greeks, Sharpe ratio, market making; a CS student knows APIs, latency, LLMs). Never common \
     business, tech, academic or everyday words (Series A, startup, latency, API, ICU). Skip a term \
     the speaker explains in the same breath ("CAR T, so engineered T cells") and pick the next \
@@ -64,48 +64,33 @@ enum Coach {
     was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
     unsure. "meaning" is at most 8 plain words. Usually [].
 
-    "followup": "..." or "" or null
-      A tasteful interjection: a line the wearer could say next, at most 12 words, in their own \
-    voice, no greeting, no name. Offer one only when "Interjection allowed" is yes and the moment \
-    is one of these:
-      - an opening the wearer can act on: they're hiring, an invitation, an offer to introduce, a \
-    next step ("you should apply" → ask how, or for a contact);
-      - news or feeling THEM just shared that the wearer hasn't responded to yet;
-      - the conversation stalled: revive a thread THEM mentioned earlier.
-      It is something the wearer asks or says to THEM, about THEM or the moment. You know nothing \
-    about the wearer, so never answer a question for them and never state anything about their \
-    life, plans or work. Never a generic or technical quiz question about what they just said, \
-    never something the wearer would obviously say anyway, never about something already asked or \
-    answered. When in doubt, null. null also keeps the current one; "" clears it once it no \
-    longer fits.
-
-    "them": {"name": "..."} or null
-      THEM's first name, once they say it.
-
-    "facts": ["..."]
-      New facts THEM revealed about themselves, at most 8 words each, not already in "Known about \
-    them". Often [].
-
-    "research": "..." or null
-      A web search query, only when THEM names a specific company, product, paper or person the \
-    wearer would benefit from knowing more about. Include context words to find the right thing \
-    despite misheard names. At most once per topic; never repeat "Already researched"; null for \
-    small talk.
+    "suggest": "..." or null
+      Only when "Suggest now" is yes, otherwise null. The one thing the wearer could say next to \
+    keep the conversation going well: a question for THEM or something to bring up, at most 10 \
+    words, in the wearer's voice, no greeting, no name. It is about THEM (their work, what they \
+    said, what they're after) or what the two share; never about the wearer's own interests, and \
+    never answered already. Draw on, best first:
+      - what's known about THEM from before: last time's topic, a promise either of them made;
+      - a thread THEM opened that nobody followed up: a project, a problem, a plan, news;
+      - something they have in common, going only by the wearer's background;
+      - when the conversation winds down: a concrete next step (swap contacts, an intro, a follow-up).
+      Specific to this person and this conversation; a simple open question only when nothing is \
+    known yet. Never a reply on the wearer's behalf or a claim about their life, never a quiz \
+    about a term, never a thread already covered, never one of "Already suggested". When the \
+    wearer asks, always give one.
     """
 
     static func message(_ input: Input) -> String {
         func list(_ items: [String]) -> String { items.isEmpty ? "none" : items.joined(separator: ", ") }
-        let suggestion = input.suggestion.map { "\"\($0)\"" } ?? "none"
         return """
         Wearer: \(input.wearer)\(input.background.isEmpty ? "" : " (\(input.background)); never define what they would know")
         Known about them: \(input.known.isEmpty ? "nothing yet" : input.known)
         Already defined: \(list(input.defined))
-        Already researched: \(list(input.researched))
-        Current suggestion: \(suggestion)
-        Interjection allowed: \(input.interject ? "yes" : "no")
+        Already suggested: \(input.suggested.isEmpty ? "none" : input.suggested.map { "\"\($0)\"" }.joined(separator: ", "))
+        Suggest now: \(input.moment.map { "yes (\($0))" } ?? "no")
 
         Transcript (oldest first; the last line is new):
-        \(input.transcript.joined(separator: "\n"))
+        \(input.transcript.isEmpty ? "(nothing said yet)" : input.transcript.joined(separator: "\n"))
         """
     }
 
@@ -155,25 +140,17 @@ enum Coach {
             guard let term = clean(entry["term"]), let meaning = clean(entry["meaning"]) else { return nil }
             return (term, meaning)
         }
-        if let followup = object["followup"] as? String {
-            let text = followup.trimmingCharacters(in: .whitespacesAndNewlines)
-            result.followup = text.isEmpty ? .clear : .say(text)
-        }
-        if let them = object["them"] as? [String: Any] {
-            result.name = clean(them["name"])
-            result.label = clean(them["label"])
-        }
-        result.facts = ((object["facts"] as? [Any]) ?? []).compactMap(clean)
-        result.research = clean(object["research"])
+        result.suggest = clean(object["suggest"])
         return result
     }
 }
 
 // MARK: - Research
 
-/// The deeper lane: turn a query into one glanceable line, taking seconds rather than milliseconds.
-/// Anything can sit behind this — a web-search model, a Fetch.ai agent on Agentverse, a company
-/// database. The coach decides *what* is worth looking up; this decides how.
+/// The deeper lane: turn a question into one glanceable line, taking seconds rather than
+/// milliseconds. Anything can sit behind this — a web-search model, a Fetch.ai agent on Agentverse,
+/// a company database. Only questions someone asked reach it, and only public ones: the answer lane
+/// says WEB, or the tool model calls `research`. Never the people in the conversation.
 protocol Researcher: Sendable {
     var name: String { get }
     func research(_ query: String, context: String) async throws -> String
@@ -200,7 +177,9 @@ struct ASIOne: Researcher {
             "instructions": """
                 You look things up for someone mid-conversation who will glance at your reply on \
                 smart glasses. Reply with the single most useful thing to know, at most 18 words, \
-                plain text, no citations, no preamble.
+                plain text, no citations, no preamble. Search only for the public subject of the \
+                question; the conversation is there to resolve "it" or "that bill", and the people \
+                in it are never searched for.
                 """,
             "input": context.isEmpty ? query : "Look up: \(query)\n\nConversation so far:\n\(context)",
             "tools": [["type": "web_search"]],
@@ -255,7 +234,8 @@ struct WebResearcher: Researcher {
                 ["role": "system", "content": """
                     You look things up for someone mid-conversation who will glance at your reply on \
                     smart glasses. Reply with the single most useful thing to know, at most 18 words, \
-                    plain text, no citations, no preamble.
+                    plain text, no citations, no preamble. Search only for the public subject of \
+                    the question; never for the people in the conversation.
                     """],
                 ["role": "user", "content": "Look up: \(query)\n\nConversation so far:\n\(context)"],
             ],

@@ -2,14 +2,16 @@ import AVFoundation
 import Foundation
 
 // The conversation aid, live on a Mac: the phone's Listener and Aid, unchanged, with the lens drawn
-// in the terminal. Muse transcribes (with who-said-what), Groq answers and coaches.
+// in the terminal. Muse transcribes (with who-said-what), Cerebras answers and coaches.
 //
 //   sh tools/live-mac.sh                 talk to it (mic)
 //   sh tools/live-mac.sh --file x.wav    replay a recording at real time (never played aloud)
 //   sh tools/live-mac.sh --type          no audio: type what's said ("them: …" for the other person)
 //
-// While it runs: m + Enter if the last line was you, q + Enter to stop; any other line is said by
-// you, e.g. "Lens, how far is the nearest Target?".
+// While it runs: s + Enter for a suggestion (the glasses' pinch), m + Enter if the last line was
+// you, q + Enter to stop, "met: Priya · evals founder · Berkeley CS; Last talked Oct 12: raising a
+// seed" as if face ID recognised someone the CRM knows; any other line is said by you, e.g.
+// "Lens, how far is the nearest Target?".
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 func option(_ name: String) -> String? {
@@ -65,8 +67,13 @@ func drawLens(_ view: LensView) {
         for (i, line) in wrap(title, width - 4).enumerated() { rows.append((i == 0 ? "\(mark)  " : "   ") + Style.bold + line + Style.reset) }
         for line in wrap(card.detail, width - 4) { rows.append("   " + Style.dim + line + Style.reset) }
     }
+    for work in view.working {
+        rows.append(Style.dim + "\u{22EF}  " + work.label + (work.remaining(at: Date()).map { " · \($0) s" } ?? "") + Style.reset)
+    }
     if let followup = view.followup {
-        if view.card != nil || view.header != nil { rows.append(Style.dim + String(repeating: "\u{2500}", count: 6) + Style.reset) }
+        if view.card != nil || view.header != nil || !view.working.isEmpty {
+            rows.append(Style.dim + String(repeating: "\u{2500}", count: 6) + Style.reset)
+        }
         for (i, line) in wrap(followup, width - 4).enumerated() { rows.append((i == 0 ? "\u{21B3}  " : "   ") + line) }
     }
     if rows.isEmpty { rows = [Style.dim + "(clear)" + Style.reset] }
@@ -138,10 +145,10 @@ func drawLens(_ view: LensView) {
             + " · coach: \(lane(config.coach)) · backup: \(lane(config.backup)) · research: \(config.researcher?.name ?? "off")")
         if typing {
             aid.markWearer("B")
-            out("Type what's said: plain lines are you, \"them: …\" is the other person. q to stop.")
+            out("Type what's said: plain lines are you, \"them: …\" is the other person. s for a suggestion, q to stop.")
             return
         }
-        out(file == nil ? "Talk normally. Type m + Enter if the last line was you, q + Enter to stop."
+        out(file == nil ? "Talk normally. s + Enter for a suggestion, m + Enter if the last line was you, q + Enter to stop."
                         : "Replaying \(file!.lastPathComponent) at real time (not played aloud).")
         await listener.start()
         if !listener.listening { out(Style.warn + listener.status + Style.reset); exit(1) }
@@ -177,7 +184,9 @@ func drawLens(_ view: LensView) {
             out("\(s)  \(color)\(pad(tag, 5)) \(event.text)\(Style.reset)" + dim(event.detail))
         case .answer: out("\(s)  \(Style.aid)  answer   \(event.text)\(Style.reset)" + dim(event.detail))
         case .define: out("\(s)  \(Style.aid)  define   \(event.text)\(Style.reset)" + dim("— " + event.detail))
-        case .followup: out("\(s)  \(Style.aid)  ask      \(event.text == "used" ? "used: " + event.detail : event.text)\(Style.reset)")
+        case .followup:
+            let note = ["used", "passed", "cleared"].contains(event.text) ? "\(event.text): \(event.detail)" : event.text
+            out("\(s)  \(Style.aid)  suggest  \(note)\(Style.reset)")
         case .research: out("\(s)  \(Style.aid)  found    \(event.text)\(Style.reset)" + dim(event.detail))
         case .lookup: out("\(s)  \(Style.aid)  lookup   \(event.text)\(Style.reset)" + dim(event.detail))
         case .learned: out("\(s)  \(Style.aid)  learned  \(event.text)\(Style.reset)")
@@ -199,6 +208,15 @@ func drawLens(_ view: LensView) {
         }
     }
 
+    /// "Priya · evals startup founder · Berkeley CS; Last talked Oct 12: raising a seed": what
+    /// face ID and the CRM would hand the aid (name, label, facts), for trying openers on the Mac.
+    func met(_ text: String) {
+        let parts = text.components(separatedBy: " \u{00B7} ").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let name = parts.first, !name.isEmpty else { return }
+        let facts = parts.count > 2 ? parts[2].split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) } : []
+        aid.met(name: name, label: parts.count > 1 ? parts[1] : nil, facts: facts.filter { !$0.isEmpty })
+    }
+
     /// A typed line, as if heard: "them: …" from the other person, anything else from the wearer.
     func type(_ text: String) {
         let them = text.lowercased().hasPrefix("them:")
@@ -215,10 +233,10 @@ func drawLens(_ view: LensView) {
         }
         let events = aid.events
         let count: (Event.Kind) -> Int = { kind in events.filter { $0.kind == kind }.count }
-        let followups = events.filter { $0.kind == .followup && $0.text != "used" && $0.text != "cleared" }.count
+        let suggestions = events.filter { $0.kind == .followup && !["used", "passed", "cleared"].contains($0.text) }.count
         out("")
         out("\(Style.bold)Summary\(Style.reset)  \(aid.lines.count) lines · \(count(.answer)) answers · \(count(.define)) definitions · "
-            + "\(followups) follow-ups · \(count(.research)) lookups (\(count(.lookup)) asked for)")
+            + "\(suggestions) suggestions · \(count(.research)) lookups (\(count(.lookup)) asked for)")
         out("         answer first word median \(median(aid.timings["answer"])) · tool median \(median(aid.timings["tool"]))"
             + " · coach call median \(median(aid.timings["coach"]))"
             + (aid.timings["research"] == nil ? "" : " · research median \(median(aid.timings["research"]))"))
@@ -246,15 +264,19 @@ let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 interrupt.setEventHandler { MainActor.assumeIsolated { session.finish() } }
 interrupt.resume()
 
-// m = the last line was me, q = stop, anything else is said by the wearer.
+// s = a suggestion, m = the last line was me, met: … = face ID, q = stop, anything else is said
+// by the wearer.
 Thread.detachNewThread {
     while let line = readLine() {
-        let command = line.trimmingCharacters(in: .whitespaces).lowercased()
+        let typed = line.trimmingCharacters(in: .whitespaces)
+        let command = typed.lowercased()
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                if command == "m" { session.aid.lastLineWasMe() }
+                if command == "s" { session.aid.suggestNow() }
+                else if command == "m" { session.aid.lastLineWasMe() }
                 else if command == "q" { session.finish() }
-                else if !command.isEmpty { session.type(line.trimmingCharacters(in: .whitespaces)) }
+                else if command.hasPrefix("met:") { session.met(String(typed.dropFirst(4)).trimmingCharacters(in: .whitespaces)) }
+                else if !command.isEmpty { session.type(typed) }
             }
         }
     }

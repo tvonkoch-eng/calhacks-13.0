@@ -1,8 +1,50 @@
 # Conversation aid (branch `muse`): handoff for merging with face detection
 
-A two-person conversation aid for the glasses, built and tested **on the Mac only**. It answers
-questions asked out loud, defines obscure terms as they're said, and offers a rare, tasteful
-line to say next. Branched from `main` at `455cd35`; `main` has moved on since (see Merging).
+A two-person conversation aid for the glasses, built and tested **on the Mac first**. It does four
+things: answers what's asked (from wherever the answer lives), defines a term just said that the
+wearer wouldn't know, suggests what to say next when the wearer needs it, and knows who they're
+talking to. `muse` now sits on top of `main` (0a365c8), so it merges back cleanly.
+
+## How it decides (2026-10-24 redesign)
+
+- **One context everywhere.** Every model call sees the wearer (`WEARER_BACKGROUND`), what's known
+  about them (`Aid.met` facts: profile + the CRM's briefing: last conversation, promises both
+  ways) and the conversation, including the turn the question is in ("Did you see Figure raised
+  again? Do you know how much they raised?").
+- **Where the answer lives decides who answers.** The other person's questions stream an answer
+  mid-sentence from the conversation, the record or general knowledge; personal or social is
+  SKIP; a public fact the model can't give from memory (news, prices, a company's latest) is
+  `WEB` and goes to Fetch.ai once the question closes. Place, weather, calendar go to the device
+  tools. "Lens, …" from the wearer goes to the tool model with the whole context, so "what did she
+  say her company does" and "what did we talk about last time" are answered from memory.
+  **Nothing is ever looked up about the people talking**, and what's known about them never goes
+  to the web (only the question and the last few lines, to resolve "it").
+- **Suggestions: the coach writes what, code decides when.** Only three moments: a lull (3 s of
+  quiet after the last word; not right after they asked the wearer something, not after "Lens,
+  …"), the wearer asking ("Lens, what should I ask?", a pinch → `aid.suggestNow()`, `s` on the
+  Mac), and face ID recognising someone with a record (an opener picking up from last time). The
+  call for a moment gets gpt-oss; the per-sentence calls (definitions) go to the qwen backup, so
+  the 5/min cap is spent on what the wearer sees. Cleared when said or when the wearer moves on.
+- **Removed, because they misfired live:** the coach's own lookups (it researched "Meta AR glasses
+  frame rate"), the coach naming people (a name mentioned became THEM's; names now come only from
+  "I'm Priya" or face ID), live fact guessing (the CRM recap extracts facts from the whole
+  conversation, better), definitions of laws, companies or events (it called the GENIUS Act an AI
+  law; those change, so they're lookups), and the interjection rationing it all needed.
+
+Measured on the Mac (typed and replayed conversations): suggestions "What contracts are you
+targeting first?", "What skills are you looking for in interns?", opener for a known founder
+"How's the CAR T manufacturing scaling going?"; GENIUS Act / Vertex market cap / Figure's raise
+looked up in 3.8-7.4 s; "where did you go to school" and "how long have you been coding" stay
+quiet; qwen-3.8-27b 23/24 on answer/SKIP/WEB cases (`Tests/answer-latency.py`; it called "who won
+the World Series this year" SKIP rather than WEB).
+
+## On the phone when merging
+
+1. Turn the coach back on: `Assistant.makeAid` has `Tuning aidCoach` default **false** because of
+   the misfires above, which are gone by construction. Default it to true.
+2. Pinch (or a lens button) → `aid.suggestNow()`.
+3. Nothing else: `aid.met(name:label:facts:)` with the CRM briefing already triggers the opener,
+   and `LensView.followup` is still the suggestion slot.
 
 ## What's here
 
@@ -11,9 +53,9 @@ All shared files are pure Foundation, so the phone and the Mac tool run the same
 | file | does |
 |---|---|
 | `App/Listen.swift` | Muse Voice Transcribe realtime ASR in **DIARIZATION** mode: each finished turn comes with a speaker label (A/B) and its loudness at the mic. Runs on iOS and macOS; can replay a WAV. |
-| `App/Aid.swift` | The orchestrator, three lanes. **Answers**: the speculative mid-sentence answerer, now with conversation context; only the other person's questions. **Coach**: after their sentences/turns, one definition, one rare interjection, who they are. **Research**: a `Researcher` hook (Fetch.ai ASI:One, OpenAI or Groq web search), off by default. Plus `Roles` (who's the wearer) and `Talk` (text rules). |
-| `App/Lens.swift` | `Compositor`: one passing card (answer > definition > research) above one pinned interjection; holds new cards while the wearer talks; drops stale ones. |
-| `App/Coach.swift` | The coach prompt, lenient JSON parsing, research implementations. |
+| `App/Aid.swift` | The orchestrator: answers (speculative, mid-sentence; only the other person's questions; `WEB` → `lookUp`), the coach (definitions after their sentences; a suggestion at a moment), suggestion timing, tools, the shared context. Plus `Roles` (who's the wearer) and `Talk` (text rules). |
+| `App/Lens.swift` | `Compositor`: one passing card (answer > definition) above one pinned suggestion, plus working rows; holds new cards while the wearer talks; drops stale ones. |
+| `App/Coach.swift` | The coach prompt (define, suggest), lenient JSON parsing, the `Researcher`s (Fetch.ai ASI:One; OpenAI or Groq web search). |
 | `App/Answer.swift` | Providers (cerebras, openai, groq, muse) and the answer prompt. |
 | `App/Question.swift` | The local question gate (what's worth answering at all). |
 | `tools/live-mac.sh` | The aid on the Mac mic, lens drawn in the terminal. `--file x.wav` replays, `--trace x.jsonl` records. |
@@ -36,7 +78,9 @@ All shared files are pure Foundation, so the phone and the Mac tool run the same
 - Measured on the Mac (pinned to Union Square, SF): nearest Target 0.76 s, nearest pharmacy
   0.82 s, weather 0.62 s, a plain question through the same path 0.2 s, time 0 s.
 - Mac: `sh tools/live-mac.sh --type` takes typed lines ("them: …" for the other person), and
-  typing works during a mic session too. `TEST_LOCATION` pins the location.
+  typing works during a mic session too. `TEST_LOCATION` pins the location. `s` asks for a
+  suggestion; `met: Priya · evals founder · Berkeley CS; Last talked Oct 12: raising a seed` acts
+  as face ID handing over someone the CRM knows.
 - **Tier 3, `research`**: one more tool the same model can pick, for the web ("Lens, what's the
   latest on the GENIUS Act?", "a quiet coffee shop near here that's open late"). It gets the
   conversation, what's known about them and a reverse-geocoded "near …", so "her company" and
@@ -85,9 +129,11 @@ needs these added**; Toby's copy is in `~/Developer/calhacks-muse/Secrets.xcconf
 
 From the judged eval (lens items/min 6–11 → 3.4–4.8, density "about right") and Toby's live runs:
 no "…" placeholder card; only the other person's questions get answered; nothing new while the
-wearer talks; an interjection is cleared once the wearer speaks and never speaks for them; one
-definition at a time, only for a term just said and outside the wearer's field; roles come from
-loudness and self-introductions, never from the model (it got it backwards once).
+wearer talks; a suggestion only at a lull, a request or a recognised face, cleared once the wearer
+speaks, and never speaks for them; one definition at a time, only for an established term just
+said and outside the wearer's field; roles and names come from loudness, self-introductions and
+face ID, never from the model (it got roles backwards once, and named THEM after someone
+mentioned); nothing is looked up about the people talking.
 
 Known gaps: gpt-oss's Sharpe-ratio answer for market making is textbook-low; the backup model
 sometimes defines finance basics; the hold misses the first ~0.5 s of the wearer's turn.

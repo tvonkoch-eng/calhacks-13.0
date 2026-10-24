@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Answer model check, any provider: is it live, how fast is the first visible word, and does it
-SKIP personal questions? Reads the prompt straight out of App/Answer.swift, so it can't drift.
+"""Answer model check, any provider: is it live, how fast is the first visible word, does it SKIP
+personal questions, and does it say WEB instead of guessing at recent ones? Reads the prompt
+straight out of App/Answer.swift, so it can't drift.
 
     PROVIDER=cerebras KEY=csk-... python3 Tests/answer-latency.py gpt-oss-120b qwen-3.8-27b
     PROVIDER=openai   KEY=sk-...  python3 Tests/answer-latency.py gpt-4.1-mini
@@ -34,18 +35,22 @@ def swift_prompt():
 
 PROMPT = swift_prompt()
 
-# (utterance, must_skip). Fragments are the speculative case: we fire mid-sentence.
+# (utterance, expected): "answer" (from memory; WEB is allowed but counted), "skip" (personal or
+# social), "web" (recent or niche public facts: must not be guessed). Fragments are the speculative
+# case: we fire mid-sentence.
 CASES = [
-    ("how big is the sun", False), ("how tall is the eiffel", False),
-    ("what year the berlin wall fell", False), ("how many people live in tokyo", False),
-    ("what is the capital of peru", False), ("who was the first person to orbit the earth", False),
-    ("how far is the moon", False), ("whats the boiling point of water in fahrenheit", False),
-    ("who wrote dune", False), ("how fast does light travel", False),
-    ("what the gdp of denmark is", False), ("is mount everest still growing", False),
-    ("how are you doing today", True), ("did you see the keynote", True),
-    ("what do you think of the demo", True), ("should we grab lunch", True),
-    ("are you coming to the afterparty", True), ("can you pass me the charger", True),
-    ("hows your flight", True), ("what are your plans tonight", True),
+    ("how big is the sun", "answer"), ("how tall is the eiffel", "answer"),
+    ("what year the berlin wall fell", "answer"), ("how many people live in tokyo", "answer"),
+    ("what is the capital of peru", "answer"), ("who was the first person to orbit the earth", "answer"),
+    ("how far is the moon", "answer"), ("whats the boiling point of water in fahrenheit", "answer"),
+    ("who wrote dune", "answer"), ("how fast does light travel", "answer"),
+    ("what the gdp of denmark is", "answer"), ("is mount everest still growing", "answer"),
+    ("how are you doing today", "skip"), ("did you see the keynote", "skip"),
+    ("what do you think of the demo", "skip"), ("should we grab lunch", "skip"),
+    ("are you coming to the afterparty", "skip"), ("can you pass me the charger", "skip"),
+    ("hows your flight", "skip"), ("what are your plans tonight", "skip"),
+    ("what the latest is on the genius act", "web"), ("whats nvidias stock price right now", "web"),
+    ("who won the world series this year", "web"), ("when is the next spacex launch", "web"),
 ]
 HEAD = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json", "User-Agent": "calhacks-latency/1.0"}
 
@@ -86,8 +91,8 @@ def ask(model, question):
 failed = False
 for model in MODELS:
     print(f"\n=== {PROVIDER} {model} ===")
-    times, wrong = [], 0
-    for i, (question, must_skip) in enumerate(CASES):
+    times, wrong, looked = [], 0, 0
+    for i, (question, expected) in enumerate(CASES):
         if PACE and i:
             time.sleep(PACE)
         try:
@@ -101,10 +106,13 @@ for model in MODELS:
             wrong += 1
             continue
         times.append(ttft)
-        ok = answer.upper().startswith("SKIP") == must_skip
+        said = answer.upper().strip(" .")
+        got = "skip" if said.startswith("SKIP") else "web" if said == "WEB" else "answer"
+        ok = got == expected or (expected == "answer" and got == "web")
+        looked += got == "web" and expected == "answer"
         wrong += not ok
         print(f"  {'ok ' if ok else 'BAD'} ttft {ttft:.2f}s | {question!r} -> {answer[:52]!r}")
-    print(f"  {len(CASES) - wrong}/{len(CASES)} correct"
+    print(f"  {len(CASES) - wrong}/{len(CASES)} correct, {looked} plain facts sent to the web"
           + (f" | median ttft {statistics.median(times):.2f}s"
              f" p90 {sorted(times)[int(len(times) * 0.9)]:.2f}s" if times else ""))
     failed |= wrong > 0

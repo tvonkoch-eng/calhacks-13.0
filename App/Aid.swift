@@ -26,6 +26,8 @@ struct Turn: Identifiable {
     var firedAt = Date()
     var shownAt: Date?
     var committedAt: Date?
+    /// The model said the answer needs the web; it's looked up once the question has closed.
+    var lookup = false
 
     enum State: Equatable { case thinking, answering, done, skipped, failed(String) }
 
@@ -52,7 +54,9 @@ struct Event: Identifiable, Equatable {
     let at: Date
 }
 
-/// Who the other person is: what face ID knows about them (`Aid.met`), plus what they say.
+/// Who the other person is: what face ID and the CRM know about them (`Aid.met`: profile, last
+/// conversation, promises) and the name they introduce themselves with. Every lane reads it as
+/// "known about them"; what they say now is in the transcript every lane also gets.
 struct Them: Equatable {
     var name: String?
     var label: String?
@@ -158,11 +162,21 @@ enum Talk {
     }
 
     /// "No, this is my first hackathon": a reply on the wearer's behalf, claiming things about them
-    /// the aid can't know. An interjection asks or says something to the other person instead.
+    /// the aid can't know. A suggestion asks or says something to the other person instead.
     static func speaksForWearer(_ text: String) -> Bool {
         let t = text.lowercased().replacingOccurrences(of: "\u{2019}", with: "'").trimmingCharacters(in: .whitespaces)
         return ["no,", "no ", "nope", "yes", "yeah", "yep", "i ", "i'm", "i've", "i'd", "i'll", "my ", "me "]
             .contains { t.hasPrefix($0) }
+    }
+
+    /// "Lens, what should I ask?", "what do I say", "give me something to talk about": the wearer
+    /// wants a line to say, not an answer.
+    static func asksForSuggestion(_ request: String) -> Bool {
+        let r = " " + normalized(request) + " "
+        return [" what should i ask", " what should i say", " what do i ask", " what do i say", " what can i ask",
+                " what should i talk about", " what should we talk about", " what should i bring up",
+                " give me a question", " give me something to", " suggest", " any ideas", " help me out "]
+            .contains { r.contains($0) }
     }
 
     /// "Hey, I'm Priya" → "Priya". Only a capitalized word after a first-person introduction, so
@@ -229,14 +243,19 @@ enum Talk {
     ]
 }
 
-/// The conversation aid: transcript in, lens out.
-///
-/// Three lanes, by how much a second of delay costs:
-/// - Answers (Answer.swift): a question asked out loud, answered mid-sentence. Speculative —
-///   fires on the partial transcript so the answer is up when they stop talking.
-/// - Coach (Coach.swift): after each of the other person's turns, one call for definitions, the
-///   next thing to say, and who they are. Half a second late is fine.
-/// - Research: a deeper lookup the coach asks for now and then; seconds late is fine.
+/// The conversation aid: transcript in, lens out. It does four things:
+/// - Answer what's asked, from wherever the answer lives. The other person's questions stream an
+///   answer mid-sentence (Answer.swift) from the conversation, what's known about them, or general
+///   knowledge; a public fact the model can't give from memory says WEB and is looked up (Fetch.ai)
+///   once the question closes; place, weather and calendar go to the device tools (Tools.swift).
+///   The wearer asks the glasses anything with "Lens, …". Nothing is ever looked up about the
+///   people talking.
+/// - Define a term just said that the wearer wouldn't know (the coach, Coach.swift).
+/// - Suggest what to say next, only when the wearer needs it: a lull, a request ("Lens, what
+///   should I ask?"), or face ID recognising someone known (an opener from last time). The coach
+///   writes the line for that moment, with everything known.
+/// - Know who they're talking to: face ID and the CRM (`met`), their introduction, what they say.
+/// Every model call sees the same context: the wearer, what's known about them, the conversation.
 /// The Compositor (Lens.swift) decides what of all that is on the lens at any moment.
 ///
 /// Pure Foundation, so the phone (Assistant) and the Mac (tools/live-mac.swift) run the same aid.
@@ -250,7 +269,8 @@ enum Talk {
     struct Config {
         /// The wearer's first name, so the coach can tell who's who when it's said out loud.
         var wearer = "the wearer"
-        /// What the wearer already knows; keeps obvious terms from being defined.
+        /// Who the wearer is and what they know: keeps obvious terms from being defined, and gives
+        /// suggestions their common ground.
         var background = ""
         var answers: Model?
         var coach: Model?
@@ -303,8 +323,10 @@ enum Talk {
         let text = text.trimmed
         guard !text.isEmpty, text != partial else { return }
         lastSpeech = Date()
-        silent = false
+        if partial.isEmpty { turnStarted = lastSpeech }
+        if wanted == .lull { wanted = nil }   // someone's talking: the lull is over
         partial = text
+        saying = "\(predictedTag()): \(text)"
         // Diarized turns alternate, so a turn in progress right after theirs is most likely ours.
         let mine = predictedWearer()
         compositor.hold(mine, at: Date())
@@ -323,14 +345,25 @@ enum Talk {
         }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
         publish()
+        // Muse can take seconds to close a turn that ends in silence, and a lull is exactly that:
+        // the clock starts at the last word, not at the closed line.
+        watchForSilence()
     }
 
     /// A finished turn. `level` is its loudness in dB, for telling the wearer apart.
     func heard(line text: String, speaker: String?, level: Float? = nil) {
         let text = text.trimmed
         guard !text.isEmpty else { return }
-        lastSpeech = Date()
-        silent = false
+        // Silence counts from the last word heard, not from when the recognizer closed the turn
+        // (Muse took 5 s to close a "Wow." before a pause), so a late close neither restarts the
+        // clock nor ends a lull. A typed line has no partials: it is speech now.
+        if partial.isEmpty {
+            lastSpeech = Date()
+            if wanted == .lull { wanted = nil }
+        }
+        let started = turnStarted ?? Date()
+        turnStarted = nil
+        saying = "\(roles.tag(speaker)): \(text)"
         let mine = roles.isWearer(speaker)
         let (closed, open) = Talk.sentences(text)
         if closed.count > closedInTurn {
@@ -340,6 +373,7 @@ enum Talk {
         }
         if !open.isEmpty, !command(open, mine: mine) { answerHeard(open, endpointed: true, mine: mine) }
         partial = ""
+        saying = ""   // it's a line now
         closedInTurn = 0
         compositor.hold(false, at: Date())
 
@@ -350,14 +384,21 @@ enum Talk {
                 log(.roles, "You are probably speaker \(wearer)", detail: "your voice is louder at the mic; m if not")
             }
             // Someone introducing themselves settles who's who: our name means the wearer,
-            // any other name means the other person.
-            if !roles.sure, let name = Talk.introducedName(in: text) {
-                if name.caseInsensitiveCompare(config.wearer) == .orderedSame {
+            // any other name means the other person, and is their name. Only an introduction names
+            // them (or face ID): a name merely mentioned is usually someone else's.
+            if let name = Talk.introducedName(in: text) {
+                let ours = name.caseInsensitiveCompare(config.wearer) == .orderedSame
+                if !roles.sure, ours {
                     roles.lock(speaker)
                     log(.roles, "You are speaker \(speaker)", detail: "you introduced yourself")
-                } else {
+                } else if !roles.sure {
                     roles.lock(them: speaker)
                     log(.roles, "\(name) is speaker \(speaker)", detail: "they introduced themselves")
+                }
+                if !ours, !roles.isWearer(speaker), !them.recognised, them.name != name {
+                    them.name = name
+                    compositor.setHeader(name)
+                    log(.learned, "Name: \(name)", detail: "they introduced themselves")
                 }
             }
         }
@@ -374,8 +415,9 @@ enum Talk {
                 roles.lock(speaker)
                 log(.roles, "You are speaker \(speaker)", detail: "you said the suggestion")
             }
-        } else if let followup = lens.followup, roles.isWearer(speaker), !Talk.isBackchannel(text) {
-            // An interjection is for the wearer's next turn. They've taken it; the moment passed.
+        } else if let followup = lens.followup, roles.isWearer(speaker), !Talk.isBackchannel(text), started > suggestedAt {
+            // A suggestion is for the wearer's next turn. They've taken it; the moment passed. (A
+            // turn begun before it went up and closed late doesn't count.)
             compositor.pin(nil, at: Date())
             log(.followup, "passed", detail: followup)
         }
@@ -396,23 +438,25 @@ enum Talk {
         log(.roles, "You are speaker \(label)", detail: "you said so")
     }
 
-    /// Face ID says who the other person is. Replaces the profile when it's someone new, keeping
-    /// anything the conversation already taught us about the same person.
+    /// Face ID says who the other person is; `facts` are their profile and what the CRM keeps
+    /// (last conversation, promises both ways). Replaces the profile when it's someone new.
     func met(name: String, label: String?, facts: [String]) {
         guard !(them.recognised && them.name == name) else { return }
-        let learned = Talk.same(them.name ?? "", name) ? them.facts : []
-        them = Them(name: name, label: label, facts: facts + learned, recognised: true)
+        them = Them(name: name, label: label, facts: facts, recognised: true)
         log(.learned, "Talking to \(name)", detail: "face ID")
         compositor.setHeader(name)
         publish()
+        // Someone known: the moment for an opener from what we know (last time, a promise).
+        if !them.facts.isEmpty { offer(.recognised) }
     }
 
     /// Start over for a new conversation.
     func reset() {
-        answerTask?.cancel(); coachTask?.cancel(); researchTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel()
+        answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel()
         lines = []; turns = []; events = []; them = Them(); roles = Roles(); partial = ""; status = ""
-        compositor.clear(); defined = []; researched = []; firedText = ""; generation += 1
+        compositor.clear(); defined = []; firedText = ""; generation += 1
         coachPending = false; coachBlockedUntil = nil; closedInTurn = 0
+        wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""
         publish()
     }
 
@@ -423,7 +467,9 @@ enum Talk {
     // last word: as soon as four words of a question clause exist we fire a speculative request on
     // the partial transcript, so the model's time-to-first-token overlaps the rest of the sentence.
     // Guards: refire only on real growth, at most `maxFires` times; ignore superseded fires
-    // (generation counter); the model returns SKIP for anything personal, social or rhetorical.
+    // (generation counter); the model returns SKIP for anything personal, social or rhetorical,
+    // and WEB for a public fact it can't give from memory, which is looked up once the question
+    // closes (never mid-sentence: half a question makes a bad search).
 
     private static let refireGrowth = 2
     private static let maxFires = 3
@@ -473,6 +519,8 @@ enum Talk {
         guard let turn = turns.first, turn.fires < Self.maxFires, text != firedText else { return false }
         guard Date().timeIntervalSince(lastFireAt) > Self.refireInterval else { return false }
         let grew = words(text) - words(firedText)
+        // It needs the web: nothing to gain from asking again before the question closes.
+        if turn.lookup { return false }
         // The model already told us our guess was too fragmentary to answer; any new word is a
         // reason to try again.
         if turn.state == .skipped { return grew >= 1 }
@@ -503,6 +551,12 @@ enum Talk {
         turn.committedAt = Date()
         turns[0] = turn
         let grew = words(candidate.text) - words(firedText)
+        // The model said this needs the web. Look up the whole question, unless it grew enough that
+        // the verdict may have changed ("what's the latest" … "you've stayed up coding?").
+        if turn.lookup, grew < Self.refireGrowth {
+            lookUp(candidate.text)
+            return
+        }
         let refused: Bool
         switch turn.state {
         case .skipped, .failed: refused = true
@@ -548,8 +602,8 @@ enum Talk {
             return
         }
 
-        render()   // "…" on the lens right now, while they are still talking
-        let context = transcript(last: 4)
+        render()
+        let context = self.context(last: 6)
         let fired = Date()
         let backup = config.backup
         answerTask = Task { [weak self] in
@@ -588,6 +642,12 @@ enum Talk {
                     self.timings["answer", default: []].append(ms)
                     self.log(.answer, turn.answer, detail: "\(turn.question) · first word \(ms) ms · \(using.model)")
                 }
+            } catch AnswerError.lookup {
+                guard !Task.isCancelled, let self, generation == self.generation else { return }
+                self.update(generation) { $0.state = .skipped; $0.lookup = true }
+                self.render()
+                // Already the whole question: look it up now. Mid-sentence, commit() will.
+                if let turn = self.turns.first, turn.committedAt != nil { self.lookUp(turn.question) }
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.update(generation) { $0.state = .failed(error.localizedDescription) }
@@ -642,16 +702,24 @@ enum Talk {
 
     // MARK: - Tools: things only the device knows or can do
 
-    @ObservationIgnored private var lastCommand = ""
+    @ObservationIgnored private var lastCommand: (text: String, at: Date)?
 
-    /// "Lens, …" from the wearer (from anyone, while we don't know who that is) goes straight to
-    /// the tools. True when `sentence` was a command, handled or deliberately dropped.
+    /// "Lens, …" from the wearer (from anyone, while we don't know who that is): "what should I
+    /// ask?" gets a suggestion, anything else goes to the tool model with the whole context. True
+    /// when `sentence` was a command, handled or deliberately dropped.
     private func command(_ sentence: String, mine: Bool) -> Bool {
         guard config.toolbox != nil, let request = Tools.command(in: sentence) else { return false }
         guard mine || !roles.known else { return true }   // the other person saying "lens" isn't asking us
-        guard Talk.normalized(request) != Talk.normalized(lastCommand) else { return true }
-        lastCommand = request
-        toolRound(request, command: true)
+        // The same sentence arrives twice, as a partial and as the finished line; a few seconds
+        // later it's a new request.
+        if let last = lastCommand, Talk.normalized(request) == Talk.normalized(last.text),
+           Date().timeIntervalSince(last.at) < 8 { return true }
+        lastCommand = (request, Date())
+        if Talk.asksForSuggestion(request) {
+            suggestNow()
+        } else {
+            toolRound(request, command: true)
+        }
         return true
     }
 
@@ -669,8 +737,9 @@ enum Talk {
             return
         }
         toolbox.prefetch(request)   // the obvious search starts while the model decides
-        // "her company", "that place": the model resolves them from the conversation and what we know.
-        let context = (them.summary.isEmpty ? "" : "About them: \(them.summary)\n") + transcript(last: 4)
+        // "her company", "what did she say about hiring", "that place": answered or resolved from
+        // what we know and the conversation.
+        let context = self.context(last: 30)
         let backup = config.backup
         // Each request runs on its own card: their question must not cancel the wearer's command.
         Task { [weak self] in
@@ -736,24 +805,7 @@ enum Talk {
     @ObservationIgnored private var lastCoach = Date.distantPast
     @ObservationIgnored private var lastSpeech = Date()
     @ObservationIgnored private var silenceTask: Task<Void, Never>?
-    @ObservationIgnored private var silent = false
     @ObservationIgnored private var defined: [String] = []
-    @ObservationIgnored private var researched: [String] = []
-
-    /// Seconds of quiet that count as a lull worth rescuing.
-    private static let lull: TimeInterval = 6
-    /// Interjections are rationed: none until we know who's who and the conversation has had a few
-    /// lines, then at most one a minute (sooner only to rescue a lull).
-    private static let openingLines = 4
-    private static let interjectionGap: TimeInterval = 60
-    @ObservationIgnored private var lastInterjection = Date.distantPast
-
-    private func interjectionAllowed(lull: Bool) -> Bool {
-        guard roles.known else { return false }
-        let since = Date().timeIntervalSince(lastInterjection)
-        return lull ? lines.count >= 2 && since >= Self.interjectionGap / 2
-                    : lines.count >= Self.openingLines && since >= Self.interjectionGap
-    }
 
     /// One call at a time; anything heard meanwhile folds into one more call right after.
     private func coachSoon() {
@@ -762,13 +814,17 @@ enum Talk {
             coachPending = true
             return
         }
-        // Answers get first claim on a capped primary: the coach leaves three of the minute's calls.
-        guard let coach = model(config.coach, blockedUntil: coachBlockedUntil, reserve: 3) else {
+        let moment = wanted
+        // Spend a capped primary on what the wearer will see: a suggestion for this moment gets it
+        // (gpt-oss writes far better lines than the backup); the background calls after each
+        // sentence (a definition) go to the backup. Uncapped, everything uses the primary.
+        let pick = moment == nil && config.perMinute != nil && config.backup != nil
+            ? config.backup : model(config.coach, blockedUntil: coachBlockedUntil, reserve: moment == nil ? 3 : 0)
+        guard let coach = pick else {
             coachPending = true   // rate-limited with no backup: blockCoach retries when it lifts
             return
         }
-        let input = coachInput()
-        let interject = input.interject
+        let input = coachInput(for: moment)
         let backup = config.backup
         lastCoach = Date()
         coachTask = Task { [weak self] in
@@ -778,13 +834,13 @@ enum Talk {
                 do {
                     advice = try await Coach.ask(input, provider: coach.provider, key: coach.key, model: coach.model)
                 } catch LLM.Failure.rateLimited(let wait) {
-                    // Groq's free tier ran out: block it for a while and ask the backup right away.
+                    // The primary's limit ran out: block it for a while and ask the backup right away.
                     self?.blockCoach(for: wait, falling: backup != nil && backup != coach)
                     guard let backup, backup != coach else { throw LLM.Failure.rateLimited(retryAfter: wait) }
                     advice = try await Coach.ask(input, provider: backup.provider, key: backup.key, model: backup.model)
                 }
                 self?.timings["coach", default: []].append(Int(Date().timeIntervalSince(started) * 1000))
-                self?.apply(advice, interject: interject)
+                self?.apply(advice, for: moment)
             } catch LLM.Failure.rateLimited {
                 // Already blocked above; the retry fires when the block lifts.
             } catch {
@@ -836,21 +892,23 @@ enum Talk {
         }
     }
 
-    private func coachInput() -> Coach.Input {
+    private func coachInput(for moment: Moment?) -> Coach.Input {
         // Networking conversations are short; the whole of one fits, so nothing said early is lost.
-        var transcript = transcriptLines(last: 24)
+        var transcript = transcriptLines(last: 30)
         if !partial.isEmpty { transcript.append("\(predictedTag()) (still talking): \(partial)") }
-        let lull = silent
-        if silent {
-            transcript.append("(silence, \(Int(Self.lull)) seconds)")
-            silent = false
+        // The coach writes a suggestion only for a moment, and for that moment.
+        let why: String? = switch moment {
+        case .lull: "a silence; revive the best thread"
+        case .asked: "the wearer asks what to say next"
+        case .recognised: "face ID just recognised THEM; pick up where you left off last time"
+        case nil: nil
         }
-        return Coach.Input(wearer: config.wearer, background: config.background, known: them.summary, defined: defined,
-                           researched: researched, suggestion: lens.followup, interject: interjectionAllowed(lull: lull),
-                           transcript: transcript)
+        return Coach.Input(wearer: config.wearer, background: config.background, known: them.summary,
+                           defined: defined, suggested: suggested, moment: why, transcript: transcript)
     }
 
-    private func apply(_ advice: Coach.Advice, interject: Bool) {
+    /// `moment`: the moment this call was asked to write a suggestion for, if any.
+    private func apply(_ advice: Coach.Advice, for moment: Moment?) {
         let now = Date()
         let recent = Talk.normalized((lines.suffix(2).map(\.text) + [partial]).joined(separator: " "))
         // Only a term just said, of real substance, that the coach is sure of: "LO — likely
@@ -864,103 +922,129 @@ enum Talk {
             compositor.show(Card(kind: .definition, title: term.term, detail: term.meaning, id: nextCard), at: now)
             log(.define, term.term, detail: term.meaning)
         }
-        switch advice.followup {
-        case .keep:
-            break
-        case .clear:
-            if lens.followup != nil {
-                compositor.pin(nil, at: now)
-                log(.followup, "cleared")
-            }
-        case .say(let text):
-            // Advice is computed on the transcript as it was; if the wearer has since said it, it's stale.
-            let said = lines.suffix(2).contains { roles.tag($0.speaker) != "THEM" && Talk.echoes($0.text, text) }
-            if interject, !said, !Talk.speaksForWearer(text), Talk.normalized(text) != Talk.normalized(lens.followup ?? "") {
-                lastInterjection = now
-                compositor.pin(text, at: now)
-                log(.followup, text)
-            }
-        }
-        // A diarization label ("A") or the wearer's own name is never their name.
-        if let name = advice.name, name.count > 2, name != them.name, !them.recognised,
-           name.caseInsensitiveCompare(config.wearer) != .orderedSame {
-            them.name = name
-            log(.learned, "Name: \(name)")
-        }
-        if let label = advice.label, label != them.label, !them.recognised {
-            them.label = label
-            log(.learned, label)
-        }
-        compositor.setHeader(them.name)
-        for fact in advice.facts where !(them.facts + [them.label ?? ""]).contains(where: { Talk.same($0, fact) }) {
-            them.facts.append(fact)
-            log(.learned, fact)
-        }
-        if let query = advice.research, !researched.contains(where: { $0.caseInsensitiveCompare(query) == .orderedSame }) {
-            researched.append(query)
-            research(query)
+        // Shown only while its moment lasts: speech ends a lull (`wanted` is cleared), so a line that
+        // arrives after they started talking again stays off the lens.
+        if moment != nil, wanted != nil {
+            if let text = advice.suggest, usable(text) { suggest(text) } else if wanted == moment { wanted = nil }
         }
         if status.hasPrefix("Coach") { status = "" }
         publish()
     }
 
-    /// After a turn, if nobody says anything for a while and there is nothing pinned to say next,
-    /// ask the coach for something. Silence is where an aid earns its keep.
+    // MARK: - Suggestions: what to say next, only when it's needed
+    //
+    // When is decided here, from signals that can't be wrong about timing: a silence after a line,
+    // the wearer asking ("Lens, what should I ask?", a pinch, `s` on the Mac), or face ID
+    // recognising someone known. Only then is the coach asked for a line, written for that moment
+    // with everything known. Mid-conversation a suggestion only competes with the person talking;
+    // in a lull it's the one thing that helps.
+
+    enum Moment { case lull, asked, recognised }
+
+    /// A moment waiting for its suggestion. Speech ends a lull; a request or a face stands.
+    @ObservationIgnored private var wanted: Moment?
+    @ObservationIgnored private var suggestedAt = Date.distantPast
+    /// When the turn in progress began (its first partial).
+    @ObservationIgnored private var turnStarted: Date?
+    /// Everything shown so far, so none comes round twice.
+    @ObservationIgnored private var suggested: [String] = []
+
+    /// Seconds of quiet after a line that count as a lull. Under three seconds is someone thinking.
+    private static let lull: TimeInterval = 3
+
+    /// The wearer asks what to say: a pinch on the glasses, "Lens, what should I ask?", `s` on the Mac.
+    func suggestNow() {
+        offer(.asked)
+    }
+
+    private func offer(_ moment: Moment) {
+        guard config.coach != nil else { return }
+        wanted = moment
+        coachSoon()
+    }
+
+    private func suggest(_ text: String) {
+        wanted = nil
+        suggestedAt = Date()
+        suggested.append(text)
+        compositor.pin(text, at: Date())
+        log(.followup, text)
+        publish()
+    }
+
+    /// A line to say to them, short, new, and not already said: a reply on the wearer's behalf
+    /// ("No, this is my first hackathon") claims things the aid can't know.
+    private func usable(_ text: String) -> Bool {
+        text.split(separator: " ").count <= 14 && !Talk.speaksForWearer(text)
+            && !suggested.contains { Talk.same($0, text) }
+            && !lines.suffix(8).contains { Talk.echoes($0.text, text) }
+    }
+
+    /// After every word: if nobody speaks for `lull` seconds, that's the moment for a suggestion.
+    /// Not when they just asked the wearer something (the wearer is thinking of an answer, not a
+    /// question), not after "Lens, …" (they're reading the answer), not while one is already up,
+    /// and not before we know who's who.
     private func watchForSilence() {
         silenceTask?.cancel()
+        let wait = max(0.2, Self.lull - Date().timeIntervalSince(lastSpeech))
         silenceTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.lull))
-            guard !Task.isCancelled, let self else { return }
-            guard Date().timeIntervalSince(self.lastSpeech) >= Self.lull - 0.2, self.partial.isEmpty,
-                  self.lens.followup == nil, !self.lines.isEmpty else { return }
-            self.silent = true
-            self.coachSoon()
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled, let self, Date().timeIntervalSince(self.lastSpeech) >= Self.lull - 0.2,
+                  self.lens.followup == nil, self.roles.known else { return }
+            // The last thing said, counting a turn the recognizer hasn't closed yet.
+            let open = !self.partial.isEmpty
+            let last = open ? self.partial : self.lines.last?.text ?? ""
+            let theirs = open ? self.predictedTag() == "THEM" : self.roles.tag(self.lines.last?.speaker) == "THEM"
+            guard !last.isEmpty, Tools.command(in: last) == nil, !(theirs && last.contains("?")) else { return }
+            self.compositor.hold(false, at: Date())   // three seconds of quiet: nobody is talking
+            self.offer(.lull)
         }
     }
 
-    // MARK: - Research: the deep lane
+    // MARK: - Lookups: public facts that need the web
 
-    @ObservationIgnored private var researchTask: Task<Void, Never>?
+    @ObservationIgnored private var lookupTask: Task<Void, Never>?
 
-    private func research(_ query: String) {
+    /// The answer model said this needs the web. The researcher (Fetch.ai ASI:One) looks it up and
+    /// a fast model cuts the finding to a card. Only the question and the last few lines go out, to
+    /// resolve "it" or "that bill"; what's known about the person never does: the web is for public
+    /// things.
+    private func lookUp(_ question: String) {
         guard let researcher = config.researcher else {
-            log(.lookup, query, detail: "would look up (research is off)")
+            log(.lookup, question, detail: "needs the web; research is off")
             return
         }
-        guard researchTask == nil else {
-            log(.lookup, query, detail: "skipped, another lookup is running")
+        guard lookupTask == nil else {
+            log(.lookup, question, detail: "skipped, another lookup is running")
             return
         }
-        log(.lookup, query, detail: "looking up with \(researcher.name)")
+        log(.lookup, question, detail: "looking up with \(researcher.name)")
         nextCard += 1
-        let work = nextCard
-        compositor.startWork(id: work, label: "Looking up " + query.split(separator: " ").prefix(5).joined(separator: " "), at: Date())
+        let card = nextCard, started = Date()
+        compositor.startWork(id: card, label: config.toolbox?.working("research", arguments: "{}") ?? "Looking it up", at: started)
         publish()
-        let context = transcript(last: 6)
-        let started = Date()
-        let condenser = config.backup ?? config.coach
-        researchTask = Task { [weak self] in
+        let context = transcript(last: 4) + (saying.isEmpty ? "" : "\n" + saying)
+        let condenser = config.backup ?? config.answers
+        lookupTask = Task { [weak self] in
             do {
-                let finding = try await researcher.research(query, context: context)
-                var card = ToolResult(title: String(finding.prefix(60)), detail: "", icon: "starCircleTriangleAi")
+                let finding = try await researcher.research(question, context: context)
+                var result = ToolResult(title: String(finding.prefix(60)), detail: "", icon: "starCircleTriangleAi")
                 if let condenser {
-                    card = try await Tools.card(from: finding, about: query, provider: condenser.provider,
-                                                key: condenser.key, model: condenser.model)
+                    result = try await Tools.card(from: finding, about: question, provider: condenser.provider,
+                                                  key: condenser.key, model: condenser.model)
                 }
                 guard let self else { return }
-                self.nextCard += 1
-                self.compositor.show(Card(kind: .research, title: card.title, detail: card.detail, id: self.nextCard,
-                                          icon: card.icon), at: Date())
-                let ms = Int(Date().timeIntervalSince(started) * 1000)
+                self.compositor.endWork(id: card)
+                self.put(Card(kind: .answer, title: result.title, detail: result.detail, id: card, icon: result.icon))
+                let ms = self.ms(since: started)
                 self.timings["research", default: []].append(ms)
-                self.log(.research, card.title, detail: "\(card.detail) · \(query) · \(ms) ms")
-                self.publish()
+                self.log(.research, result.title, detail: "\(result.detail) · \(question) · \(ms) ms")
             } catch {
-                self?.log(.status, "Research failed: \(error.localizedDescription)")
+                self?.log(.status, "Lookup failed: \(error.localizedDescription)")
             }
-            self?.compositor.endWork(id: work)
+            self?.compositor.endWork(id: card)
             self?.publish()
-            self?.researchTask = nil
+            self?.lookupTask = nil
         }
     }
 
@@ -993,6 +1077,16 @@ enum Talk {
 
     private func transcript(last n: Int) -> String {
         transcriptLines(last: n).joined(separator: "\n")
+    }
+
+    /// The turn being handled, tagged. The sentence before a question often says what it's about:
+    /// "Did you see Figure raised again? Do you know how much they raised?"
+    @ObservationIgnored private var saying = ""
+
+    /// What a model needs to make sense of a question: what's known about them, the last few lines,
+    /// and the turn the question is in.
+    private func context(last n: Int) -> String {
+        (them.summary.isEmpty ? "" : "About them: \(them.summary)\n") + transcript(last: n) + (saying.isEmpty ? "" : "\n" + saying)
     }
 
     /// Diarized turns alternate, so the turn in progress is most likely the other speaker's.
