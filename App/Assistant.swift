@@ -14,7 +14,12 @@ import Observation
 
     @ObservationIgnored let listener = Listener()
     @ObservationIgnored weak var glasses: Glasses? {
-        didSet { glasses?.onFacing = { [weak self] id in self?.facingChanged(id) } }
+        didSet {
+            glasses?.onFacing = { [weak self] id in self?.facingChanged(id) }
+            let listener = self.listener
+            glasses?.audioSink.handler = { buffer in listener.feed(buffer) }
+            glasses?.setStreamAudio(listener.mic == .glasses)
+        }
     }
     /// Setting the roster names the wearer: the aid is rebuilt with the isMe person's first name.
     @ObservationIgnored weak var store: Store? {
@@ -94,6 +99,7 @@ import Observation
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: "mic")
             listener.use(newValue)
+            glasses?.setStreamAudio(newValue == .glasses)
         }
     }
 

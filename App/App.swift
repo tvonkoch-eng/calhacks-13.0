@@ -314,16 +314,19 @@ struct HomeView: View {
 
     private var actionButton: some View {
         VStack(spacing: 10) {
-            Button {
-                Task { glasses.connected ? await glasses.identify() : await glasses.connect() }
-            } label: {
-                Text(buttonTitle)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color(.systemBackground))
-                    .frame(maxWidth: .infinity, minHeight: 56)
-                    .background(Color.primary, in: Capsule())
+            // Recognition is automatic, so once connected there is nothing to press.
+            if !glasses.connected {
+                Button {
+                    Task { await glasses.connect() }
+                } label: {
+                    Text(buttonTitle)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color(.systemBackground))
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .background(Color.primary, in: Capsule())
+                }
+                .disabled(glasses.connecting)
             }
-            .disabled(glasses.identifying || glasses.connecting)
             if !glasses.connected, glasses.status != "Not connected" {
                 Text(glasses.status).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
@@ -335,8 +338,7 @@ struct HomeView: View {
 
     private var buttonTitle: String {
         if glasses.connecting { return "Connecting" }
-        if glasses.identifying { return "Recognizing" }
-        return glasses.connected ? "Identify" : "Connect glasses"
+        return "Connect glasses"
     }
 }
 
@@ -927,7 +929,6 @@ struct LensMirror: View {
                         Text(shot.headline ?? "").font(.system(size: m.meta)).foregroundStyle(secondary)
                     }
                 }
-                bottomRow
             }
             .padding(m.pad)
             .modifier(LensCardBackground(radius: m.radius))
@@ -962,7 +963,6 @@ struct LensMirror: View {
                         Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
                     }
                 }
-                bottomRow
             }
             .padding(m.pad)
             .modifier(LensCardBackground(radius: m.radius))
@@ -975,7 +975,6 @@ struct LensMirror: View {
                         Text(subtitle).font(.system(size: m.meta)).foregroundStyle(secondary)
                     }
                 }
-                bottomRow
             }
             .padding(m.pad)
             .modifier(LensCardBackground(radius: m.radius))
@@ -984,41 +983,10 @@ struct LensMirror: View {
             // Nobody identified: the row floats on glass with no card behind it, and sits on the
             // same floor the card would — on a captured frame its glyphs stop 33 lens units from
             // the bottom edge, which is the panel inset and nothing else.
-            bottomRow.padding(.horizontal, 20)
+            EmptyView()
         }
     }
 
-    /// People met on the left, the one control on the right — the row the lens always carries,
-    /// except behind an answer.
-    private var bottomRow: some View {
-        HStack(alignment: .center, spacing: 8) {
-            HStack(spacing: 10) {
-                Image(systemName: "person").font(.system(size: m.glyph))
-                // The same UIImage the lens is sent, not a redraw of it.
-                if let badge = LensCards.counterBadge(shot.connected) {
-                    Image(uiImage: badge).resizable().frame(width: m.glyph, height: m.glyph)
-                }
-            }
-            Spacer(minLength: 0)
-            // The lens draws the primary button as a soft glow with white content — no filled
-            // capsule, no dark label. A transparent display spends light on the glyphs, not on a
-            // background, and the captured frame shows exactly that: the icon leads, the label
-            // follows, and the only "fill" is a gradient that fades out to the right.
-            HStack(spacing: 10) {
-                Image(systemName: shot.buttonIcon).font(.system(size: m.glyph, weight: .semibold))
-                Text(shot.button).font(.system(size: m.body, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.top, 26)
-            .padding(.bottom, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(LinearGradient(colors: [Color.white.opacity(0.17), Color.white.opacity(0)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-            )
-        }
-    }
 }
 
 /// The lens's `.background(.card)`. Sampled straight off a captured lens frame rather than

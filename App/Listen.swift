@@ -30,12 +30,18 @@ import Observation
     @ObservationIgnored var onFileEnd: (() -> Void)?
     /// When the file's first audio went out: time zero of the recording, for lining up traces.
     @ObservationIgnored private(set) var fileStarted: Date?
-    /// Which microphone to use (iOS). `phone` (default) never opens Bluetooth audio at all.
-    /// `glasses` asks for the hands-free input, the glasses' mic: on Toby's pair that halved the
-    /// camera frame rate, made a lens write take 18 s, and the route flapped every few seconds
-    /// (each flap ~4 s of renegotiation). Kept as an opt-in to experiment with.
+    /// Which microphone to use (iOS).
+    /// - `phone` (default): the iPhone's own mic. Never opens Bluetooth audio.
+    /// - `glasses`: the glasses' mic, delivered by the host through `feed(_:)` (the Meta SDK's
+    ///   camera-stream audio), so iOS's audio route is never touched. If that audio stops arriving
+    ///   for 4 s, the phone mic covers until it's back.
+    /// The Bluetooth hands-free route to the glasses' mic is not used: on Toby's pair it flapped
+    /// every few seconds (each flap ~4 s of renegotiation), halved the camera frame rate and made a
+    /// lens write take 18 s.
     enum Mic: String { case glasses, phone }
-    @ObservationIgnored var mic: Mic = .phone
+    @ObservationIgnored var mic: Mic = .phone {
+        didSet { uplink.glassesMode = mic == .glasses }
+    }
     /// The input actually in use, e.g. "Ray-Ban Meta (Bluetooth)" or "iPhone Microphone".
     var input = ""
     /// Diagnostics for the host's log (the app's speed.jsonl): audio restarts, route, socket.
@@ -91,7 +97,14 @@ import Observation
                 status = "Mic permission denied"
                 return
             }
-            try await startAudio()
+            if mic == .glasses {
+                // Nothing to start here: buffers arrive through feed(_:). The watchdog brings in
+                // the phone mic if they don't.
+                input = "Glasses mic"
+                uplink.inputStarted()
+            } else {
+                try await startAudio()
+            }
             listening = true
             #if os(iOS)
             watchAudio()
@@ -108,8 +121,8 @@ import Observation
         #if os(iOS)
         // Off the main thread: with a Bluetooth input these calls block for seconds while the
         // route renegotiates, and on the main thread that froze the whole app.
-        let mic = self.mic
-        input = try await Task.detached(priority: .userInitiated) { try Self.configureSession(mic) }.value
+        input = try await Task.detached(priority: .userInitiated) { try Self.configureSession(.phone) }.value
+        if mic == .glasses { input += " · glasses audio not arriving" }
         #endif
 
         if engine.isRunning { engine.stop() }
@@ -135,11 +148,9 @@ import Observation
     /// Returns the name of the input in use.
     nonisolated private static func configureSession(_ mic: Mic) throws -> String {
         let session = AVAudioSession.sharedInstance()
-        // .mixWithOthers so the glasses' own audio never takes the mic away from us. Bluetooth
-        // (hands-free) only when the glasses mic is wanted: otherwise iOS may route to it anyway.
-        let options: AVAudioSession.CategoryOptions = mic == .glasses
-            ? [.mixWithOthers, .allowBluetooth, .defaultToSpeaker] : [.mixWithOthers, .defaultToSpeaker]
-        try session.setCategory(.playAndRecord, mode: .measurement, options: options)
+        // .mixWithOthers so the glasses' own audio never takes the mic away from us; no
+        // .allowBluetooth, so iOS never moves the input to the glasses' hands-free route.
+        try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers, .defaultToSpeaker])
         try session.setActive(true, options: .notifyOthersOnDeactivation)
         let headset = session.availableInputs?.first { $0.portType == .bluetoothHFP }
         let builtIn = session.availableInputs?.first { $0.portType == .builtInMic }
@@ -190,17 +201,46 @@ import Observation
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, self.listening, self.file == nil else { continue }
-                if self.micDead { await self.restartAudio(reason: "micStalled") }
+                if self.mic == .glasses {
+                    await self.coverForGlasses()
+                } else if self.micDead {
+                    await self.restartAudio(reason: "micStalled")
+                }
             }
         }
     }
 
     private var micDead: Bool { !engine.isRunning || uplink.secondsSinceInput > 2 }
 
+    /// Glasses mode: phone mic on while the glasses' audio is missing, off once it's back.
+    private func coverForGlasses() async {
+        let quiet = uplink.secondsSinceExternal
+        if quiet > 4, !uplink.phoneCovering {
+            uplink.phoneCovering = true
+            onLog?(["event": "micCover", "on": true, "quietS": Int(quiet)])
+            do { try await startAudio() } catch {
+                status = "Mic failed: \(error.localizedDescription)"
+            }
+        } else if quiet < 1, uplink.phoneCovering {
+            uplink.phoneCovering = false
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
+            input = "Glasses mic"
+            onLog?(["event": "micCover", "on": false])
+        }
+    }
+
+    /// The glasses' mic, from any thread: the Meta SDK's stream audio callback.
+    nonisolated func feed(_ buffer: AVAudioPCMBuffer) {
+        guard uplink.pushExternal(buffer) else { return }
+        let db = Uplink.decibels(buffer)
+        Task { @MainActor [weak self] in self?.level = max(0, min(1, (db + 60) / 60)) }
+    }
+
     private func checkSoon(reason: String) {
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
-            guard let self, self.listening, self.micDead else { return }
+            guard let self, self.listening, self.mic == .phone || self.uplink.phoneCovering, self.micDead else { return }
             await self.restartAudio(reason: reason)
         }
     }
@@ -234,7 +274,19 @@ import Observation
         self.mic = mic
         lastRestart = .distantPast
         restartGap = 5
-        if listening, file == nil { Task { await restartAudio(reason: "micChosen") } }
+        uplink.glassesMode = mic == .glasses
+        uplink.phoneCovering = false
+        guard listening, file == nil else { return }
+        if mic == .glasses {
+            // Hand over to the glasses; the watchdog brings the phone back if they're silent.
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
+            input = "Glasses mic"
+            uplink.inputStarted()
+            uplink.markExternal()
+        } else {
+            Task { await restartAudio(reason: "micChosen") }
+        }
     }
     #endif
 
@@ -475,6 +527,35 @@ private final class Uplink: @unchecked Sendable {
 
     /// Wall-clock of the last mic buffer, for the stall watchdog. Silence padding doesn't count.
     private var lastInput = Date()
+    /// Glasses mode: buffers come from `pushExternal`; the phone's tap is used only while covering.
+    private var _glassesMode = false
+    private var _phoneCovering = false
+    private var lastExternal = Date()
+    var glassesMode: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _glassesMode }
+        set { lock.lock(); _glassesMode = newValue; lastExternal = Date(); lock.unlock() }
+    }
+    var phoneCovering: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _phoneCovering }
+        set { lock.lock(); _phoneCovering = newValue; lock.unlock() }
+    }
+    var secondsSinceExternal: TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(lastExternal)
+    }
+    func markExternal() { lock.lock(); lastExternal = Date(); lock.unlock() }
+
+    /// A buffer from the glasses. Sent unless the phone is covering (one source at a time, or
+    /// the stream would run faster than real time). Returns whether it was used.
+    @discardableResult
+    func pushExternal(_ buffer: AVAudioPCMBuffer) -> Bool {
+        lock.lock()
+        lastExternal = Date()
+        let use = _glassesMode && !_phoneCovering
+        lock.unlock()
+        if use { push(buffer) }
+        return use
+    }
     var secondsSinceInput: TimeInterval {
         lock.lock(); defer { lock.unlock() }
         return Date().timeIntervalSince(lastInput)
@@ -485,9 +566,11 @@ private final class Uplink: @unchecked Sendable {
         // The tap reuses its buffer once we return, so copy before crossing threads.
         guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else { return }
         copy.frameLength = buffer.frameLength
-        let channels = Int(buffer.format.channelCount)
-        if let src = buffer.floatChannelData, let dst = copy.floatChannelData {
-            for c in 0..<channels { dst[c].update(from: src[c], count: Int(buffer.frameLength)) }
+        // Any sample format (the phone sends float, the glasses 16-bit): copy the raw buffers.
+        let src = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffer.audioBufferList))
+        let dst = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        for (s, d) in zip(src, dst) {
+            if let from = s.mData, let to = d.mData { memcpy(to, from, Int(min(s.mDataByteSize, d.mDataByteSize))) }
         }
         queue.async { self.send(copy) }
     }
@@ -534,11 +617,16 @@ private final class Uplink: @unchecked Sendable {
     }
 
     static func decibels(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let data = buffer.floatChannelData?[0] else { return -120 }
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return -120 }
         var sum: Float = 0
-        for i in 0..<frames { sum += data[i] * data[i] }
+        if let data = buffer.floatChannelData?[0] {
+            for i in 0..<frames { sum += data[i] * data[i] }
+        } else if let data = buffer.int16ChannelData?[0] {
+            for i in 0..<frames { let v = Float(data[i]) / 32768; sum += v * v }
+        } else {
+            return -120
+        }
         return 10 * log10(max(sum / Float(frames), 1e-12))
     }
 

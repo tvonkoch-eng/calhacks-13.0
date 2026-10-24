@@ -87,11 +87,10 @@ enum LensCards {
     }
 
     /// Who you're talking to, shrunk to one line once their card has been read and the aid is
-    /// listening: photo, name, what they do, over the usual Identify row.
+    /// listening: photo, name, what they do.
     static func compact(_ person: Person, avatar: (String) -> UIImage?, identifying: Bool, connected: Int,
                         identify: @escaping @Sendable () -> Void) -> FlexBox {
         let photo = avatar(person.id)
-        let bottom = bottomRow(label: identifying ? "Identifying" : "Identify", icon: .eye, connected: connected, identify: identify)
         return FlexBox(direction: .column, spacing: 14) {
             FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
                 if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
@@ -100,16 +99,14 @@ enum LensCards {
                     Text(person.headline, style: .meta, color: .secondary).flexShrink(1)
                 }
             }
-            bottom
         }
         .padding(20)
         .background(.card)
     }
 
-    /// The identity experience on the lens. Idle: just the bottom row, floating. With someone
-    /// identified: a card with their photo, name, role and background, over the same bottom row.
-    /// The bottom row is the people-met counter on the left and Identify on the right; Identify is
-    /// the only control and always has focus, so a pinch presses it.
+    /// The identity experience on the lens. Idle: nothing. With someone identified: a card with
+    /// their photo, name, role and background. Recognition is automatic, so there is no button
+    /// (the glasses' capture button still identifies on demand).
     static func hud(
         result: Identification,
         avatar: (String) -> UIImage?,
@@ -121,7 +118,6 @@ enum LensCards {
         // One description of the card, rendered here and mirrored on the phone.
         let shot = Self.shot(result: result, identifying: identifying, confirming: confirming,
                              connected: connected)
-        let bottom = bottomRow(label: shot.button, icon: confirming ? .checkmark : .eye, connected: connected, identify: identify)
 
         switch result {
         case .known(let match, _):
@@ -158,7 +154,6 @@ enum LensCards {
                         Text(line, style: .meta, color: .secondary).flexShrink(1)
                     }
                 }
-                bottom
             }
             .padding(22)
             .background(.card)
@@ -170,13 +165,13 @@ enum LensCards {
                     Text(title, style: .heading)
                     Text(subtitle, style: .meta, color: .secondary)
                 }
-                bottom
             }
             .padding(22)
             .background(.card)
 
         default:
-            return FlexBox(direction: .column) { bottom }.padding(20)
+            // Recognition is automatic: with nobody on the card, the lens is clear glass.
+            return FlexBox(direction: .column) {}
         }
     }
 
@@ -272,22 +267,6 @@ enum LensCards {
         case .work: "lightbulb"
         case .from: "house"
         case .interests: "heart"
-        }
-    }
-
-    private static func bottomRow(label: String, icon: IconName, connected: Int,
-                                  identify: @escaping @Sendable () -> Void) -> FlexBox {
-        let badge = counterBadge(connected)
-        return FlexBox(direction: .row, spacing: 8, crossAlignment: .center) {
-            FlexBox(direction: .row, spacing: 6, crossAlignment: .center) {
-                Icon(name: .person, style: .outline)
-                if let badge { Image(image: badge, sizePreset: .icon) }
-            }
-            .flexGrow(1)
-            ButtonGroup(alignment: .end) {
-                Button(label: label, style: .primary, iconName: icon, onClick: identify)
-                    .actionRole(.primary)
-            }
         }
     }
 

@@ -10,6 +10,11 @@ import MWDATMockDevice
 import Observation
 import UIKit
 
+/// Hands the glasses' audio buffers to whoever listens, from the SDK's callback thread.
+final class AudioSink: @unchecked Sendable {
+    var handler: (@Sendable (AVAudioPCMBuffer) -> Void)?
+}
+
 enum Identification {
     case ready
     case noFace
@@ -109,11 +114,29 @@ enum Identification {
         if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24) }
         #endif
         let fps = UInt(Tuning.int("streamFps", 2))
-        switch UserDefaults.standard.string(forKey: "streamRes") ?? "medium" {
-        case "high": return StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: fps)
-        case "low": return StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: fps)
-        default: return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
+        let resolution: StreamingResolution = switch UserDefaults.standard.string(forKey: "streamRes") ?? "medium" {
+        case "high": .high
+        case "low": .low
+        default: .medium
         }
+        // The glasses' mic rides the camera stream (SDK 1.0.1, experimental): 16 kHz mono PCM,
+        // no Bluetooth hands-free route, so iOS's audio is never touched.
+        let audio: MWDATCamera.AudioCodec? = streamAudio ? .pcm(sampleRate: .rate16000, numberOfChannels: 1) : nil
+        return StreamConfiguration(videoCodec: .raw, audioCodec: audio, resolution: resolution, frameRate: fps)
+    }
+
+    /// Ask the stream for the glasses' mic too. Fixed when the camera is added, so a change
+    /// restarts the session (~2 s).
+    var streamAudio = UserDefaults.standard.string(forKey: "mic") == "glasses"
+    /// Where the glasses' audio goes. Called on the SDK's thread.
+    @ObservationIgnored let audioSink = AudioSink()
+    @ObservationIgnored private var audioFrames = 0
+
+    func setStreamAudio(_ on: Bool) {
+        guard on != streamAudio else { return }
+        streamAudio = on
+        SpeedLog.record(["event": "streamAudio", "on": on])
+        if connected { Task { await restartSession() } }
     }
     #if DEBUG
     /// The simulated pair, kept so switching rigs can unpair it cleanly.
@@ -954,6 +977,13 @@ enum Identification {
             let message = error.localizedDescription
             Task { @MainActor in SpeedLog.record(["event": "streamError", "error": message]) }
         })
+        if streamAudio {
+            let sink = audioSink
+            cameraTokens.append(camera.stream.audioFramePublisher.listen { [weak self] frame in
+                sink.handler?(frame.pcmBuffer)
+                Task { @MainActor in self?.audioFrames += 1 }
+            })
+        }
         cameraTokens.append(camera.stream.statePublisher.listen { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
@@ -996,6 +1026,7 @@ enum Identification {
                                   "sizes": frameSizes.map { "\($0.key)x\($0.value)" }.sorted().joined(separator: ","),
                                   "frames": statsFrames,
                                   "fps": (Double(statsFrames) / seconds * 10).rounded() / 10]
+        if streamAudio { log["audioFrames"] = audioFrames; audioFrames = 0 }
         if !sharpSamples.isEmpty {
             let sorted = sharpSamples.sorted()
             log["sharpP10"] = (Double(sorted[max(0, sorted.count / 10)]) * 1000).rounded() / 1000
