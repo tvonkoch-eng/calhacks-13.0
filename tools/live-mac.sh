@@ -37,7 +37,7 @@ if [ ! -x "$out/live" ] || [ -n "$(find App tools Secrets.xcconfig -newer "$out/
                 BackupProvider:BACKUP_PROVIDER BackupAPIKey:BACKUP_API_KEY BackupModel:BACKUP_MODEL \
                 ResearchProvider:RESEARCH_PROVIDER ResearchAPIKey:RESEARCH_API_KEY ResearchModel:RESEARCH_MODEL \
                 AnswerPerMinute:ANSWER_PER_MINUTE WearerBackground:WEARER_BACKGROUND \
-                Tools:TOOLS TestLocation:TEST_LOCATION OpenAIAPIKey:OPENAI_API_KEY; do
+                Tools:TOOLS TestLocation:TEST_LOCATION; do
       printf '<key>%s</key><string>%s</string>\n' "${pair%%:*}" "$(val "${pair#*:}")"
     done
     echo '</dict></plist>'

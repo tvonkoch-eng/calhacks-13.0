@@ -37,12 +37,12 @@ All shared files are pure Foundation, so the phone and the Mac tool run the same
   0.82 s, weather 0.62 s, a plain question through the same path 0.2 s, time 0 s.
 - Mac: `sh tools/live-mac.sh --type` takes typed lines ("them: …" for the other person), and
   typing works during a mic session too. `TEST_LOCATION` pins the location.
-- **Tier 3, `research`**: one more tool the same model can pick, for the web and agents
-  ("Lens, what's the latest on the GENIUS Act?", "a quiet coffee shop near here that's open
-  late"). It gets the conversation, what's known about them and a reverse-geocoded "near …", so
-  "her company" and "near here" resolve. Fetch.ai ASI:One (`RESEARCH_PROVIDER = asi1`, agentic
-  model, `x-session-id` per task) is the primary; OpenAI's web search is the automatic fallback.
-  A fast model cuts the finding to a card (title + one line). ~7.5–8.6 s via OpenAI search.
+- **Tier 3, `research`**: one more tool the same model can pick, for the web ("Lens, what's the
+  latest on the GENIUS Act?", "a quiet coffee shop near here that's open late"). It gets the
+  conversation, what's known about them and a reverse-geocoded "near …", so "her company" and
+  "near here" resolve. Engine: Fetch.ai ASI:One (`asi1`) through its **Responses** endpoint with
+  the `web_search` tool (the chat endpoint rejects web search). A fast model cuts the answer to a
+  card. Measured end to end: 5.4–8 s. This key has no agentic (Agentverse) models.
 - iOS needs Info.plist strings: `NSLocationWhenInUseUsageDescription`,
   `NSRemindersFullAccessUsageDescription`, `NSCalendarsFullAccessUsageDescription`. The location
   comes from the phone (the glasses have no GPS).
@@ -51,8 +51,9 @@ All shared files are pure Foundation, so the phone and the Mac tool run the same
 
 See `Secrets.example.xcconfig`. The working setup: `MUSE_API_KEY`; answers and coach on
 `ANSWER_PROVIDER = cerebras`, `ANSWER_MODEL = gpt-oss-120b`, `ANSWER_PER_MINUTE = 5` (Cerebras free
-tier); backup `cerebras` / `qwen-3.8-27b` on the same `CEREBRAS_API_KEY`; optional
-`WEARER_BACKGROUND`; `OPENAI_API_KEY` only for the eval judge. **The build Mac's Secrets.xcconfig
+tier); backup `cerebras` / `qwen-3.8-27b` on the same `CEREBRAS_API_KEY`; research
+`RESEARCH_PROVIDER = asi1` with the Fetch key in `RESEARCH_API_KEY`; optional `WEARER_BACKGROUND`;
+`OPENAI_API_KEY` only for the eval judge. **The build Mac's Secrets.xcconfig
 needs these added**; Toby's copy is in `~/Developer/calhacks-muse/Secrets.xcconfig` on his laptop.
 
 ## Merging with main

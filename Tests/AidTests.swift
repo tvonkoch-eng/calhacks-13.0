@@ -219,12 +219,6 @@ do {
     }
     check(names(plain) == ["nearby", "weather", "remind", "next_event"], "device tools: \(names(plain))")
     check(names(deep) == ["nearby", "weather", "remind", "next_event", "research"], "plus research: \(names(deep))")
-    let chain = FallbackResearcher(chain: [Fake(name: "fetch", fails: true), Fake(name: "openai", fails: false)])
-    let done = DispatchSemaphore(value: 0)
-    nonisolated(unsafe) var got = ""
-    Task { got = (try? await chain.research("Ledgerline", context: "")) ?? "failed"; done.signal() }
-    done.wait()
-    check(got == "openai: Ledgerline", "falls back when the first researcher fails: \(got)")
 }
 
 // A refusal never reaches the lens; an answer that merely starts with I does.

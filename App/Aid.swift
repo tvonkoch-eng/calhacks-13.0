@@ -1014,24 +1014,19 @@ extension Aid.Config {
         let coachProvider = Provider(rawValue: value("CoachProvider")?.lowercased() ?? "") ?? answerProvider
         let coachKey = value("CoachAPIKey") ?? (coachProvider == answerProvider ? answerKey : nil)
 
-        // Research: the configured one first, OpenAI's web search behind it when there's a key, so
-        // a slow or failing agent never leaves the wearer with nothing.
-        var chain: [any Researcher] = []
-        let openai = value("OpenAIAPIKey")
+        // Research (tier 3): Fetch.ai ASI:One by default; OpenAI or Groq web search if asked for.
+        var researcher: (any Researcher)?
+        let researchKey = value("ResearchAPIKey")
         switch value("ResearchProvider")?.lowercased() {
-        case "groq":
-            if let key = value("ResearchAPIKey") ?? (answerProvider == .groq ? answerKey : nil) { chain.append(WebResearcher.groq(key: key)) }
-        case "openai":
-            if let key = value("ResearchAPIKey") ?? openai { chain.append(WebResearcher.openai(key: key)) }
         case "asi1", "fetch", "fetchai":
-            if let key = value("ResearchAPIKey") {
-                chain.append(WebResearcher.asi1(key: key, model: value("ResearchModel") ?? "asi1-fast-agentic"))
-            }
+            if let key = researchKey { researcher = ASIOne(key: key, model: value("ResearchModel") ?? "asi1") }
+        case "openai":
+            if let key = researchKey { researcher = WebResearcher.openai(key: key) }
+        case "groq":
+            if let key = researchKey ?? (answerProvider == .groq ? answerKey : nil) { researcher = WebResearcher.groq(key: key) }
         default:
             break
         }
-        if !chain.isEmpty, let openai, !(chain.first?.name.hasPrefix("OpenAI") ?? false) { chain.append(WebResearcher.openai(key: openai)) }
-        let researcher: (any Researcher)? = chain.isEmpty ? nil : (chain.count == 1 ? chain[0] : FallbackResearcher(chain: chain))
         let backupProvider = Provider(rawValue: value("BackupProvider")?.lowercased() ?? "") ?? .openai
         let backup = value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) }
         let answers = answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) }

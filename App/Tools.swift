@@ -78,6 +78,14 @@ enum Tools {
     ask a follow-up.
     """
 
+    /// Only when the research tool is offered. Without it, "needs live data" above meant SKIP, and
+    /// gpt-oss kept skipping "what's the latest on the GENIUS Act?" instead of calling research.
+    private static let web = """
+     For anything current or on the web (news, "the latest on", prices, scores, opening hours, \
+    recent events, a specific company or person you aren't sure about), call research instead of \
+    saying SKIP.
+    """
+
     /// One round: the model answers in a line, says SKIP, or names a tool for the caller to run.
     static func decide(_ request: String, context: String, toolbox: any Toolbox,
                        provider: Provider, key: String, model: String) async throws -> Decision {
@@ -89,7 +97,8 @@ enum Tools {
             "temperature": 0,
             "tool_choice": "auto",
             "messages": [
-                ["role": "system", "content": prompt + "\nIt is \(now), \(TimeZone.current.identifier).\(place)"],
+                ["role": "system", "content": prompt + (toolbox.definitions.contains("\"research\"") ? web : "")
+                    + "\nIt is \(now), \(TimeZone.current.identifier).\(place)"],
                 ["role": "user", "content": user],
             ],
         ]
@@ -259,7 +268,7 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
 
     func working(_ name: String, arguments: String) -> String {
         switch name {
-        case "research": return researcher?.name.contains("ASI") == true ? "Asking Fetch.ai agents" : "Looking it up"
+        case "research": return researcher?.name.contains("Fetch") == true ? "Asking Fetch.ai" : "Looking it up"
         case "nearby": return "Finding \(Self.arguments(arguments)["query"] as? String ?? "it") nearby"
         case "weather": return "Checking the weather"
         case "remind": return "Setting a reminder"

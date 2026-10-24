@@ -179,11 +179,54 @@ protocol Researcher: Sendable {
     func research(_ query: String, context: String) async throws -> String
 }
 
-/// Any OpenAI-compatible endpoint with web search built in. Three ready-made ones:
+/// Fetch.ai's ASI:One, through its Responses endpoint with the web_search tool: measured on
+/// 2026-10-24, `asi1` searched and answered current questions in ~4.3 s ("OCC finalized its
+/// stablecoin rule Oct 21…"), twice as fast as OpenAI's search model. `asi1-mini` never searched
+/// (and was wrong); `asi1-ultra` took 9-18 s. The chat endpoint rejects `web_search` and 500s on
+/// it as a tool, so it has to be Responses.
+struct ASIOne: Researcher {
+    let key: String
+    var model = "asi1"
+    var name: String { "Fetch.ai ASI:One" }
+
+    func research(_ query: String, context: String) async throws -> String {
+        var request = URLRequest(url: URL(string: "https://api.asi1.ai/v1/responses")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": model,
+            "instructions": """
+                You look things up for someone mid-conversation who will glance at your reply on \
+                smart glasses. Reply with the single most useful thing to know, at most 18 words, \
+                plain text, no citations, no preamble.
+                """,
+            "input": context.isEmpty ? query : "Look up: \(query)\n\nConversation so far:\n\(context)",
+            "tools": [["type": "web_search"]],
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 429 { throw LLM.Failure.rateLimited(retryAfter: 20) }
+        guard code == 200, let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw LLM.Failure.http(code, String(decoding: data.prefix(160), as: UTF8.self))
+        }
+        // Output is reasoning, a search call, and messages; the answer is the last message's text.
+        let texts = ((json["output"] as? [[String: Any]]) ?? [])
+            .filter { $0["type"] as? String == "message" }
+            .flatMap { ($0["content"] as? [[String: Any]]) ?? [] }
+            .compactMap { $0["type"] as? String == "output_text" ? ($0["text"] as? String) : nil }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let answer = texts.last else { throw LLM.Failure.unreadable("no answer in ASI:One output") }
+        return answer
+    }
+}
+
+/// Any OpenAI-compatible chat endpoint with web search built in:
 /// - `groq`: gpt-oss-120b with Groq's browser_search tool (~3 s, but ~20k tokens a lookup, which
 ///   is a tenth of Groq's free daily budget).
-/// - `openai`: gpt-5-search-api (~7 s, ~17k tokens; found the current GENIUS Act rulemaking).
-/// - `asi1`: Fetch.ai's ASI:One (api.asi1.ai), whose `web_search` flag does the same.
+/// - `openai`: gpt-5-search-api (~7-8 s, ~17k tokens).
 /// Search models ignore length limits, so findings are cut down to a card (`Tools.card`).
 struct WebResearcher: Researcher {
     let name: String
@@ -192,8 +235,6 @@ struct WebResearcher: Researcher {
     let model: String
     /// Provider-specific request fields, as JSON text so the struct stays Sendable.
     let extra: String
-    /// Fetch.ai's agentic models need a session per task (`x-session-id`).
-    var sessions = false
     var timeout: TimeInterval = 25
 
     static func groq(key: String) -> WebResearcher {
@@ -205,14 +246,6 @@ struct WebResearcher: Researcher {
     static func openai(key: String) -> WebResearcher {
         WebResearcher(name: "OpenAI web search", endpoint: Provider.openai.endpoint, key: key,
                       model: "gpt-5-search-api", extra: #"{"web_search_options":{}}"#)
-    }
-
-    /// Agentic models search Agentverse for agents that can do the task and coordinate them, with
-    /// web search on top. asi1-fast-agentic is the quick one; asi1-agentic and
-    /// asi1-extended-agentic think longer.
-    static func asi1(key: String, model: String = "asi1-fast-agentic") -> WebResearcher {
-        WebResearcher(name: "Fetch.ai ASI:One (\(model))", endpoint: URL(string: "https://api.asi1.ai/v1/chat/completions")!,
-                      key: key, model: model, extra: #"{"web_search":true}"#, sessions: model.contains("agentic"), timeout: 20)
     }
 
     func research(_ query: String, context: String) async throws -> String {
@@ -230,29 +263,13 @@ struct WebResearcher: Researcher {
         if let fields = try? JSONSerialization.jsonObject(with: Data(extra.utf8)) as? [String: Any] {
             body.merge(fields) { _, new in new }
         }
-        let headers = sessions ? ["x-session-id": UUID().uuidString] : [:]
-        let text = try await LLM.complete(endpoint, key: key, body: body, timeout: timeout, headers: headers)
+        let text = try await LLM.complete(endpoint, key: key, body: body, timeout: timeout)
         // Strip search citations (【1†L11-L13】) and markdown emphasis.
         let plain = text.replacingOccurrences(of: #"【[^】]*】"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: "**", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !plain.isEmpty else { throw LLM.Failure.unreadable("empty research reply") }
         return plain
-    }
-}
-
-/// Each in turn: an agent marketplace can be slow or down in the middle of a demo.
-struct FallbackResearcher: Researcher {
-    let chain: [any Researcher]
-
-    var name: String { chain.first?.name ?? "research" }
-
-    func research(_ query: String, context: String) async throws -> String {
-        var failure: Error = LLM.Failure.unreadable("no researcher")
-        for researcher in chain {
-            do { return try await researcher.research(query, context: context) } catch { failure = error }
-        }
-        throw failure
     }
 }
 
