@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>AnswerAPIKey</key>
+	<string>$(ANSWER_API_KEY)</string>
+	<key>AnswerModel</key>
+	<string>$(ANSWER_MODEL)</string>
+	<key>AnswerProvider</key>
+	<string>$(ANSWER_PROVIDER)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -44,24 +50,20 @@
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
 	</dict>
+	<key>MuseAPIKey</key>
+	<string>$(MUSE_API_KEY)</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connects to your Meta glasses.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_bonjour._tcp</string>
 	</array>
-	<key>AnswerAPIKey</key>
-	<string>$(ANSWER_API_KEY)</string>
-	<key>AnswerProvider</key>
-	<string>$(ANSWER_PROVIDER)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Recognizes your teammates' faces on device.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Listens for questions so answers can appear on your glasses.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Transcribes speech on device to spot questions as they are asked.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Lets your phone find and connect to your glasses over Wi-Fi.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Listens for questions so answers can appear on your glasses. Audio is transcribed by Meta's Muse Voice Transcribe.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

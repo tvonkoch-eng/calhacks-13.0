@@ -3,17 +3,19 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// Where answers come from. All three are OpenAI-compatible, so one code path covers them;
-/// pick whichever key you have. Groq and Cerebras are the ones worth using here — their
-/// time-to-first-token is ~100-250 ms, which is the whole ballgame on a wearable.
+/// Where answers come from. All four are OpenAI-compatible, so one code path covers them;
+/// pick whichever key you have. Groq and Cerebras are the fastest — their time-to-first-token is
+/// ~100-250 ms, which is the whole ballgame on a wearable. Muse is Meta's Muse Spark: always
+/// reasons first, so ~1.2 s to first token (see Tests/muse-latency.py).
 enum Provider: String {
-    case groq, cerebras, openai
+    case groq, cerebras, openai, muse
 
     var endpoint: URL {
         switch self {
         case .groq: URL(string: "https://api.groq.com/openai/v1/chat/completions")!
         case .cerebras: URL(string: "https://api.cerebras.ai/v1/chat/completions")!
         case .openai: URL(string: "https://api.openai.com/v1/chat/completions")!
+        case .muse: URL(string: "https://api.meta.ai/v1/chat/completions")!
         }
     }
 
@@ -27,6 +29,18 @@ enum Provider: String {
         case .groq: "qwen/qwen3.8-27b"
         case .cerebras: "llama-3.3-70b"
         case .openai: "gpt-4o-mini"
+        // 1.1 over 1.3: both 20/20 on answer-vs-SKIP, 1.1 median first token 1.17 s vs 1.87 s
+        // (2026-10-23, Tests/muse-latency.py). Override with ANSWER_MODEL.
+        case .muse: "muse-spark-1.1"
+        }
+    }
+
+    /// Muse Spark is a reasoning model with no way to turn reasoning off: at 48 tokens it spends
+    /// the whole budget thinking and returns no content. `minimal` effort plus room to think fixes it.
+    var extras: [String: Any] {
+        switch self {
+        case .muse: ["max_tokens": 400, "reasoning_effort": "minimal"]
+        default: ["max_tokens": 48]
         }
     }
 }
@@ -45,6 +59,11 @@ struct Answerer {
     static var provider: Provider {
         let name = Bundle.main.object(forInfoDictionaryKey: "AnswerProvider") as? String
         return Provider(rawValue: name?.lowercased() ?? "") ?? .groq
+    }
+
+    static var model: String {
+        let name = Bundle.main.object(forInfoDictionaryKey: "AnswerModel") as? String
+        return (name?.isEmpty == false) ? name! : provider.model
     }
 
     static var configured: Bool { key != nil }
@@ -115,16 +134,17 @@ struct Answerer {
                     request.timeoutInterval = 8
                     request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.httpBody = try JSONSerialization.data(withJSONObject: [
-                        "model": provider.model,
+                    var body: [String: Any] = [
+                        "model": model,
                         "stream": true,
                         "temperature": 0,
-                        "max_tokens": 48,
                         "messages": [
                             ["role": "system", "content": prompt],
                             ["role": "user", "content": question],
                         ],
-                    ])
+                    ]
+                    body.merge(provider.extras) { _, extra in extra }
+                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {

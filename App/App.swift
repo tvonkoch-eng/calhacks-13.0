@@ -22,6 +22,8 @@ struct CalHacksApp: App {
                 .task {
                     glasses.store = store
                     assistant.glasses = glasses
+                    // First names spelled right in the transcript, e.g. "Joaquin" not "Wakeen".
+                    assistant.listener.keywords = store.people.flatMap { $0.name.split(separator: " ").map(String.init) }
                     #if DEBUG
                     let env = ProcessInfo.processInfo.environment
                     if env["MOCK_GLASSES"] == "1" {
