@@ -46,7 +46,7 @@ enum FaceEngine {
 }
 
 /// Back/front camera that runs face detection on ~4 frames a second.
-final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+final class PhoneCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
     var onFaces: (([FaceHit]) -> Void)?
     private let queue = DispatchQueue(label: "camera")
@@ -105,7 +105,7 @@ struct CameraPreview: UIViewRepresentable {
 }
 
 @Observable final class CameraModel {
-    @ObservationIgnored let camera = Camera()
+    @ObservationIgnored let camera = PhoneCamera()
     var faces: [FaceHit] = []
     var front = false
 

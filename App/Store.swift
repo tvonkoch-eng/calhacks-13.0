@@ -1,3 +1,4 @@
+import CoreImage
 import Foundation
 import Observation
 import UIKit
@@ -38,7 +39,16 @@ struct Match {
         }
         for person in people {
             if let image = UIImage(contentsOfFile: avatarURL(person.id).path) { avatars[person.id] = image }
+            if samples(person.id) == 0 { seed(person.id) }
         }
+    }
+
+    /// First-run sample + avatar from a bundled App/Faces/<id>.jpg|png, if there is one.
+    private func seed(_ id: String) {
+        guard let url = ["jpg", "jpeg", "png"].lazy.compactMap({ Bundle.main.url(forResource: id, withExtension: $0) }).first,
+              let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
+              let face = FaceEngine.faces(in: image).first else { return }
+        enroll(id, face)
     }
 
     var me: Person? { people.first { $0.isMe == true } }

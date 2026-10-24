@@ -1,6 +1,9 @@
 [
-  { "id": "toby",     "name": "Toby von Koch", "role": "You",      "facts": [], "isMe": true },
-  { "id": "joaquin",  "name": "Joaquin",       "role": "Teammate", "facts": ["Cal Hacks 13.0 team"] },
-  { "id": "mirabell", "name": "Mirabell",      "role": "Teammate", "facts": ["Cal Hacks 13.0 team"] },
-  { "id": "avi",      "name": "Avi",           "role": "Teammate", "facts": ["Cal Hacks 13.0 team"] }
+  { "id": "toby", "name": "Toby von Koch", "role": "You", "facts": [], "isMe": true },
+  { "id": "joaquin", "name": "Joaquin Del Pego", "role": "Junior, Computer Science · UCSB",
+    "facts": ["Works at LegalTime AI (timekeeping software for lawyers)", "Grew up in San Diego"] },
+  { "id": "mirabelle", "name": "Mirabelle Brown", "role": "Junior, Honors Financial Math & Statistics · UCSB",
+    "facts": ["Passionate about environmental studies", "Grew up in Gresham, New York"] },
+  { "id": "avi", "name": "Avi Shah", "role": "Economics · LSE, year abroad at UCSB",
+    "facts": ["Summer Analyst, Investment Banking at BofA London", "From London"] }
 ]

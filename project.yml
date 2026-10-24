@@ -2,7 +2,11 @@ name: CalHacks
 options:
   bundleIdPrefix: com.tobiasvonkoch
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "17.2"
+packages:
+  MWDAT:
+    url: https://github.com/facebook/meta-wearables-dat-ios
+    from: 1.0.1
 settings:
   base:
     DEVELOPMENT_TEAM: VBT92TS7FT
@@ -14,6 +18,13 @@ targets:
     type: application
     platform: iOS
     sources: [App]
+    dependencies:
+      - package: MWDAT
+        product: MWDATCore
+      - package: MWDAT
+        product: MWDATCamera
+      - package: MWDAT
+        product: MWDATDisplay
     info:
       path: App/Info.plist
       properties:
@@ -21,3 +32,17 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: Recognizes your teammates' faces on device.
+        NSBluetoothAlwaysUsageDescription: Connects to your Meta glasses.
+        NSLocalNetworkUsageDescription: Lets your phone find and connect to your glasses over Wi-Fi.
+        NSBonjourServices: [_bonjour._tcp]
+        UIBackgroundModes: [processing, bluetooth-central, bluetooth-peripheral, external-accessory]
+        UISupportedExternalAccessoryProtocols: [com.meta.ar.wearable]
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleURLSchemes: [calhacks13]
+        MWDAT:
+          AppLinkURLScheme: "calhacks13://"
+          MetaAppID: "0"
+          ClientToken: ""
+          TeamID: $(DEVELOPMENT_TEAM)

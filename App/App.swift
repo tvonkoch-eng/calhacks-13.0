@@ -4,10 +4,16 @@ import SwiftUI
 @main
 struct CalHacksApp: App {
     @State private var store = Store()
+    @State private var glasses = Glasses()
+
+    init() { Glasses.configure() }
 
     var body: some Scene {
         WindowGroup {
-            PeopleView().environment(store)
+            PeopleView()
+                .environment(store)
+                .environment(glasses)
+                .onOpenURL { Glasses.handle($0) }
         }
     }
 }
@@ -118,17 +124,36 @@ struct PersonView: View {
 
 struct ScanView: View {
     @Environment(Store.self) private var store
+    @Environment(Glasses.self) private var glasses
     @State private var model = CameraModel()
+    @AppStorage("useGlasses") private var useGlasses = false
+
+    private var faces: [FaceHit] { useGlasses ? glasses.faces : model.faces }
 
     var body: some View {
         @Bindable var store = store
         ZStack(alignment: .bottom) {
-            CameraPreview(session: model.camera.session).ignoresSafeArea()
+            if useGlasses {
+                Group {
+                    if let frame = glasses.frame {
+                        Image(uiImage: frame).resizable().scaledToFill()
+                    } else {
+                        Color.black
+                    }
+                }
+                .ignoresSafeArea()
+            } else {
+                CameraPreview(session: model.camera.session).ignoresSafeArea()
+            }
             VStack(spacing: 8) {
-                if model.faces.isEmpty {
+                if useGlasses && !glasses.connected {
+                    Button("Connect glasses") { Task { await glasses.connect() } }
+                        .buttonStyle(.borderedProminent)
+                    Text(glasses.status).font(.footnote).padding(8).background(.thinMaterial, in: Capsule())
+                } else if faces.isEmpty {
                     Text("Point at someone").padding().background(.thinMaterial, in: Capsule())
                 }
-                ForEach(Array(model.faces.prefix(3).enumerated()), id: \.offset) { _, face in
+                ForEach(Array(faces.prefix(3).enumerated()), id: \.offset) { _, face in
                     MatchCard(match: store.match(face.embedding))
                 }
                 HStack {
@@ -142,10 +167,27 @@ struct ScanView: View {
             .padding()
         }
         .toolbar {
-            Button { model.flip() } label: { Image(systemName: "arrow.triangle.2.circlepath.camera") }
+            ToolbarItem(placement: .principal) {
+                Picker("Source", selection: $useGlasses) {
+                    Text("Phone").tag(false)
+                    Text("Glasses").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+            }
+            if !useGlasses {
+                ToolbarItem { Button { model.flip() } label: { Image(systemName: "arrow.triangle.2.circlepath.camera") } }
+            } else if glasses.connected {
+                ToolbarItem { Button("Disconnect") { glasses.disconnect() } }
+            }
         }
-        .onAppear { model.start() }
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { if !useGlasses { model.start() } }
         .onDisappear { model.stop() }
+        .onChange(of: useGlasses) { _, glassesOn in glassesOn ? model.stop() : model.start() }
+        .onChange(of: faces.first.flatMap { store.match($0.embedding)?.person }) { _, person in
+            if let person, useGlasses { glasses.show(person) }
+        }
     }
 }
 
