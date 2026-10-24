@@ -64,6 +64,10 @@ import Observation
         // turn after Avi's is as likely Mira's as the wearer's. No signal means "not the wearer",
         // so their questions still get answered.
         aid.liveWearer = { [weak self] in self?.speakers.wearerTalking() ?? false }
+        aid.nameFor = { [weak self] label in
+            guard let self, label.hasPrefix("p:"), let person = self.person(String(label.dropFirst(2))) else { return nil }
+            return self.firstName(person.name)
+        }
     }
 
     /// The person the aid's profile is about, so a glance away and back doesn't re-seed it.

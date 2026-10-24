@@ -1162,6 +1162,19 @@ struct LensOptics {
     /// How wide the 600 px panel is, as an angle.
     var lensDegrees: CGFloat { LensMetrics.canvas / ppd }
 
+    /// The angle a centred span of frame pixels covers.
+    func degrees(_ pixels: CGFloat) -> CGFloat { 2 * atan(pixels / 2 / focal) * 180 / .pi }
+
+    /// A landscape window `degrees` wide, centred on the lens and kept inside the frame: never
+    /// shorter than the lens with a margin, and never taller than wide.
+    func window(degrees: CGFloat) -> CGRect {
+        let width = min(frame.width, max(side * 1.2, 2 * focal * tan(degrees / 2 * .pi / 180)))
+        let height = min(frame.height, width, max(side * 1.12, width * 9 / 16))
+        let x = min(max(center.x - width / 2, 0), frame.width - width)
+        let y = min(max(center.y - height / 2, 0), frame.height - height)
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
     /// The panel's side in frame pixels.
     var side: CGFloat { 2 * focal * tan(lensDegrees / 2 * .pi / 180) }
 
@@ -1222,6 +1235,8 @@ struct LensPanel: View {
     let avatar: (String) -> UIImage?
     /// The pixel size of the frames off the camera; nil until the first one lands.
     var frameSize: CGSize? = nil
+    /// Tapped in on the lens to read the card; out is the whole scene across.
+    @State private var zoomed = false
 
     private var state: (String, Color) {
         if identifying { return ("Looking", .orange) }
@@ -1287,6 +1302,11 @@ struct LensPanel: View {
         let optics = LensOptics(frame: frame)
         let side = optics.side
         let center = optics.center
+        // A wide band of the portrait frame: its full width (all 56° the camera sees across),
+        // 16:9, around the lens. At that size the card is true to scale and too small to read,
+        // so a tap zooms to `eyeZoomDeg` of scene around the lens and back. Either way the lens
+        // keeps its true size relative to the scene behind it.
+        let window = optics.window(degrees: zoomed ? CGFloat(Tuning.float("eyeZoomDeg", 30)) : 180)
         return GeometryReader { geo in
             ZStack(alignment: .topLeading) {
                 Color.black
@@ -1318,22 +1338,27 @@ struct LensPanel: View {
                     .position(center)
             }
             .frame(width: frame.width, height: frame.height)
+            .offset(x: -window.minX, y: -window.minY)
+            .frame(width: window.width, height: window.height, alignment: .topLeading)
             .clipped()
-            .scaleEffect(geo.size.width / frame.width, anchor: .topLeading)
+            .scaleEffect(geo.size.width / window.width, anchor: .topLeading)
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
-        .aspectRatio(frame.width / frame.height, contentMode: .fit)
-        .frame(maxHeight: CGFloat(Tuning.float("lensOverlayHeight", 420)))
+        .aspectRatio(window.width / window.height, contentMode: .fit)
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.25)) { zoomed.toggle() } }
+        // Height from the full width, rather than squeezed by whatever height the stack offers.
+        .fixedSize(horizontal: false, vertical: true)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(.separator)))
         .overlay(alignment: .bottomTrailing) {
-            Text(verbatim: "\(Int(frame.width))×\(Int(frame.height)) · lens \(Int(side)) px · \(Int(optics.lensDegrees.rounded()))°")
+            // Under the panel, not on it: the lens fills most of the window.
+            Text(verbatim: "\(zoomed ? "tap for full view" : "tap to read") · scene \(Int(optics.degrees(window.width).rounded()))°×\(Int(optics.degrees(window.height).rounded()))° · lens \(Int(optics.lensDegrees.rounded()))°")
                 .lineLimit(1).minimumScaleFactor(0.6)
-                .font(.caption2.monospacedDigit()).foregroundStyle(.white.opacity(0.8))
-                .padding(.horizontal, 6).padding(.vertical, 3)
-                .background(.black.opacity(0.45), in: Capsule())
-                .padding(6)
+                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                .offset(y: 16)
         }
+        .padding(.bottom, 16)
     }
 
     private func tile<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
