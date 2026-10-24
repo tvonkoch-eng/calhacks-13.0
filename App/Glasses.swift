@@ -76,12 +76,26 @@ enum Identification {
     /// 5 fps is a Bluetooth budget, not a camera limit: video, the lens and the Neural Band share
     /// one radio on a real pair. A simulated pair is a local AVCaptureSession with no radio, so it
     /// can run at a rate that actually looks live.
+    /// Video, the lens and the Neural Band share one Bluetooth radio, and the link was losing:
+    /// a lens write took 4.9 s and the stream wedged into a rebuild loop it never left.
+    ///
+    /// Two things were wrong. The rate was **5 fps, which is not a value the SDK accepts** — the
+    /// documented set is 2, 7, 15, 24, 30. And medium at that rate left no headroom, so the SDK's
+    /// own bandwidth governor was degrading quality underneath us. Low is 360x640: a face at
+    /// talking distance is still ~105 px, well above the 40 px crop floor, and feature prints
+    /// score 0.79 on half-size crops. Both knobs are UserDefaults so they move with no rebuild:
+    /// `streamFps` (2/7/15/24/30) and `streamRes` ("low"/"medium"/"high").
     private var streamConfig: StreamConfiguration {
-        var rate: UInt = 5
         #if DEBUG
-        if mocking { rate = 24 }
+        // A simulated pair is a local AVCaptureSession with no radio at all.
+        if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24) }
         #endif
-        return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: rate)
+        let fps = UInt(UserDefaults.standard.object(forKey: "streamFps") as? Int ?? 7)
+        switch UserDefaults.standard.string(forKey: "streamRes") {
+        case "high": return StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: fps)
+        case "medium": return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
+        default: return StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: fps)
+        }
     }
     #if DEBUG
     /// The simulated pair, kept so switching rigs can unpair it cleanly.
@@ -90,6 +104,12 @@ enum Identification {
     /// Set by Disconnect so we don't reconnect behind the user's back.
     @ObservationIgnored private var userDisconnected = false
     @ObservationIgnored private var lastAutoReconnect = Date.distantPast
+    /// When a frame last actually arrived. The watchdog below is the only thing that notices a
+    /// stream that has gone quiet without erroring — the watch path has no timeout of its own.
+    @ObservationIgnored private var lastFrameAt = Date.distantPast
+    @ObservationIgnored private var lastRebuild = Date.distantPast
+    @ObservationIgnored private var lastSessionRecovery = Date.distantPast
+    @ObservationIgnored private var frameWatchdog: Task<Void, Never>?
     @ObservationIgnored private var watchTask: Task<Void, Never>?
     /// Pressing Identify on the glasses while someone is on screen asks first, so a stray pinch
     /// can't wipe the person you're talking to.
@@ -210,6 +230,8 @@ enum Identification {
             // Bring the stream up now, not on the first press: spinning it up cost ~830 ms of
             // every identify, and it is the single biggest item on the clock.
             startStream()
+            lastFrameAt = Date()
+            watchFrames()
 
             if wearables.deviceForIdentifier(found)?.supportsDisplay() == true {
                 let display = try session.addDisplay()
@@ -541,6 +563,8 @@ enum Identification {
         answer = nil
         result = .ready
         streamLive = false
+        frameWatchdog?.cancel()
+        frameWatchdog = nil
         #if DEBUG
         povWatch?.cancel()
         povWatch = nil
@@ -579,7 +603,10 @@ enum Identification {
         if let image = await frame() { return image }
         // Wedged. Rebuild the camera off the session and give it one more go.
         streamBroken = true
-        return await frame()
+        if let image = await frame() { return image }
+        // Five seconds of nothing through a brand-new camera: the session is the problem.
+        recoverSession(reason: "noFrames")
+        return nil
     }
 
     private func frame() async -> CIImage? {
@@ -600,6 +627,46 @@ enum Identification {
         }
     }
 
+    /// A camera rebuild fixes a wedged stream; it cannot fix a wedged session. When frames stay
+    /// gone after a rebuild, tear the session down and build a new one — that is the reset the SDK
+    /// actually honours, and before this the only way out was killing the app.
+    private func recoverSession(reason: String) {
+        guard !userDisconnected, Date().timeIntervalSince(lastSessionRecovery) > 20 else { return }
+        lastSessionRecovery = Date()
+        SpeedLog.record(["event": "sessionRecover", "reason": reason])
+        display?.stop()
+        session?.stop()
+        teardown(status: "Reconnecting to your glasses…")
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            await self?.connect()
+        }
+    }
+
+    /// The watch path waits on frames that simply arrive, so a silent stream looks exactly like an
+    /// empty room — no timeout fires and nothing recovers until someone presses the button. This
+    /// notices the silence instead: rebuild the camera, and if that was already tried, take the
+    /// session with it.
+    private func watchFrames() {
+        frameWatchdog?.cancel()
+        frameWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self else { return }
+                guard self.connected, self.streamLive, !self.identifying else { continue }
+                let quiet = Date().timeIntervalSince(self.lastFrameAt)
+                guard quiet > 6 else { continue }
+                SpeedLog.record(["event": "frameStall", "quietMs": (quiet * 1000).rounded()])
+                if Date().timeIntervalSince(self.lastRebuild) < 12 {
+                    self.recoverSession(reason: "frameStall")
+                } else {
+                    self.rebuildCamera()
+                    self.startStream()
+                }
+            }
+        }
+    }
+
     private func startStream() {
         guard let camera, !streamLive else { return }
         camera.stream.start()
@@ -609,20 +676,27 @@ enum Identification {
     /// Replaces the camera after a stream error. Stopping a stream is one-way: the SDK answers a
     /// later start() with "Critical error, the stream should end" and never sends another frame,
     /// which is why every identify after the first one used to time out. Recovery is a fresh
-    /// addCamera on the same session, not a reconnect.
+    /// addCamera on the same session.
+    ///
+    /// It does NOT stop the old camera. Doing that is the same one-way stop by another name: live
+    /// on Toby's phone this loop ran nine times, each rebuild answered by another critical error,
+    /// and the session never produced a frame again. Drop the reference and let it go; when even a
+    /// fresh camera stays quiet, `recoverSession` replaces the whole session instead.
     private func rebuildCamera() {
         guard let session else { return }
         SpeedLog.record(["event": "cameraRebuild"])
-        camera?.stop()
+        lastRebuild = Date()
         releaseCameraTokens()
         camera = nil
         streamLive = false
         streamBroken = false
         guard let fresh = (try? session.addCamera(config: streamConfig)) ?? nil else {
             SpeedLog.record(["event": "cameraRebuildFailed"])
+            recoverSession(reason: "addCameraFailed")
             return
         }
         attachCamera(fresh)
+        lastFrameAt = Date()
     }
 
     private func attachCamera(_ camera: Camera) {
@@ -634,6 +708,7 @@ enum Identification {
             let small = image?.fitted(to: 360)
             Task { @MainActor in
                 guard let self else { return }
+                self.lastFrameAt = Date()
                 #if DEBUG
                 if let small, Date().timeIntervalSince(self.lastPov) > 0.04 {
                     self.lastPov = Date()
