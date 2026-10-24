@@ -81,14 +81,14 @@ struct EventRow: View {
     var body: some View {
         switch event.kind {
         case .line:
-            let tag = assistant.aid.tag(event.speaker)
+            let tag = assistant.name(for: event.speaker)
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(tag).font(.caption2.weight(.bold)).tracking(1)
-                        .foregroundStyle(tag == "ME" ? Color.accentColor : .secondary)
+                        .foregroundStyle(tag == "YOU" ? Color.accentColor : .secondary)
                     Spacer()
-                    if let speaker = event.speaker, tag != "ME" {
-                        Button("That was me") { assistant.aid.markWearer(speaker) }
+                    if let speaker = event.speaker, tag != "YOU" {
+                        Button("That was me") { assistant.markMe(speaker) }
                             .font(.caption2).buttonStyle(.borderless)
                     }
                 }

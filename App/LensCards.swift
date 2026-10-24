@@ -40,6 +40,11 @@ struct LensShot: Equatable {
     /// SF Symbol standing in for the lens icon on the button.
     var buttonIcon: String = "eye"
     var connected: Int = 0
+    /// Two or more people in the conversation: their first names in one row, the one talking
+    /// marked. One person keeps the photo/name/headline strip above.
+    var group: [Member] = []
+    /// The wearer is the one talking.
+    var meSpeaking = false
 }
 
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
@@ -49,11 +54,14 @@ enum LensCards {
     /// strip on top says who; without, the aid's own header (a name they said) as meta. Then the
     /// passing card, title as heading and detail as body, and the pinned line to say next behind
     /// a speech bubble. No Identify row: the aid is brief, and the capture button still identifies.
-    static func aid(_ view: LensView, person: Person?, avatar: (String) -> UIImage?) -> FlexBox {
-        let shot = Self.shot(aid: view, person: person)
+    static func aid(_ view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false,
+                    avatar: (String) -> UIImage?) -> FlexBox {
+        let shot = Self.shot(aid: view, person: person, group: group, meSpeaking: meSpeaking)
         let photo = person.flatMap { avatar($0.id) }
         return FlexBox(direction: .column, spacing: 12) {
-            if let person {
+            if group.count >= 2 {
+                groupRow(group, meSpeaking: meSpeaking, avatar: avatar)
+            } else if let person {
                 FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
                     if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
                     FlexBox(direction: .column, spacing: 2) {
@@ -91,6 +99,60 @@ enum LensCards {
             }
         }
         .padding(22)
+        .background(.card)
+    }
+
+    /// Everyone you're talking to, in one row: a photo and a first name each, the speech bubble in
+    /// place of the photo for whoever is talking, names dimmed for the rest. Past three, "+N".
+    /// "You" leads the row while the wearer talks, so the row always says who has the floor.
+    static func groupRow(_ group: [Member], meSpeaking: Bool, avatar: (String) -> UIImage?) -> FlexBox {
+        let shown = Array(group.prefix(3))
+        return FlexBox(direction: .row, spacing: 18, crossAlignment: .center) {
+            if meSpeaking {
+                FlexBox(direction: .row, spacing: 6, crossAlignment: .center) {
+                    Icon(name: .speechBubble, style: .outline)
+                    Text("You", style: .meta)
+                }
+            }
+            for member in shown {
+                FlexBox(direction: .row, spacing: 8, crossAlignment: .center) {
+                    if member.speaking {
+                        Icon(name: .speechBubble, style: .outline)
+                    } else if let photo = avatar(member.id) {
+                        Image(image: photo, sizePreset: .icon, cornerRadius: .medium)
+                    }
+                    Text(member.name, style: .meta, color: member.speaking ? .primary : .secondary)
+                }
+            }
+            if group.count > shown.count {
+                Text("+\(group.count - shown.count)", style: .meta, color: .secondary)
+            }
+        }
+    }
+
+    /// The group while the aid listens with nothing to show: one line per person, so it's clear
+    /// at a glance that this is a conversation with all of them.
+    static func compact(group: [Member], meSpeaking: Bool, avatar: (String) -> UIImage?) -> FlexBox {
+        let shown = Array(group.prefix(3))
+        return FlexBox(direction: .column, spacing: 10) {
+            for member in shown {
+                FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
+                    if member.speaking {
+                        Icon(name: .speechBubble, style: .outline)
+                    } else if let photo = avatar(member.id) {
+                        Image(image: photo, sizePreset: .icon, cornerRadius: .medium)
+                    }
+                    FlexBox(direction: .column, spacing: 2) {
+                        Text(member.name, style: .body, color: member.speaking || !meSpeaking ? .primary : .secondary)
+                        Text(member.headline, style: .meta, color: .secondary).flexShrink(1)
+                    }
+                }
+            }
+            if group.count > shown.count {
+                Text("+\(group.count - shown.count) more", style: .meta, color: .secondary)
+            }
+        }
+        .padding(20)
         .background(.card)
     }
 
@@ -225,8 +287,9 @@ enum LensCards {
     }
 
     /// The aid's card, as the mirror sees it.
-    static func shot(aid view: LensView, person: Person?) -> LensShot {
+    static func shot(aid view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false) -> LensShot {
         var shot = LensShot(kind: .aid)
+        if group.count >= 2 { shot.group = group; shot.meSpeaking = meSpeaking }
         shot.name = person?.name ?? view.header
         shot.headline = person?.headline
         shot.photo = person?.id
@@ -237,6 +300,13 @@ enum LensCards {
         }
         shot.followup = view.followup
         shot.working = view.working.map { workLine($0, at: Date()) }
+        return shot
+    }
+
+    static func shot(compact group: [Member], meSpeaking: Bool) -> LensShot {
+        var shot = LensShot(kind: .compact)
+        shot.group = group
+        shot.meSpeaking = meSpeaking
         return shot
     }
 

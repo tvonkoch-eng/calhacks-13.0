@@ -36,6 +36,8 @@ targets:
       - package: MWDAT
         product: MWDATInputs
       - package: MWDAT
+        product: MWDATSpeech
+      - package: MWDAT
         product: MWDATMockDevice
     info:
       path: App/Info.plist
