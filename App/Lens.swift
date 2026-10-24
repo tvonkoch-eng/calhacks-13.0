@@ -10,7 +10,8 @@ struct LensView: Equatable {
     var card: Card?
     var followup: String?
 
-    var isEmpty: Bool { header == nil && card == nil && followup == nil }
+    /// The name alone isn't worth a glance; it only shows with a card or a suggestion.
+    var isEmpty: Bool { card == nil && followup == nil }
 }
 
 struct Card: Equatable {

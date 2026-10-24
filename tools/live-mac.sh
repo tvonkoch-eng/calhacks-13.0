@@ -29,7 +29,7 @@ for pair in MuseAPIKey:MUSE_API_KEY AnswerProvider:ANSWER_PROVIDER AnswerAPIKey:
             CoachProvider:COACH_PROVIDER CoachAPIKey:COACH_API_KEY CoachModel:COACH_MODEL \
             BackupProvider:BACKUP_PROVIDER BackupAPIKey:BACKUP_API_KEY BackupModel:BACKUP_MODEL \
             ResearchProvider:RESEARCH_PROVIDER ResearchAPIKey:RESEARCH_API_KEY ResearchModel:RESEARCH_MODEL \
-            WearerBackground:WEARER_BACKGROUND; do
+            AnswerPerMinute:ANSWER_PER_MINUTE WearerBackground:WEARER_BACKGROUND; do
   printf '<key>%s</key><string>%s</string>\n' "${pair%%:*}" "$(val "${pair#*:}")" >> "$out/Info.plist"
 done
 echo '</dict></plist>' >> "$out/Info.plist"

@@ -46,7 +46,7 @@ func wrap(_ text: String, _ width: Int) -> [String] {
 func drawLens(_ view: LensView) {
     let width = 54
     var rows: [String] = []
-    if let header = view.header { rows.append(Style.dim + header.uppercased() + Style.reset) }
+    if let header = view.header, !view.isEmpty { rows.append(Style.dim + header.uppercased() + Style.reset) }
     if let card = view.card {
         let mark = card.kind == .answer ? "A" : card.kind == .definition ? "i" : "?"
         let title = card.title + (card.live && card.title != "\u{2026}" ? " \u{2026}" : "")
@@ -155,7 +155,9 @@ func drawLens(_ view: LensView) {
         lensDraw?.cancel()
         lensDraw = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(view.card?.live == true ? 600 : 150))
-            guard !Task.isCancelled, let self, self.aid.lens != self.drawn else { return }
+            // A name arriving on an empty lens changes nothing the wearer sees.
+            guard !Task.isCancelled, let self, self.aid.lens != self.drawn,
+                  !(self.aid.lens.isEmpty && self.drawn.isEmpty) else { return }
             self.drawn = self.aid.lens
             drawLens(self.aid.lens)
         }

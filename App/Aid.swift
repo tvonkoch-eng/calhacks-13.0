@@ -229,8 +229,12 @@ enum Talk {
         var background = ""
         var answers: Model?
         var coach: Model?
-        /// Used while `answers` or `coach` is rate-limited (Groq's free tier runs out).
+        /// Used while `answers` or `coach` is rate-limited, or past `perMinute`.
         var backup: Model?
+        /// The primary model's per-minute request cap, if the host has a small one (Cerebras
+        /// gpt-oss-120b on the free tier: 5). Past it, lanes go straight to the backup instead of
+        /// spending a round trip on a 429.
+        var perMinute: Int?
         var researcher: (any Researcher)?
     }
 
@@ -579,7 +583,7 @@ enum Talk {
             coachPending = true
             return
         }
-        guard let coach = model(config.coach, blockedUntil: coachBlockedUntil) else {
+        guard let coach = model(config.coach, blockedUntil: coachBlockedUntil, reserve: 1) else {
             coachPending = true   // rate-limited with no backup: blockCoach retries when it lifts
             return
         }
@@ -610,12 +614,21 @@ enum Talk {
         }
     }
 
-    /// The configured model, or the backup while it is rate-limited; nil when neither can be used.
-    private func model(_ primary: Model?, blockedUntil: Date?) -> Model? {
+    /// The configured model, or the backup while it is rate-limited or out of per-minute calls;
+    /// nil when neither can be used. `reserve` leaves that many of the minute's calls for the
+    /// answer lane, which is the one that can't wait.
+    private func model(_ primary: Model?, blockedUntil: Date?, reserve: Int = 0) -> Model? {
         guard let primary else { return nil }
-        guard let blockedUntil, blockedUntil > Date() else { return primary }
-        return config.backup
+        if let blockedUntil, blockedUntil > Date() { return config.backup }
+        guard let cap = config.perMinute, primary != config.backup, config.backup != nil else { return primary }
+        let now = Date()
+        calls[primary.model, default: []].removeAll { now.timeIntervalSince($0) > 60 }
+        guard calls[primary.model, default: []].count < cap - reserve else { return config.backup }
+        calls[primary.model, default: []].append(now)
+        return primary
     }
+
+    @ObservationIgnored private var calls: [String: [Date]] = [:]
 
     private func coachDone() {
         coachTask = nil
@@ -734,7 +747,7 @@ enum Talk {
         log(.lookup, query, detail: "looking up with \(researcher.name)")
         let context = transcript(last: 6)
         let started = Date()
-        let condenser = model(config.coach, blockedUntil: coachBlockedUntil)
+        let condenser = model(config.coach, blockedUntil: coachBlockedUntil, reserve: 1)
         researchTask = Task { [weak self] in
             do {
                 var finding = try await researcher.research(query, context: context)
@@ -845,6 +858,7 @@ extension Aid.Config {
             answers: answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) },
             coach: coachKey.map { Aid.Model(provider: coachProvider, key: $0, model: value("CoachModel") ?? coachProvider.model) },
             backup: value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) },
+            perMinute: value("AnswerPerMinute").flatMap { Int($0) },
             researcher: researcher)
     }
 }

@@ -57,7 +57,9 @@ enum Coach {
       Only a genuinely complicated or obscure term in the newest line that the wearer, given their \
     background, would probably not know: specialist jargon, a technical method, a niche name, a \
     foreign phrase. Never common business, tech, academic or everyday words (Series A, startup, \
-    latency, API, ICU). "meaning" is at most 8 plain words. At most 2. Usually [].
+    latency, API, ICU). Speech recognition mangles jargon: if a term looks misheard, define what \
+    was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
+    unsure. "meaning" is at most 8 plain words. At most 2. Usually [].
 
     "followup": "..." or "" or null
       A tasteful interjection: a question or remark the wearer could say next, at most 12 words, in \
@@ -111,6 +113,8 @@ enum Coach {
         // JSON is short, but reasoning models (gpt-oss, Muse Spark) think before writing any of it.
         if model.contains("gpt-oss") {
             body.merge(["max_tokens": 1200, "reasoning_effort": "low"]) { _, new in new }
+        } else if provider == .cerebras, model.contains("qwen") {
+            body.merge(["max_tokens": 220, "reasoning_effort": "none"]) { _, new in new }
         } else if provider == .muse {
             body.merge(["max_tokens": 900, "reasoning_effort": "minimal"]) { _, new in new }
         } else {

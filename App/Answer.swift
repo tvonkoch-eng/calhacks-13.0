@@ -42,6 +42,8 @@ enum Provider: String {
     /// thinking and return no content. Low effort plus room to think fixes it.
     func extras(model: String) -> [String: Any] {
         if model.contains("gpt-oss") { return ["max_tokens": 600, "reasoning_effort": "low"] }
+        // Cerebras runs Qwen3 with thinking on by default; "none" turns it off (3 tokens, not 30).
+        if self == .cerebras, model.contains("qwen") { return ["max_tokens": 48, "reasoning_effort": "none"] }
         switch self {
         case .muse: return ["max_tokens": 400, "reasoning_effort": "minimal"]
         default: return ["max_tokens": 48]
