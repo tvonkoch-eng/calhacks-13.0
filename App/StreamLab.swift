@@ -8,6 +8,7 @@ struct StreamLabView: View {
 
     @State private var runs: [FrameRun] = []
     @State private var bench: [String: Double] = [:]
+    @State private var linkResults: [String] = []
 
     var body: some View {
         @Bindable var glasses = glasses
@@ -44,6 +45,18 @@ struct StreamLabView: View {
                 Text("Lens bench")
             } footer: {
                 Text("Writes each card shape to the glasses 10 times and shows the median. Needs the glasses connected; the lens flickers between two people while it runs.")
+            }
+
+            Section {
+                Button(glasses.linkProgress.isEmpty ? "Run link test" : glasses.linkProgress) {
+                    Task { linkResults = await glasses.linkTest() }
+                }
+                .disabled(glasses.benching || !glasses.connected || glasses.replaying)
+                ForEach(linkResults, id: \.self) { Text($0).font(.caption.monospacedDigit()) }
+            } header: {
+                Text("Link test")
+            } footer: {
+                Text("About 3 minutes with the glasses on. At 15 and 7 fps, writes nothing, a name, a card with an empty photo box, and cards with 96 px and 192 px photos, once a second, and measures what the stream delivers meanwhile.")
             }
 
             Section("Runs") {

@@ -1483,6 +1483,7 @@ enum Identification {
         let scale = image.scale
         let key = "\(Int(image.size.width * scale))x\(Int(image.size.height * scale))"
         frameSizes[key, default: 0] += 1
+        if linkSizes != nil { linkSizes?[key, default: 0] += 1 }
         let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
         if frameSize != size { frameSize = size }
         statsFrames += 1
@@ -1930,6 +1931,92 @@ enum Identification {
             }
             SpeedLog.record(log)
         }
+    }
+
+    // MARK: - Link test
+
+    /// Frame sizes counted for the link test's current window; nil when it isn't running.
+    @ObservationIgnored private var linkSizes: [String: Int]?
+    private(set) var linkProgress = ""
+
+    /// What the radio can carry: for each stream rate, restarts the camera, then runs 12 s windows
+    /// writing one lens shape per second (as real use does) and records what the stream delivered
+    /// meanwhile — frame size mix and real fps — and how long each write took. Answers whether lens
+    /// writes are what push the stream off 720p, which card shape is cheap enough, and whether a
+    /// lower rate holds full resolution. ~3 minutes; logged as `linkTest`.
+    func linkTest() async -> [String] {
+        guard connected, let display, displayReady, !benching, !replaying, let store, store.people.count >= 2 else {
+            return ["Connect the glasses first."]
+        }
+        benching = true
+        defer {
+            benching = false
+            linkSizes = nil
+            linkProgress = ""
+            UserDefaults.standard.removeObject(forKey: "streamFps")
+            Task { [weak self] in
+                await self?.restartCamera()
+                self?.sentShot = nil
+                self?.renderLens()
+            }
+        }
+        _ = await writesDone()
+        let people = Array(store.people.prefix(2))
+        func card(_ person: Person, pending: Bool, photo: @escaping (String) -> UIImage?) -> FlexBox {
+            LensCards.hud(result: .known(Match(person: person, score: 1), nil), avatar: photo,
+                          identifying: false, confirming: false, connected: 0, photoPending: pending, identify: {})
+        }
+        let shapes: [(String, ((Person) -> FlexBox)?)] = [
+            ("none", nil),
+            ("name", { LensCards.name($0) }),
+            ("cardBox", { card($0, pending: true, photo: { _ in nil }) }),
+            ("card96", { card($0, pending: false, photo: { [store] in store.lensAvatar($0) }) }),
+            ("card192", { card($0, pending: false, photo: { [store] in store.lensPhoto($0) }) }),
+        ]
+        var lines: [String] = []
+        for fps in [15, 7] {
+            UserDefaults.standard.set(fps, forKey: "streamFps")
+            linkProgress = "Restarting the stream at \(fps) fps…"
+            await restartCamera()
+            let ready = Date().addingTimeInterval(20)
+            while (!streamLive || Date().timeIntervalSince(lastFrameAt) > 1), Date() < ready {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            // The first seconds of a stream come at full size before the limiter reacts.
+            try? await Task.sleep(for: .seconds(5))
+            for (name, make) in shapes {
+                linkProgress = "\(fps) fps · \(name)"
+                linkSizes = [:]
+                var times: [Double] = []
+                let start = Date()
+                var tick = 0
+                while Date().timeIntervalSince(start) < 12 {
+                    if let make {
+                        let view = make(people[tick % 2])
+                        let t0 = CFAbsoluteTimeGetCurrent()
+                        if (try? await display.send(view)) != nil { times.append(ms(since: t0)) }
+                    }
+                    tick += 1
+                    let wait = start.addingTimeInterval(Double(tick)).timeIntervalSinceNow
+                    if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                }
+                let seconds = Date().timeIntervalSince(start)
+                let sizes = linkSizes ?? [:]
+                let frames = sizes.values.reduce(0, +)
+                let full = Double(sizes["720x1280"] ?? 0) / Double(max(frames, 1))
+                let sorted = times.sorted()
+                let p50 = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+                let p90 = sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))]
+                let delivered = Double(frames) / seconds
+                SpeedLog.record(["event": "linkTest", "fps": fps, "payload": name,
+                                 "sizes": sizes.map { "\($0.key)x\($0.value)" }.sorted().joined(separator: ","),
+                                 "deliveredFps": (delivered * 10).rounded() / 10, "full720": (full * 100).rounded() / 100,
+                                 "writeP50": p50.rounded(), "writeP90": p90.rounded(), "writes": sorted.count])
+                lines.append("\(fps) fps · \(name): \(Int((full * 100).rounded()))% at 720p, \(String(format: "%.1f", delivered)) fps"
+                             + (make == nil ? "" : ", write \(Int(p50.rounded())) ms (p90 \(Int(p90.rounded())))"))
+            }
+        }
+        return lines
     }
 
     /// Times real lens writes, `rounds` of each card shape, alternating two people so every write

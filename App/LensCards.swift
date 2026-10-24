@@ -171,9 +171,9 @@ enum LensCards {
         case .known(let match, _):
             let person = match.person
             // The photo is the heavy part of a write (~430 ms at 288 px on the lens bench, text ~45 ms),
-            // so the card goes up first with a placeholder in the photo's box — a 4x4 grey image
-            // stretched to the same size, a few bytes — and the photo follows as a second write.
-            let photo = photoPending ? Self.placeholder : avatar(person.id)
+            // so the card goes up first with the photo's column held empty — no image at all — and
+            // the photo follows as a second write.
+            let photo = photoPending ? nil : avatar(person.id)
             // Three text styles exist, with no weights and no colors, so hierarchy is order and
             // emphasis is scarcity: exactly one line is .body -- what they do now -- and the eye
             // finds it because nothing else on the card looks like it.
@@ -186,9 +186,13 @@ enum LensCards {
             return FlexBox(direction: .column, spacing: 14) {
                 FlexBox(direction: .row, spacing: 16, crossAlignment: .start) {
                     // Large: the photo fills a third of the card's width.
-                    if let photo {
+                    if photoPending || photo != nil {
                         FlexBox(direction: .column) {
-                            Image(image: photo, sizePreset: .fill, cornerRadius: .medium)
+                            if let photo {
+                                Image(image: photo, sizePreset: .fill, cornerRadius: .medium)
+                            } else {
+                                Text(" ", style: .meta)
+                            }
                         }
                         .flexGrow(1)
                     }
@@ -270,16 +274,6 @@ enum LensCards {
 
     /// The first write when a face is named: the name and headline alone, no photo, so it reaches
     /// the glasses ahead of the full card, which follows as a second write.
-    /// Stands in for the photo until it has been written: same box, almost no bytes.
-    static let placeholder: UIImage = {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        return UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4), format: format).image { context in
-            UIColor(white: 0.28, alpha: 1).setFill()
-            context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
-        }
-    }()
-
     static func name(_ person: Person) -> FlexBox {
         FlexBox(direction: .column, spacing: 3) {
             Text(person.name, style: .heading)
