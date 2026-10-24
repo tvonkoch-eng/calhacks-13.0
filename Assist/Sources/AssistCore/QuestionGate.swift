@@ -38,7 +38,7 @@ public enum QuestionGate {
     /// Words that mean the clause is still mid-phrase. Speculating on "how tall is the" is wasted —
     /// the subject has not been said yet — so a clause ending in one of these is never `.strong`.
     private static let dangling: Set<String> = [
-        "the", "a", "an", "this", "that", "these", "those", "my", "your", "his", "her", "its",
+        "the", "a", "an", "my", "your", "his", "her", "its",
         "our", "their", "of", "in", "on", "at", "to", "for", "from", "with", "about", "by",
         "into", "than", "as", "between", "near", "over", "under", "and", "or", "but", "if", "so",
         "is", "are", "was", "were", "do", "does", "did", "has", "have", "had", "can", "could",
@@ -80,13 +80,15 @@ public enum QuestionGate {
     /// Words a finished thought almost never ends on. Narrower than `dangling`: "thank you." and
     /// "me too." are complete, "all data that I can." and "it'll like" are not.
     private static let trailing: Set<String> = [
-        "the", "a", "an", "this", "that", "these", "those", "my", "your", "his", "her", "our",
+        "the", "a", "an", "my", "your", "his", "her", "our",
         "their", "of", "in", "on", "at", "to", "for", "from", "with", "by", "into", "than", "as",
         "and", "or", "but", "if", "because", "so", "is", "are", "was", "were", "can", "could",
         "will", "would", "should", "be", "been", "am", "very", "really", "like", "um", "uh",
         "i", "we", "they", "he", "she", "its", "itll", "im", "theres", "whats", "how", "what",
         "who", "where", "when", "why", "which", "many", "much",
     ]
+
+    private static let strandable: Set<String> = ["of", "in", "on", "at", "to", "for", "from", "with", "by", "about", "into", "like"]
 
     /// The recognizer closed this sentence, but the speaker had not finished the thought: it
     /// trails off ("How many...", "Yeah. Wait, I'll be..."), stops on a function word ("all data
@@ -98,6 +100,8 @@ public enum QuestionGate {
         guard let sentence = tail(of: t) else { return false }
         let words = normalize(sentence).split(separator: " ").map(String.init)
         guard let last = words.last else { return false }
+        // "Where is she from?" "Who did you go with?": a question may end on a preposition.
+        if t.hasSuffix("?"), strandable.contains(last), words.count >= 3 { return false }
         if trailing.contains(last) { return true }
         let closed = t.last.map { ".?!".contains($0) } ?? false
         if !closed { return true }

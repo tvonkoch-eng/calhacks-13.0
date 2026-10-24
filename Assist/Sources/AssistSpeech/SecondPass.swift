@@ -27,6 +27,9 @@ import Foundation
     /// End of the previous finished sentence: never reach back into it, or Whisper hears the
     /// last words of that sentence again.
     private var lastEnd = 0.0
+    /// After a 429, skip Whisper until then.
+    private var coolUntil = Date.distantPast
+    enum Heard: Sendable { case text(String), limited(Double) }
 
     public init(key: String?, vocabulary: [String]) {
         self.key = key
@@ -59,7 +62,7 @@ import Foundation
     private func correct(_ text: String, start: Double?, end: Double?) async -> String {
         let wordCount = text.split(separator: " ").count
         // "Okay." "Wow." — not worth a request (the free tier allows 2,000 a day).
-        guard key != nil, wordCount >= 3 || text.hasSuffix("?") else { return text }
+        guard key != nil, wordCount >= 3 || text.hasSuffix("?"), Date() >= coolUntil else { return text }
         let from = max((start ?? 0) - 0.25, lastEnd)
         if let end { lastEnd = max(lastEnd, end) }
         guard let start, let end, end > start, let wav = ring.wav(from: from, to: end + 0.2) else {
@@ -67,8 +70,10 @@ import Foundation
             return text
         }
         let t0 = Date()
-        let prompt = (vocabulary.joined(separator: ", ") + ". " + recent.suffix(2).joined(separator: " "))
-        let result = await withTaskGroup(of: String?.self) { group in
+        // Names only. Earlier sentences in the prompt made Whisper repeat them when the audio was
+        // unclear (live: "probably tomorrow, right?" came back as the previous line, "Dessert.").
+        let prompt = vocabulary.joined(separator: ", ") + "."
+        let result = await withTaskGroup(of: Heard?.self) { group in
             group.addTask { try? await Self.whisper(wav, model: self.model, prompt: prompt, key: self.key!) }
             group.addTask { try? await Task.sleep(for: .seconds(self.timeout)); return nil }
             let first = await group.next() ?? nil
@@ -76,7 +81,14 @@ import Foundation
             return first
         }
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
-        guard let fixed = result?.trimmingCharacters(in: .whitespacesAndNewlines), !fixed.isEmpty else {
+        if case .limited(let wait)? = result {
+            // Groq's per-minute cap (20/min for Whisper on the free tier; two Macs on one key hit
+            // it). Stop asking for a while instead of adding a failed round trip to every sentence.
+            coolUntil = Date().addingTimeInterval(wait)
+            report?(text, nil, ms, "Groq rate limit; Apple's words only for \(Int(wait)) s")
+            return text
+        }
+        guard case .text(let raw)? = result, case let fixed = raw.trimmingCharacters(in: .whitespacesAndNewlines), !fixed.isEmpty else {
             report?(text, nil, ms, ms >= Int(timeout * 1000) ? "timed out" : "failed")
             remember(text)
             return text
@@ -90,7 +102,18 @@ import Foundation
             remember(text)
             return text
         }
-        report?(text, fixed, ms, "")
+        // Whisper may fix misheard words, but it may not replace the sentence. Live, it sometimes
+        // came back with a different sentence entirely ("probably tomorrow, right?" → "Dessert. They
+        // do have dessert.", the previous line): crosstalk or a clip boundary. Under 20% shared
+        // words, keep Apple's. Bench cost: 5.6% → 6.6% word error at 5 dB; live junk rejected.
+        let agreement = Self.agreement(text, fixed)
+        let clip = String(format: "clip %.1f–%.1f s", from, end + 0.2)
+        if agreement < 0.2 {
+            report?(text, nil, ms, "kept Apple's: Whisper heard a different sentence (\"\(fixed)\", \(clip))")
+            remember(text)
+            return text
+        }
+        report?(text, fixed, ms, clip)
         remember(fixed)
         return fixed
     }
@@ -100,9 +123,20 @@ import Foundation
         if recent.count > 4 { recent.removeFirst() }
     }
 
+    /// Shared words (with multiplicity) over the longer transcript's length, 0...1.
+    nonisolated static func agreement(_ a: String, _ b: String) -> Double {
+        let x = QuestionGate.plain(a).split(separator: " "), y = QuestionGate.plain(b).split(separator: " ")
+        guard !x.isEmpty, !y.isEmpty else { return 0 }
+        var counts: [Substring: Int] = [:]
+        for w in x { counts[w, default: 0] += 1 }
+        var common = 0
+        for w in y where (counts[w] ?? 0) > 0 { counts[w]! -= 1; common += 1 }
+        return Double(common) / Double(max(x.count, y.count))
+    }
+
     static let hallucinations: Set<String> = ["thank you.", "thanks for watching!", "you", "you.", "bye.", "thank you for watching."]
 
-    nonisolated static func whisper(_ wav: Data, model: String, prompt: String, key: String) async throws -> String {
+    nonisolated static func whisper(_ wav: Data, model: String, prompt: String, key: String) async throws -> Heard {
         let boundary = UUID().uuidString
         var body = Data()
         func field(_ name: String, _ value: String) {
@@ -125,10 +159,14 @@ import Foundation
         request.httpBody = body
         let (data, response) = try await URLSession.shared.data(for: request)
         Quota.shared.note(response, model: model)
+        if let http = response as? HTTPURLResponse, http.statusCode == 429 {
+            let wait = http.value(forHTTPHeaderField: "retry-after").flatMap(Double.init) ?? 20
+            return .limited(min(60, max(5, wait)))
+        }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = json["text"] as? String else { throw AnswerError.http((response as? HTTPURLResponse)?.statusCode ?? 0) }
-        return text
+        return .text(text)
     }
 }
 

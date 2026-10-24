@@ -81,8 +81,18 @@ public struct SideNote: Sendable, Equatable {
         let topic = (v["topic"] as? String) ?? ""
         if shown.contains(where: { $0.lowercased() == note.lowercased() }) { return nil }
         if kind != "convert", isKnown(topic) || isKnown(note) { return nil }
+        // Explaining a name means the name was said. Live, the model "corrected" a misheard
+        // "Paddison Bonhauts" into an auction house and explained that.
+        if kind == "explain", !Self.said(topic, in: line) { return nil }
         if kind != "correct", now - lastShownAt < minGap { return nil }
         return SideNote(kind: kind, note: note, topic: topic)
+    }
+
+    /// Every word of `topic` appears in `line` (case, punctuation and apostrophes ignored).
+    public static func said(_ topic: String, in line: String) -> Bool {
+        let words = Set(QuestionGate.plain(line).split(separator: " "))
+        let t = QuestionGate.plain(topic).split(separator: " ")
+        return !t.isEmpty && t.allSatisfy { words.contains($0) || words.contains(Substring(String($0) + "s")) || ($0.hasSuffix("s") && words.contains($0.dropLast())) }
     }
 
     func isKnown(_ topic: String) -> Bool {

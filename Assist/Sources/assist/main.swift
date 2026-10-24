@@ -280,7 +280,7 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
                 second.report = { original, fixed, ms, note in
                     if let fixed {
                         if QuestionGate.plain(fixed) != QuestionGate.plain(original) {
-                            log(.fix, "\"\(original)\" → \"\(fixed)\"  (Whisper \(ms) ms)")
+                            log(.fix, "\"\(original)\" → \"\(fixed)\"  (Whisper \(ms) ms, \(note))")
                         }
                     } else {
                         log(.fix, "kept \"\(original)\": \(note) (\(ms) ms)")

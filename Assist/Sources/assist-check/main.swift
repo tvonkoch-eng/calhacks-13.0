@@ -73,6 +73,12 @@ for (q, local) in [("what time does it start", false), ("what time is it", true)
 check(Aside.worthAsking("It was like 30 degrees in Lisbon when we went."), "note: number + place is worth asking")
 check(!Aside.worthAsking("I am so tired, I barely slept last night."), "note: small talk is not worth a request")
 check(!Aside.worthAsking("Okay, cool."), "note: short lines skipped")
+check(!QuestionGate.endsMidThought("Yo, yo. Where is Mirabelle Brown from?"), "question ending on a preposition is finished")
+check(QuestionGate.endsMidThought("How tall is the?") || QuestionGate.candidate(in: "How tall is the?")?.unfinished == true, "'the?' still unfinished")
+check(!QuestionGate.endsMidThought("Can you hear this?"), "'Can you hear this?' is finished")
+check(QuestionGate.endsMidThought("And this is all data that I can."), "'…that I can.' still held")
+check(Aside.said("RAG pipelines", in: "He kept talking about RAG pipelines the whole time."), "note topic said")
+check(!Aside.said("Paddison Bonhams", in: "A view of my view of the Paddison Bonhauts."), "note topic not said")
 // Word pieces: an unsettled hypothesis is judged without its last word.
 check(QuestionGate.candidate(in: "how tall is the e", settled: false)?.confidence == .weak, "word piece 'the e' must not be strong")
 check(QuestionGate.candidate(in: "how tall is the Eiffel T", settled: false)?.text == "how tall is the eiffel", "'Eiffel T' → judged as 'eiffel'")
@@ -190,6 +196,11 @@ let runs: [(String, Script, (([Turn]) -> String?))] = [
       (0.9, "Who was", false), (1.1, "Who was last year's winner of Cal Hacks", false),
       (1.3, "Who was last year's winner of Cal Hacks?", true)],
      { t in t.last?.question.hasPrefix("who was last years winner") == true && t.last?.state == .done ? nil : "\(t.map { "\($0.question) \($0.state)" })" }),
+    ("held statement joined once, not chained into the next sentences",
+     [(0.0, "But then this", false), (0.2, "But then this...", true),
+      (1.0, "like over time", false), (1.2, "like over time...", true),
+      (2.0, "Who painted the Mona Lisa", false), (2.2, "Who painted the Mona Lisa?", true)],
+     { t in t.last?.question == "who painted the mona lisa" && t.last?.state == .done ? nil : "\(t.map { "\($0.question) \($0.state)" })" }),
     ("model WAIT on a fragment → re-asked with the full question",
      [(0.0, "Who", false), (0.1, "Who wrote?", false), (0.6, "Who wrote Dune?", true)],
      { t in t.count == 1 && t[0].state == .done && t[0].fires == 2 ? nil : "\(t.map { "\($0.question) \($0.state) fires=\($0.fires)" })" }),

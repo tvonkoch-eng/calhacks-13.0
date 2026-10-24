@@ -127,15 +127,16 @@ public struct Turn: Identifiable, Sendable {
         var text = raw.trimmed
         guard !text.isEmpty else { return }
         settleTask?.cancel()
+        var joined = false
         if !carry.isEmpty {
             carryTask?.cancel()
             text = carry + carryJoin + text
-            if final { carry = "" }
+            if final { carry = ""; joined = true }
         }
         transcript = text
         if final {
             log(.final, "\"\(text)\"", ["audioEnd": audioEnd.map { String(format: "%.3f", $0) } ?? ""])
-            commit(text, audioEnd: audioEnd)
+            commit(text, audioEnd: audioEnd, joined: joined)
         } else {
             log(.hear, "\"\(text)\"")
             consider(text, settled: false)
@@ -191,7 +192,7 @@ public struct Turn: Identifiable, Sendable {
     }
 
     /// The recognizer closed a sentence. Make sure what we answered is what was asked.
-    private func commit(_ text: String, audioEnd: Double?) {
+    private func commit(_ text: String, audioEnd: Double?, joined: Bool = false) {
         lastGate = ""
         let candidate = QuestionGate.candidate(in: text, settled: true)
 
@@ -200,7 +201,9 @@ public struct Turn: Identifiable, Sendable {
         // is never asked (or missed) in pieces. Bounded so a rambling run still gets committed.
         let midQuestion = candidate?.unfinished == true
         let midThought = QuestionGate.endsMidThought(text)
-        if midQuestion || midThought, carry.isEmpty, words(text) < 40 {
+        // A statement already joined once is committed, not held again: live, holds chained three
+        // or four sentences together ("Can you hear this, But then…, What is the capital…").
+        if midQuestion || (midThought && !joined), carry.isEmpty, words(text) < 40 {
             carry = text.trimmingCharacters(in: CharacterSet(charactersIn: ".,!?… ").union(.whitespaces))
             carryJoin = midQuestion ? " " : ", "
             log(.carry, "\"\(carry)\" ends mid-\(midQuestion ? "question" : "thought"); waiting \(carryWindow)s for the rest")
@@ -238,7 +241,7 @@ public struct Turn: Identifiable, Sendable {
                 show(nil)
             } else if let prev = turns.first, prev.answer.isEmpty,
                       [.incomplete, .personal, .thinking].contains(prev.state),
-                      now() - prev.lastFiredAt < 2.5, words(text) <= 4,
+                      now() - prev.lastFiredAt < 2.5, (2...4).contains(words(text)),
                       prev.question.split(separator: " ").count <= 5 {
                 // "Who painted them?" + "Mona Lisa.": the recognizer closed a short question at a
                 // pause (and often misheard the word before it). The question went unanswered and a
