@@ -898,9 +898,11 @@ enum Identification {
     /// when Xcode or devicectl sets it, but tapping the icon on the phone has no environment at
     /// all — so the stored toggle is what makes the choice survive a plain launch.
     static var prefersMock: Bool {
+        // Set from outside (Xcode, devicectl) it also becomes the stored choice, so the next plain
+        // launch stays on that rig even when the phone's menu can't be used.
         switch ProcessInfo.processInfo.environment["MOCK_GLASSES"] {
-        case "1": return true
-        case "0": return false
+        case "1": UserDefaults.standard.set(true, forKey: mockKey); return true
+        case "0": UserDefaults.standard.set(false, forKey: mockKey); return false
         default: return UserDefaults.standard.bool(forKey: mockKey)
         }
     }
