@@ -75,22 +75,46 @@ struct StreamControls: View {
 
     var body: some View {
         @Bindable var glasses = glasses
-        HStack(spacing: 10) {
-            Image(systemName: "video")
-                .font(.caption)
-                .foregroundStyle(glasses.delivered == nil ? Color.secondary : Color.green)
-            Text(glasses.delivered.map { "\($0.size) · \(String(format: "%.1f", $0.fps)) fps" } ?? "Not streaming")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-            Spacer()
-            Toggle(isOn: $glasses.recordFrames) {
-                Label("Rec", systemImage: "record.circle")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Image(systemName: "video")
+                    .font(.caption)
+                    .foregroundStyle(glasses.delivered == nil ? Color.secondary : Color.green)
+                Text(glasses.delivered.map { "\($0.size) · \(String(format: "%.1f", $0.fps)) fps" } ?? "Not streaming")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Toggle(isOn: $glasses.recordFrames) {
+                    Label("Rec", systemImage: "record.circle")
+                }
+                .toggleStyle(.button)
+                .tint(glasses.recordFrames ? .red : .secondary)
+                .controlSize(.small)
+                NavigationLink { StreamLabView() } label: {
+                    Text("Runs").font(.caption.weight(.medium))
+                }
             }
-            .toggleStyle(.button)
-            .tint(glasses.recordFrames ? .red : .secondary)
-            .controlSize(.small)
-            NavigationLink { StreamLabView() } label: {
-                Text("Runs").font(.caption.weight(.medium))
+            // How much the face in view looks like its best match, every scan. Green once it clears
+            // the bar for the lens; the runner-up shows how clear the win is.
+            HStack(spacing: 6) {
+                Image(systemName: "person.crop.square")
+                    .font(.caption)
+                    .foregroundStyle(glasses.likeness?.confident == true ? Color.green : Color.secondary)
+                if let l = glasses.likeness {
+                    Text("\(l.name) \(Int((l.score * 100).rounded()))%")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(l.confident ? Color.green : Color.primary)
+                    Text(l.runnerUp.map { "next \($0) −\(Int((l.gap * 100).rounded()))" } ?? "")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(l.looks) looks")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text("No face in view").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }
             }
         }
         .padding(.horizontal, 12)

@@ -285,7 +285,29 @@ enum Identification {
     }
     /// How long a card owns the lens before the watch may replace it with someone else. Was 20 s,
     /// which on the glasses meant a 21 s wait to switch from Avi to the next person.
-    @ObservationIgnored private var cardHolds: TimeInterval { TimeInterval(Tuning.float("cardHolds", 3)) }
+    /// Now 1.5 s: with `followFace` the card tracks whoever you turn to, and this is only the
+    /// anti-flicker beat between two people.
+    @ObservationIgnored private var cardHolds: TimeInterval { TimeInterval(Tuning.float("cardHolds", 1.5)) }
+    /// The card shows whoever you are facing, every time you turn — the most accurate name at all
+    /// times. Off restores conversation memory (`absentFor`): each person named once while they
+    /// stay around. A run on Oct 24 turning Toby -> Avi -> Toby every ~3 s showed Toby throughout
+    /// with conversation memory on, though every look matched clearly (Avi 0.70, gap 0.60).
+    @ObservationIgnored private var followFace: Bool { Tuning.bool("followFace", true) }
+    /// The best match for the face in view right now, confident or not, for the live readout.
+    var likeness: Likeness?
+    struct Likeness: Equatable {
+        let name: String
+        let score: Float
+        let runnerUp: String?
+        let gap: Float
+        let looks: Int
+        /// Clears the bar a name needs to go on the lens.
+        let confident: Bool
+    }
+    private var onCard: String? {
+        if case .known(let match, _) = result { return match.person.id }
+        return nil
+    }
     /// How long a fresh identification owns the whole lens, over any aid card, before the aid may
     /// take it back. Long enough to read a name, a headline and three lines.
     @ObservationIgnored private var bioHolds: TimeInterval { TimeInterval(Tuning.float("bioHolds", 10)) }
@@ -858,6 +880,7 @@ enum Identification {
             resultAt = .distantPast
         }
         delivered = nil
+        likeness = nil
         FrameRecorder.shared.stop()
         streamLive = false
         streamState = "none"
@@ -1171,10 +1194,31 @@ enum Identification {
         return true
     }
 
+    /// The clearest face in view and how much it looks like its best match, every scan.
+    private func updateLikeness(_ inView: [FaceTracker.Track], store: Store) {
+        var best: Likeness?
+        for track in inView {
+            let ranked = store.ranked(track.probe)
+            guard let top = ranked.first else { continue }
+            let next = ranked.dropFirst().first
+            let candidate = Likeness(name: top.person.name, score: top.score, runnerUp: next?.person.name,
+                                     gap: top.score - (next?.score ?? 0), looks: track.looks,
+                                     confident: track.weight >= minEvidence && store.confidentMatch(track.probe) != nil)
+            if let current = best, candidate.score <= current.score { continue }
+            best = candidate
+        }
+        if best != likeness { likeness = best }
+    }
+
     /// Whether a new person may take the lens right now.
     private func mayShow(_ id: String) -> Bool {
         // A fresh identification wins the lens over aid cards, so an aid card no longer blocks this.
         guard !identifying else { return false }
+        if followFace {
+            guard onCard != id else { return false }
+            if onCard != nil, Date().timeIntervalSince(resultAt) < cardHolds { return false }
+            return true
+        }
         if lastShown[id] != nil, let seen = sighted[id], Date().timeIntervalSince(seen) < absentFor { return false }
         // Someone else is on the card; leave them there for a beat before swapping.
         if case .known(let current, _) = result, current.person.id != id,
@@ -1201,6 +1245,7 @@ enum Identification {
         let live = tracker.update(scan.hits, now: frameTime)
         guard !live.isEmpty else {
             if facing != nil { facing = nil }
+            if likeness != nil { likeness = nil }
             return
         }
 
@@ -1212,17 +1257,20 @@ enum Identification {
         var correcting = false
         var seenNow: [(id: String, score: Float)] = []
         frameWidth = image.extent.width
+        updateLikeness(live.filter { $0.updated == frameTime && $0.looks > 0 }, store: store)
         for track in live where track.weight >= minEvidence {
             guard let match = store.confidentMatch(track.probe) else { continue }
             if track.updated == frameTime { seenNow.append((match.person.id, match.score)) }
             // Toby's floor: a stream match on a face this small once named someone who wasn't there.
             guard facePx(track) >= minAnnouncePx else { continue }
             var isCorrection = false
-            if let shownAs = announced[track.id] {
-                guard recheckLooks > 0, shownAs != match.person.id else {
-                    if dissent?.track == track.id { dissent = nil }
-                    continue
-                }
+            if let shownAs = announced[track.id], shownAs == match.person.id {
+                if dissent?.track == track.id { dissent = nil }
+                // Same face, same name. Only worth showing again if the card has moved on to
+                // someone else while you looked away (followFace).
+                guard followFace, onCard != shownAs else { continue }
+            } else if announced[track.id] != nil {
+                guard recheckLooks > 0 else { continue }
                 let count = dissent.map { $0.track == track.id && $0.person == match.person.id ? $0.count + 1 : 1 } ?? 1
                 dissent = (track.id, match.person.id, count)
                 guard count >= recheckLooks else { continue }
