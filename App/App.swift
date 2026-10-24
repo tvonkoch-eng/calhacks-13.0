@@ -70,6 +70,20 @@ struct CalHacksApp: App {
                                                                 detail: parts.count > 1 ? parts[1] : ""),
                                                      followup: parts.count > 2 ? parts[2] : nil, working: work))
                         }
+                        // PREVIEW_GROUP="joaquin,avi*,me": a conversation of several, * = talking,
+                        // me = the wearer has the floor.
+                        if let spec = env["PREVIEW_GROUP"] {
+                            glasses.aidArmed = true
+                            let ids = spec.split(separator: ",").map(String.init)
+                            let members = ids.filter { $0 != "me" }.compactMap { raw -> Member? in
+                                let id = raw.replacingOccurrences(of: "*", with: "")
+                                guard let p = store.people.first(where: { $0.id == id }) else { return nil }
+                                return Member(id: id, name: String(p.name.split(separator: " ").first ?? ""),
+                                              headline: p.headline, speaking: raw.hasSuffix("*"))
+                            }
+                            assistant.pinnedGroup = (members, ids.contains("me"))
+                            glasses.setGroup(members, meSpeaking: ids.contains("me"))
+                        }
                         return
                     }
                     #endif
@@ -360,6 +374,9 @@ struct HeardLine: View {
                     Text("· \(assistant.listener.status)").font(.caption).foregroundStyle(.orange).lineLimit(1)
                 }
             }
+            if !assistant.members.isEmpty || assistant.ownVoice != "Off" {
+                GroupLine()
+            }
             if let heard = assistant.heard {
                 (Text(heard.tag + "  ").font(.caption2.weight(.bold)).foregroundColor(.secondary)
                  + Text(heard.text).font(.subheadline))
@@ -367,6 +384,35 @@ struct HeardLine: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Who's in the conversation and who has the floor, plus whether the glasses' own mic is helping
+/// tell the wearer apart. The lens shows the same group once there are two or more.
+struct GroupLine: View {
+    @Environment(Assistant.self) private var assistant
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if assistant.meSpeaking { chip("You", speaking: true) }
+            ForEach(assistant.members, id: \.id) { chip($0.name, speaking: $0.speaking) }
+            Spacer(minLength: 4)
+            Label(assistant.ownVoice == "On" ? "Voice ID" : assistant.ownVoice,
+                  systemImage: assistant.ownVoice == "On" ? "person.wave.2" : "person.wave.2.fill")
+                .labelStyle(.titleAndIcon)
+                .font(.caption2)
+                .foregroundStyle(assistant.ownVoice == "On" ? Color.green : .secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func chip(_ name: String, speaking: Bool) -> some View {
+        HStack(spacing: 4) {
+            if speaking { Image(systemName: "waveform").font(.caption2) }
+            Text(name).font(.caption.weight(speaking ? .semibold : .regular))
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(speaking ? Color.accentColor.opacity(0.18) : Color(.secondarySystemFill)))
     }
 }
 
@@ -904,11 +950,46 @@ struct LensMirror: View {
         }
     }
 
+    /// Mirror of `LensCards.groupRow`.
+    private var groupRow: some View {
+        HStack(spacing: 18) {
+            if shot.meSpeaking {
+                HStack(spacing: 6) {
+                    Image(systemName: "bubble.left").font(.system(size: m.glyph))
+                    Text("You").font(.system(size: m.meta))
+                }
+            }
+            ForEach(shot.group.prefix(3), id: \.id) { member in
+                HStack(spacing: 8) {
+                    memberMark(member)
+                    Text(member.name).font(.system(size: m.meta))
+                        .foregroundStyle(member.speaking ? Color.white : secondary)
+                }
+            }
+            if shot.group.count > 3 {
+                Text("+\(shot.group.count - 3)").font(.system(size: m.meta)).foregroundStyle(secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func memberMark(_ member: Member) -> some View {
+        if member.speaking {
+            Image(systemName: "bubble.left").font(.system(size: m.glyph))
+        } else if let photo = avatar(member.id) {
+            Image(uiImage: photo)
+                .resizable().aspectRatio(contentMode: .fill)
+                .frame(width: m.icon, height: m.icon)
+                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+        }
+    }
+
     @ViewBuilder private var card: some View {
         switch shot.kind {
         case .aid:
             VStack(alignment: .leading, spacing: 12) {
-                if let id = shot.photo {
+                if shot.group.count >= 2 {
+                    groupRow
+                } else if let id = shot.photo {
                     HStack(spacing: 10) {
                         if let photo = avatar(id) {
                             Image(uiImage: photo)
@@ -946,6 +1027,25 @@ struct LensMirror: View {
                         Image(systemName: "bubble.left").font(.system(size: m.glyph))
                         Text(followup).font(.system(size: m.body))
                     }
+                }
+            }
+            .padding(m.pad)
+            .modifier(LensCardBackground(radius: m.radius))
+
+        case .compact where shot.group.count >= 2:
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(shot.group.prefix(3), id: \.id) { member in
+                    HStack(spacing: 12) {
+                        memberMark(member)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(member.name).font(.system(size: m.body))
+                                .foregroundStyle(member.speaking || !shot.meSpeaking ? Color.white : secondary)
+                            Text(member.headline).font(.system(size: m.meta)).foregroundStyle(secondary)
+                        }
+                    }
+                }
+                if shot.group.count > 3 {
+                    Text("+\(shot.group.count - 3) more").font(.system(size: m.meta)).foregroundStyle(secondary)
                 }
             }
             .padding(m.pad)
