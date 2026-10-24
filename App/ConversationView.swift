@@ -80,14 +80,8 @@ struct TurnRow: View {
                 Label("Answering…", systemImage: "ellipsis").font(.body).foregroundStyle(.secondary)
             case .answering, .done:
                 Text(turn.answer).font(.body.weight(.medium))
-            case .personal:
-                Label("Skipped: about the people talking", systemImage: "person.fill.xmark")
-                    .font(.footnote).foregroundStyle(.secondary)
-            case .incomplete:
-                Label("Too cut off to answer", systemImage: "scissors")
-                    .font(.footnote).foregroundStyle(.secondary)
-            case .abandoned:
-                Label("Not a question after all", systemImage: "text.badge.xmark")
+            case .skipped:
+                Label("Skipped — personal or rhetorical", systemImage: "person.fill.xmark")
                     .font(.footnote).foregroundStyle(.secondary)
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange)

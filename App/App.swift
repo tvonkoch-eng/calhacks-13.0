@@ -7,11 +7,14 @@ struct CalHacksApp: App {
     @State private var glasses = Glasses()
     @State private var assistant = Assistant()
 
-    init() { Glasses.configure() }
+    init() {
+        Glasses.configure()
+        DispatchQueue.global(qos: .userInitiated).async { FaceEngine.warmUp() }
+    }
 
     var body: some Scene {
         WindowGroup {
-            GlassesView()
+            HomeView()
                 .environment(store)
                 .environment(glasses)
                 .environment(assistant)
@@ -19,127 +22,436 @@ struct CalHacksApp: App {
                 .task {
                     glasses.store = store
                     assistant.glasses = glasses
+                    #if DEBUG
+                    let env = ProcessInfo.processInfo.environment
+                    if Glasses.prefersMock {
+                        await glasses.useMockGlasses()
+                        Task { await glasses.connect() }
+                    }
+                    // PREVIEW_SEEN="joaquin:7200,mirabelle:900" = seen that many seconds ago.
+                    for entry in (ProcessInfo.processInfo.environment["PREVIEW_SEEN"] ?? "").split(separator: ",") {
+                        let parts = entry.split(separator: ":")
+                        if parts.count == 2, let seconds = Double(parts[1]) {
+                            store.markSeen(String(parts[0]), at: .now.addingTimeInterval(-seconds))
+                        }
+                    }
+                    if let id = ProcessInfo.processInfo.environment["PREVIEW_PERSON"],
+                       let person = store.people.first(where: { $0.id == id }) {
+                        glasses.preview(person)
+                        if env["PREVIEW_CONFIRM"] == "1" { await glasses.lensIdentify(source: "preview") }
+                        return
+                    }
+                    #endif
                     await glasses.connectIfRegistered()
                 }
         }
     }
 }
 
-struct GlassesView: View {
+struct HomeView: View {
     @Environment(Store.self) private var store
     @Environment(Glasses.self) private var glasses
     @Environment(Assistant.self) private var assistant
 
+    @State private var query = ""
+    @State private var path = NavigationPath()
+
+    /// One flat list so a person moving between sections animates as a move, not a delete + insert.
+    private enum Item: Identifiable {
+        case section(String)
+        case current(Person)
+        case row(Person)
+
+        var id: String {
+            switch self {
+            case .section(let title): "section-\(title)"
+            case .current(let person), .row(let person): person.id
+            }
+        }
+    }
+
+    private func items(now: Date) -> [Item] {
+        let people = store.recents
+        if !query.isEmpty {
+            let q = query.lowercased()
+            return people.filter { person in
+                ([person.name, person.role] + (person.tags ?? [])).contains { $0.lowercased().contains(q) }
+            }.map(Item.row)
+        }
+        var items: [Item] = []
+        var rest = people
+        if let first = rest.first, isCurrent(first, now: now) {
+            items.append(.current(first))
+            rest.removeFirst()
+        }
+        let met = rest.filter { store.lastSeen[$0.id] != nil }
+        let unmet = rest.filter { store.lastSeen[$0.id] == nil }
+        if !met.isEmpty { items.append(.section("Recent")); items += met.map(Item.row) }
+        if !unmet.isEmpty { items.append(.section("Not met yet")); items += unmet.map(Item.row) }
+        return items
+    }
+
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                ZStack {
-                    if let frame = glasses.frame {
-                        Image(uiImage: frame).resizable().scaledToFill()
-                    } else {
-                        Color(.secondarySystemBackground)
-                        Image(systemName: "eyeglasses").font(.system(size: 44)).foregroundStyle(.secondary)
+        NavigationStack(path: $path) {
+            VStack(spacing: 0) {
+                #if DEBUG
+                // Only takes space when there is something to mirror: an unconditional
+                // 300pt panel above the header blacked out the app on device.
+                LensPanel(lens: glasses.mockLens, pov: glasses.pov, mocking: glasses.mocking,
+                          connected: glasses.connected, identifying: glasses.identifying)
+                #endif
+                header
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("People")
+                            .font(.system(size: 34, weight: .semibold, design: .serif))
+                            .padding(.horizontal, 20)
+                            .padding(.top, 10)
+                        Text(summary)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 2)
+                            .padding(.bottom, 14)
+                        SearchField(text: $query)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 14)
+                        notice
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 10)
+                        if assistant.armed, let turn = assistant.current, turn.live || !turn.answer.isEmpty {
+                            AnswerStrip(turn: turn)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 10)
+                        }
+                        TimelineView(.periodic(from: .now, by: 30)) { context in
+                            VStack(spacing: 0) {
+                                ForEach(items(now: context.date)) { item in
+                                    switch item {
+                                    case .section(let title):
+                                        SectionLabel(title)
+                                            .padding(.horizontal, 20)
+                                            .padding(.top, 18)
+                                            .padding(.bottom, 2)
+                                    case .current(let person):
+                                        CurrentCard(person: person)
+                                            .padding(.horizontal, 16)
+                                            .padding(.bottom, 4)
+                                            .transition(.scale(scale: 0.96).combined(with: .opacity))
+                                    case .row(let person):
+                                        ContactRow(person: person, seen: store.lastSeen[person.id], now: context.date)
+                                    }
+                                }
+                            }
+                        }
+                        .animation(.spring(response: 0.55, dampingFraction: 0.82), value: store.recents.map(\.id))
                     }
+                    .padding(.bottom, 24)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 280)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.immediately)
+                actionButton
+            }
+            .background(Color(.systemBackground))
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: Person.self) { PersonView(person: $0) }
+            #if DEBUG
+            .onAppear {
+                if let id = ProcessInfo.processInfo.environment["PREVIEW_OPEN"],
+                   let person = store.people.first(where: { $0.id == id }) { path.append(person) }
+            }
+            #endif
+        }
+    }
 
-                resultCard
-                Spacer()
-                listenStrip
+    private var summary: String {
+        let count = store.contacts.count
+        let today = store.metToday
+        return "\(count) \(count == 1 ? "person" : "people") · \(today == 0 ? "none" : "\(today)") met today"
+    }
 
+    /// The person you just identified stays featured for 15 minutes.
+    private func isCurrent(_ person: Person, now: Date) -> Bool {
+        guard let seen = store.lastSeen[person.id] else { return false }
+        return now.timeIntervalSince(seen) < 15 * 60
+    }
+
+    private var header: some View {
+        HStack {
+            Menu {
                 if glasses.connected {
-                    Button { Task { await glasses.identify() } } label: {
-                        Label(glasses.identifying ? "Identifying…" : "Identify", systemImage: "eye")
-                            .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(glasses.identifying)
+                    Button("Disconnect glasses", role: .destructive) { glasses.disconnect() }
                 } else {
-                    Button { Task { await glasses.connect() } } label: {
-                        Label(glasses.connecting ? "Connecting…" : "Connect glasses", systemImage: "eyeglasses")
-                            .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
+                    Button("Connect glasses") { Task { await glasses.connect() } }
+                }
+                // The escape hatch if the watch misbehaves on stage: off, and the button is
+                // the only way in again.
+                Button {
+                    glasses.watching.toggle()
+                } label: {
+                    Label("Auto-recognize", systemImage: glasses.watching ? "checkmark" : "eye.slash")
+                }
+                #if DEBUG
+                Section("Run on") {
+                    Button {
+                        Task { await glasses.useMock(false) }
+                    } label: {
+                        Label("Real glasses", systemImage: glasses.mocking ? "eyeglasses" : "checkmark")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(glasses.connecting)
+                    Button {
+                        Task { await glasses.useMock(true) }
+                    } label: {
+                        Label("This phone (simulated)", systemImage: glasses.mocking ? "checkmark" : "iphone")
+                    }
                 }
-                Text(glasses.status).font(.footnote).foregroundStyle(.secondary)
+                #endif
+            } label: {
+                HStack(spacing: 7) {
+                    Circle().fill(glasses.connected ? Color.green : Color(.tertiaryLabel)).frame(width: 7, height: 7)
+                    Text(glassesLabel)
+                        .font(.footnote.weight(.medium))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(.secondarySystemBackground), in: Capsule())
             }
-            .padding()
-            .navigationTitle("Glasses")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if glasses.connected { Button("Disconnect") { glasses.disconnect() } }
+            Button {
+                if assistant.armed { assistant.disarm() } else { Task { await assistant.arm() } }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: assistant.armed ? "mic.fill" : "mic.slash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(assistant.armed ? Color.red : Color.secondary)
+                    Text(assistant.armed ? "Listening" : "Mic off")
+                        .font(.footnote.weight(.medium))
                 }
-                ToolbarItem { NavigationLink("People") { PeopleView() } }
-                ToolbarItem(placement: .bottomBar) {
-                    NavigationLink("Transcript") { ConversationView() }
-                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(.secondarySystemBackground), in: Capsule())
             }
+            Spacer()
+            NavigationLink { ConversationView() } label: {
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 34, height: 34)
+                    .background(Color(.secondarySystemBackground), in: Circle())
+            }
+        }
+        .tint(.primary)
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+    }
+
+    /// The pill says which rig is live, so nobody has to guess whether the glasses are real.
+    private var glassesLabel: String {
+        #if DEBUG
+        if glasses.mocking { return glasses.connected ? "Phone sim" : "Phone sim off" }
+        #endif
+        return glasses.connected ? "Glasses on" : "Glasses off"
+    }
+
+    /// One quiet line under the title: what's happening right now, if anything.
+    @ViewBuilder private var notice: some View {
+        if glasses.identifying {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Recognizing")
+            }
+            .font(.subheadline).foregroundStyle(.secondary)
+        } else if glasses.watching, glasses.connected, case .ready = glasses.result, store.hasFaces {
+            Text("Watching for faces").font(.subheadline).foregroundStyle(.secondary)
+        } else if case .noFace = glasses.result {
+            Text("No one in view. Face them and try again.").font(.subheadline).foregroundStyle(.secondary)
+        } else if !store.hasFaces {
+            Text("Add photos so people can be recognized.").font(.subheadline).foregroundStyle(.secondary)
+        } else if store.lastSeen.isEmpty {
+            Text(glasses.watching ? "Look at someone — their card appears by itself."
+                                   : "Look at someone and press the button on your glasses.")
+                .font(.subheadline).foregroundStyle(.secondary)
         }
     }
 
-    /// Mic state plus the question in flight. Tap through for the full log and timings.
-    @ViewBuilder private var listenStrip: some View {
-        VStack(spacing: 8) {
-            MicRow()
-            if let turn = assistant.current, turn.live || !turn.answer.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+    private var actionButton: some View {
+        VStack(spacing: 10) {
+            Button {
+                Task { glasses.connected ? await glasses.identify() : await glasses.connect() }
+            } label: {
+                Text(buttonTitle)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color(.systemBackground))
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .background(Color.primary, in: Capsule())
+            }
+            .disabled(glasses.identifying || glasses.connecting)
+            if !glasses.connected, glasses.status != "Not connected" {
+                Text(glasses.status).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+    }
+
+    private var buttonTitle: String {
+        if glasses.connecting { return "Connecting" }
+        if glasses.identifying { return "Recognizing" }
+        return glasses.connected ? "Identify" : "Connect glasses"
+    }
+}
+
+/// The question just heard and the answer that went to the lens.
+struct AnswerStrip: View {
+    let turn: Turn
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(turn.question).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            Text(turn.answer.isEmpty ? "\u{2026}" : turn.answer)
+                .font(.system(.body, design: .serif, weight: .medium))
+                .lineLimit(2)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color(.separator)))
+    }
+}
+
+/// The person you're talking to now: photo, who they are, and how you know them.
+struct CurrentCard: View {
+    @Environment(Store.self) private var store
+    @Environment(Glasses.self) private var glasses
+    let person: Person
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            NavigationLink(value: person) {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 14) {
+                        Avatar(person: person, size: 60)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Circle().fill(Color.green).frame(width: 6, height: 6)
+                                Text("TALKING NOW").font(.caption2.weight(.bold)).tracking(1).foregroundStyle(.green)
+                            }
+                            Text(person.name).font(.system(.title2, design: .serif, weight: .semibold))
+                            Text(person.role).font(.subheadline).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    if let tags = person.tags, !tags.isEmpty { TagRow(tags: tags) }
+                }
+                .multilineTextAlignment(.leading)
+                .foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+
+            if case .known(let match, let face?) = glasses.result, match.person.id == person.id {
+                SaveFaceMenu(face: face, label: "Not \(person.name.split(separator: " ").first ?? "them")?")
+                    .font(.footnote)
+                    .tint(.secondary)
+                    .padding(.top, 14)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+struct ContactRow: View {
+    @Environment(Store.self) private var store
+    let person: Person
+    let seen: Date?
+    let now: Date
+
+    var body: some View {
+        NavigationLink(value: person) {
+            VStack(spacing: 0) {
+                HStack(spacing: 14) {
+                    Avatar(person: person, size: 46)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(turn.question).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        Text(turn.answer.isEmpty ? "…" : turn.answer)
-                            .font(.subheadline.weight(.medium)).lineLimit(2)
+                        Text(person.name).font(.body.weight(.medium))
+                        Text(person.tags?.prefix(2).joined(separator: " · ") ?? person.role)
+                            .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    Spacer()
+                    Spacer(minLength: 8)
+                    if let seen {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(relative(seen, now: now)).font(.footnote).foregroundStyle(.secondary)
+                            let count = store.encounters[person.id]?.count ?? 0
+                            if count > 1 { Text("\(count)×").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary) }
+                        }
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 11)
+                Divider().padding(.leading, 60)
             }
+            .padding(.horizontal, 20)
+            .contentShape(Rectangle())
         }
-        .padding(12)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+        .buttonStyle(.plain)
     }
+}
 
-    @ViewBuilder private var resultCard: some View {
-        switch glasses.result {
-        case .ready:
-            Text("Look at someone, then tap Identify or press the capture button on your glasses.")
-                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        case .noFace:
-            MessageCard(title: "No face found", detail: "Face the person and try again.")
-        case .unknown(let face):
-            MessageCard(title: "Not in your contacts", detail: nil) { SaveFaceMenu(face: face, label: "Save as…") }
-        case .known(let match, let face):
-            VStack(alignment: .trailing, spacing: 6) {
-                MatchCard(match: match)
-                SaveFaceMenu(face: face, label: "Wrong person?").font(.footnote)
+/// "Today, 8:22 PM", "Yesterday, 6:10 PM", then "Wed, Oct 21, 6:10 PM".
+func dayAndTime(_ date: Date) -> String {
+    let time = date.formatted(date: .omitted, time: .shortened)
+    let calendar = Calendar.current
+    if calendar.isDateInToday(date) { return "Today, \(time)" }
+    if calendar.isDateInYesterday(date) { return "Yesterday, \(time)" }
+    return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()) + ", " + time
+}
+
+func relative(_ date: Date, now: Date = .now) -> String {
+    if now.timeIntervalSince(date) < 60 { return "Just now" }
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .short
+    return formatter.localizedString(for: date, relativeTo: now)
+}
+
+struct SectionLabel: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.caption.weight(.semibold))
+            .tracking(0.8)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct TagRow: View {
+    let tags: [String]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(tags, id: \.self) { tag in
+                Text(tag)
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .background(Color(.tertiarySystemFill), in: Capsule())
             }
         }
     }
 }
 
-struct MessageCard<Accessory: View>: View {
-    let title: String
-    let detail: String?
-    @ViewBuilder var accessory: () -> Accessory
-
-    init(title: String, detail: String?, @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }) {
-        self.title = title
-        self.detail = detail
-        self.accessory = accessory
-    }
+struct SearchField: View {
+    @Binding var text: String
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.headline)
-                if let detail { Text(detail).font(.subheadline).foregroundStyle(.secondary) }
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search people, schools, companies", text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
             }
-            Spacer()
-            accessory()
         }
-        .padding(14)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+        .font(.subheadline)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -162,31 +474,12 @@ struct SaveFaceMenu: View {
     }
 }
 
-struct PeopleView: View {
-    @Environment(Store.self) private var store
-
-    var body: some View {
-        List {
-            Section {
-                ForEach(store.contacts) { person in
-                    NavigationLink(value: person) { PersonRow(person: person) }
-                }
-            }
-            if let me = store.me {
-                Section("You") {
-                    NavigationLink(value: me) { PersonRow(person: me) }
-                }
-            }
-        }
-        .navigationTitle("People")
-        .navigationDestination(for: Person.self) { PersonView(person: $0) }
-    }
-}
-
 struct Avatar: View {
     @Environment(Store.self) private var store
     let person: Person
     var size: CGFloat = 44
+    /// nil = circle.
+    var corner: CGFloat? = nil
 
     var body: some View {
         Group {
@@ -199,87 +492,164 @@ struct Avatar: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(Circle())
+        .clipShape(RoundedRectangle(cornerRadius: corner ?? size / 2, style: .continuous))
     }
 }
 
-struct PersonRow: View {
-    @Environment(Store.self) private var store
-    let person: Person
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Avatar(person: person)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(person.name).font(.body.weight(.medium))
-                Text(person.role).font(.subheadline).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if store.samples(person.id) == 0 {
-                Text("No face").font(.caption).foregroundStyle(.orange)
-            }
-        }
-    }
-}
-
+/// A contact's record: who they are, how often you've met, your notes, and every encounter.
 struct PersonView: View {
     @Environment(Store.self) private var store
     let person: Person
+    @State private var note = ""
+    @FocusState private var editingNote: Bool
+
+    private var encounters: [Date] { store.encounters[person.id] ?? [] }
 
     var body: some View {
-        List {
-            Section {
-                HStack(spacing: 16) {
-                    Avatar(person: person, size: 72)
-                    VStack(alignment: .leading) {
-                        Text(person.name).font(.title2.weight(.semibold))
-                        Text(person.role).foregroundStyle(.secondary)
-                    }
-                }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                stats.padding(.top, 22)
+                section("Details") { details }
+                section("Notes") { notes }
+                section("Activity") { activity }
+                section("Recognition") { recognition }
             }
-            if !person.facts.isEmpty {
-                Section("About") {
-                    ForEach(person.facts, id: \.self) { Text($0) }
-                }
-            }
-            Section {
-                NavigationLink("Add face photos") { EnrollView(person: person) }
-                if store.samples(person.id) > 0 {
-                    Button("Clear face photos", role: .destructive) { store.reset(person.id) }
-                }
-            } footer: {
-                Text("\(store.samples(person.id)) face samples")
-            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 40)
         }
+        .scrollDismissesKeyboard(.interactively)
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { note = store.notes[person.id] ?? "" }
+        .onChange(of: note) { _, text in store.setNote(person.id, text) }
     }
-}
 
-struct MatchCard: View {
-    let match: Match?
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Avatar(person: person, size: 84, corner: 22)
+                .padding(.bottom, 16)
+            Text(person.name).font(.system(size: 30, weight: .semibold, design: .serif))
+            Text(person.role).font(.callout).foregroundStyle(.secondary).padding(.top, 3)
+            if let tags = person.tags, !tags.isEmpty { TagRow(tags: tags).padding(.top, 12) }
+        }
+        .padding(.top, 8)
+    }
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if let match {
-                Avatar(person: match.person, size: 52)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text(match.person.name).font(.headline)
-                        Spacer()
-                        Text(match.score, format: .number.precision(.fractionLength(2)))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+    /// Three numbers that answer "how well do I know them".
+    private var stats: some View {
+        HStack(spacing: 0) {
+            stat(encounters.isEmpty ? "None" : "\(encounters.count)×", "Met")
+            Divider().frame(height: 34)
+            stat(store.lastSeen[person.id].map { relative($0) } ?? "Never", "Last seen")
+            Divider().frame(height: 34)
+            stat(encounters.first.map { $0.formatted(.dateTime.month(.abbreviated).day()) } ?? "Not yet", "First met")
+        }
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) { Divider() }
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func stat(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value).font(.system(.callout, weight: .semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+            Text(label.uppercased()).font(.caption2.weight(.semibold)).tracking(0.6).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionLabel(title)
+            content()
+        }
+        .padding(.top, 28)
+    }
+
+    @ViewBuilder private var details: some View {
+        if person.details.isEmpty {
+            Text("No details yet.").font(.subheadline).foregroundStyle(.secondary)
+        } else {
+            VStack(spacing: 0) {
+                ForEach(person.details, id: \.text) { detail in
+                    HStack(alignment: .firstTextBaseline, spacing: 0) {
+                        Text(label(detail.kind)).font(.subheadline).foregroundStyle(.secondary)
+                            .frame(width: 96, alignment: .leading)
+                        Text(detail.text).font(.subheadline)
+                        Spacer(minLength: 0)
                     }
-                    Text(match.person.role).font(.subheadline).foregroundStyle(.secondary)
-                    ForEach(match.person.facts.prefix(3), id: \.self) { Text($0).font(.footnote) }
+                    .padding(.vertical, 11)
+                    Divider()
                 }
-            } else {
-                Text("Unknown").font(.headline).foregroundStyle(.secondary)
-                Spacer()
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var notes: some View {
+        TextField("Add a note about \(person.name.split(separator: " ").first ?? "them")", text: $note, axis: .vertical)
+            .font(.subheadline)
+            .lineLimit(3...8)
+            .focused($editingNote)
+            .padding(12)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder private var activity: some View {
+        if encounters.isEmpty {
+            Text("You haven't met yet. Identify them with your glasses to start a history.")
+                .font(.subheadline).foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(encounters.reversed().enumerated()), id: \.offset) { index, date in
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(spacing: 0) {
+                            Circle().fill(index == 0 ? Color.primary : Color(.tertiaryLabel)).frame(width: 7, height: 7).padding(.top, 6)
+                            if index < encounters.count - 1 {
+                                Rectangle().fill(Color(.separator)).frame(width: 1).frame(maxHeight: .infinity)
+                            }
+                        }
+                        .frame(width: 7)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Recognized with glasses").font(.subheadline)
+                            Text(dayAndTime(date) + " · " + relative(date))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(.bottom, 14)
+                    }
+                }
+            }
+        }
+    }
+
+    private var recognition: some View {
+        VStack(spacing: 0) {
+            NavigationLink { EnrollView(person: person) } label: {
+                HStack {
+                    Text("Face photos").font(.subheadline)
+                    Spacer()
+                    Text("\(store.samples(person.id))").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 11)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Divider()
+            if store.samples(person.id) > 0 {
+                Button("Remove face photos", role: .destructive) { store.reset(person.id) }
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 11)
+            }
+        }
+    }
+
+    private func label(_ kind: Person.Kind) -> String {
+        switch kind {
+        case .school: "School"
+        case .work: "Work"
+        case .from: "From"
+        case .interests: "Interests"
+        }
     }
 }
 
@@ -351,3 +721,85 @@ struct EnrollView: View {
         }
     }
 }
+
+
+#if DEBUG
+/// The simulated glasses' lens, mirrored into the app (phone-sim mode).
+struct MockLens: UIViewRepresentable {
+    let view: UIView
+    func makeUIView(context: Context) -> UIView { view }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
+/// Always-present frame around the lens, so anyone looking at the phone knows exactly what the
+/// wearer sees and on which rig. In phone-sim mode the black square is MockDeviceKit rendering
+/// the same `FlexBox` the real lens would receive — not a drawing of it. With real glasses there
+/// is nothing to mirror: the SDK only offers a preview view for a simulated pair, so the panel
+/// says so rather than showing a stale or invented card.
+struct LensPanel: View {
+    let lens: UIView?
+    let pov: UIImage?
+    let mocking: Bool
+    let connected: Bool
+    let identifying: Bool
+
+    private var state: (String, Color) {
+        if identifying { return ("Looking", .orange) }
+        if connected { return ("Live", .green) }
+        return ("Off", Color(.tertiaryLabel))
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "eyeglasses").font(.system(size: 12, weight: .semibold))
+                Text(mocking ? "Phone sim · camera + lens" : "Real glasses · tap to switch to phone sim")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Circle().fill(state.1).frame(width: 6, height: 6)
+                Text(state.0).font(.caption2.weight(.medium))
+            }
+            .foregroundStyle(.secondary)
+
+            // Camera on the left, lens on the right. They are different things: the camera is
+            // what the glasses SEE, the lens is what they SHOW. Only ever showing the lens made
+            // a correctly-black display look like a broken camera.
+            HStack(spacing: 8) {
+                tile("Camera") {
+                    if let pov {
+                        Image(uiImage: pov).resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        Text(connected ? "Waiting for frames" : "Not connected")
+                            .font(.caption2).foregroundStyle(Color(.systemGray))
+                    }
+                }
+                tile("Lens") {
+                    if let lens {
+                        MockLens(view: lens)
+                    } else {
+                        Text("On the glasses\n600 × 600 · right eye")
+                            .multilineTextAlignment(.center)
+                            .font(.caption2).foregroundStyle(Color(.systemGray))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+    }
+
+    private func tile<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 3) {
+            ZStack {
+                Color.black
+                content()
+            }
+            .aspectRatio(1, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(.separator)))
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+}
+#endif

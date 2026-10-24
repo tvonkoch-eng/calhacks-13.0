@@ -2,7 +2,7 @@ name: CalHacks
 options:
   bundleIdPrefix: com.tobiasvonkoch
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "17.2"
 packages:
   MWDAT:
     url: https://github.com/facebook/meta-wearables-dat-ios
@@ -17,8 +17,7 @@ targets:
   CalHacks:
     type: application
     platform: iOS
-    # The conversation engine and recognizer are shared with the Mac tool in Assist/.
-    sources: [App, Assist/Sources/AssistCore, Assist/Sources/AssistSpeech]
+    sources: [App]
     # cp Secrets.example.xcconfig Secrets.xcconfig and put your answer-model key in it.
     configFiles:
       Debug: Secrets.xcconfig
@@ -32,6 +31,8 @@ targets:
         product: MWDATDisplay
       - package: MWDAT
         product: MWDATInputs
+      - package: MWDAT
+        product: MWDATMockDevice
     info:
       path: App/Info.plist
       properties:
