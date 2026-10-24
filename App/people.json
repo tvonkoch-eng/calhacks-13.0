@@ -9,21 +9,43 @@
     "tags": [
       "UCSB",
       "LegalTime AI",
-      "San Diego"
-    ]
+      "San Diego",
+      "Cal Hacks"
+    ],
+    "tie": "Both UCSB · your Cal Hacks 13 team",
+    "highlights": [
+      "Built LegalTime AI, timekeeping for lawyers",
+      "Cal Hacks 13: face ID + live conversation assist",
+      "CS junior at UCSB"
+    ],
+    "personal": "Grew up in San Diego",
+    "source": "TEAM NOTES · TODAY"
   },
   {
     "id": "mirabelle",
     "name": "Mirabelle Brown",
-    "role": "Financial Math & Stats junior at UCSB",
-    "school": "UCSB · Honors Financial Math & Statistics, Junior",
+    "role": "Renewable Finance @ Advantage Renewables",
+    "school": "UCSB · Financial Math & Stats + Env Studies",
     "from": "Gresham, New York",
     "interests": "Environmental studies",
     "tags": [
-      "UCSB",
-      "Financial Math",
-      "New York"
-    ]
+      "Advantage Renewables",
+      "GreenRoute",
+      "Climate Week",
+      "Surfrider",
+      "Investment Connection",
+      "UCSB"
+    ],
+    "work": "Renewable Finance @ Advantage Renewables",
+    "tie": "Both UCSB · 96 mutuals (Caio, Talen)",
+    "highlights": [
+      "Won the NY Climate Week AI hackathon · 3w",
+      "Built GreenRoute, an AI model router",
+      "101-page paper: pensions out of oil",
+      "President, UCSB Investment Connection"
+    ],
+    "personal": "Surfrider policy · runs, soccer, volleyball",
+    "source": "PUBLIC LINKEDIN · 3 WEEKS OLD"
   },
   {
     "id": "avi",
@@ -35,16 +57,32 @@
     "tags": [
       "LSE",
       "BofA",
-      "London"
-    ]
+      "London",
+      "Cal Hacks"
+    ],
+    "tie": "UCSB year abroad · your Cal Hacks 13 team",
+    "highlights": [
+      "Summer Analyst, IB at BofA London",
+      "Economics at LSE · year abroad at UCSB"
+    ],
+    "personal": "From London",
+    "source": "TEAM NOTES · TODAY"
   },
   {
     "id": "toby",
     "name": "Toby von Koch",
     "role": "CalHacks 13 teammate · iOS & device plumbing",
     "tags": [
-      "CalHacks",
-      "iOS"
-    ]
+      "Cal Hacks",
+      "iOS",
+      "Toby"
+    ],
+    "work": "Cal Hacks 13 · iOS and device plumbing",
+    "tie": "Your Cal Hacks 13 team",
+    "highlights": [
+      "Builds the glasses app with Joaquin",
+      "Owns the test iPhone the demo runs on"
+    ],
+    "source": "TEAM NOTES · TODAY"
   }
 ]

@@ -35,21 +35,37 @@ enum LensCards {
         case .known(let match, _):
             let person = match.person
             let photo = avatar(person.id)
-            let details = Array(person.details.prefix(3))
-            return FlexBox(direction: .column, spacing: 16) {
+            // Three text styles exist, with no weights and no colors, so hierarchy is order and
+            // emphasis is scarcity: exactly one line is .body -- what they do now -- and the eye
+            // finds it because nothing else on the card looks like it.
+            let highlights = Array((person.highlights ?? []).prefix(Self.highlightCount))
+            var primary: [String] = []
+            if let tie = person.tie, !tie.isEmpty { primary.append(tie) }
+            primary += highlights.map { "\u{2014} " + $0 }
+            let secondary = [person.personal, person.source].compactMap { $0 }.filter { !$0.isEmpty }
+            // Nobody populated yet: fall back to the old school/work/from rows, so a half-filled
+            // people.json still renders something.
+            let details = primary.isEmpty ? Array(person.details.prefix(3)) : []
+            return FlexBox(direction: .column, spacing: 14) {
                 FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
                     if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                    FlexBox(direction: .column, spacing: 2) {
+                    FlexBox(direction: .column, spacing: 3) {
                         Text(person.name, style: .heading)
-                        Text(person.role, style: .meta, color: .secondary)
+                        Text(person.headline, style: .body).flexShrink(1)
                     }
                 }
-                FlexBox(direction: .column, spacing: 10) {
+                FlexBox(direction: .column, spacing: 7) {
+                    for line in primary {
+                        Text(line, style: .meta).flexShrink(1)
+                    }
                     for detail in details {
                         FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
                             Icon(name: icon(detail.kind), style: .outline)
                             Text(detail.text, style: .body).flexShrink(1)
                         }
+                    }
+                    for line in secondary {
+                        Text(line, style: .meta, color: .secondary).flexShrink(1)
                     }
                 }
                 bottom
@@ -94,6 +110,14 @@ enum LensCards {
         // A face we saw but would not stake a name on. Saying so beats naming the wrong person.
         if case .unknown = result { return ("Not sure who that is", "Get closer and press again") }
         return ("No one in view", "Face them and try again")
+    }
+
+    /// How many highlights fit under the name. The panel is 600x600 and the card also carries a
+    /// photo row and the Identify row, so three is the ceiling in practice. Tunable on the phone
+    /// with UserDefaults key "lensHighlights", no rebuild.
+    private static var highlightCount: Int {
+        let n = UserDefaults.standard.integer(forKey: "lensHighlights")
+        return n > 0 ? n : 3
     }
 
     /// No plain briefcase exists in the lens icon set (crossBriefcase is a first-aid kit).

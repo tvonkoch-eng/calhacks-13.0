@@ -16,6 +16,22 @@ struct Person: Codable, Identifiable, Hashable {
     /// Short labels for chips: school, company, city.
     var tags: [String]?
 
+    /// How you know them. The highest-value line on the lens after the name, because it is not a
+    /// fact about them -- it is a fact about the two of you.
+    var tie: String?
+    /// Ranked once, when the person is written, by recency x specificity x is-it-theirs: a thing
+    /// they built last month outranks a title they have held a year. The lens takes the first few.
+    var highlights: [String]?
+    /// The personal half -- committees, sports, languages. Secondary, but not the first thing cut:
+    /// someone's sport says more about who you are about to talk to than a third internship does.
+    var personal: String?
+    /// Where this came from and how old it is. On every card, because the first thing anyone asks
+    /// glasses that knew their name is "how did you know that?".
+    var source: String?
+
+    /// What the lens leads with under the name: what they do now, not where they studied.
+    var headline: String { work ?? school ?? role }
+
     /// Background lines in display order.
     var details: [(kind: Kind, text: String)] {
         [(Kind.school, school), (.work, work), (.from, from), (.interests, interests)]
