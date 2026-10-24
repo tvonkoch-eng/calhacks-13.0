@@ -19,8 +19,11 @@ qm_ssh_setup() {
   [ -f "$MAC_KEY" ] || { echo "MISSING $MAC_KEY — this sandbox has no key for the Mac."; return 1; }
   mkdir -p /root/.ssh/cm
   # Written every time: it is tiny, and an agent sandbox that has never run this has no config.
+  # Two patterns, same settings. `mac` is the friendly name; the bare IP block matters just as
+  # much, because the git remote URL is ssh://jdelpego@100.100.44.96/... — without it, git opens
+  # a plain TCP connection with no ProxyCommand and hangs for the full timeout, every fetch.
   cat > /root/.ssh/config <<EOF
-Host mac
+Host mac $MAC_IP
   HostName $MAC_IP
   User $MAC_USER
   IdentityFile $MAC_KEY

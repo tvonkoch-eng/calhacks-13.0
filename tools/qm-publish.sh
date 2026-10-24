@@ -29,7 +29,7 @@ SRC=${SRC:-origin/integration}
 export GH_CONFIG_DIR=${GH_CONFIG_DIR:-/root/workspace/.ghlogin-home/.config/gh}
 AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$(gh auth token)" | base64 -w0)"
 
-git fetch -q origin
+git fetch -q origin || true
 git -c http.https://github.com/.extraheader="$AUTH" fetch -q github || true
 
 # Nothing new since the last mirror? Say nothing and stop — this runs on a timer, so the quiet
@@ -66,7 +66,12 @@ PY
 
   if git rev-parse -q --verify github/$BRANCH >/dev/null; then
     # Say out loud what this tree is about to overrule, so a quiet loss is impossible.
-    OVERRIDDEN=$(git diff --name-only HEAD github/$BRANCH -- . | head -20)
+    # Only files that exist on BOTH sides and differ are genuine overrides. A plain
+    # `git diff --name-only` also lists everything missing from one side, which reads as though
+    # the merge is about to clobber work it is in fact carrying over.
+    IN_BOTH=$(comm -12 <(git ls-tree -r --name-only HEAD | sort) \
+                       <(git ls-tree -r --name-only github/$BRANCH | sort))
+    OVERRIDDEN=$(git diff --name-only HEAD github/$BRANCH | grep -Fx -f <(echo "$IN_BOTH") | head -20)
     ONLY_THERE=$(comm -13 <(git ls-tree -r --name-only HEAD | sort) \
                           <(git ls-tree -r --name-only github/$BRANCH | sort))
     [ -n "$ONLY_THERE" ] && echo "  carrying over $(echo "$ONLY_THERE" | wc -l | tr -d ' ') file(s) that exist only on $BRANCH"
