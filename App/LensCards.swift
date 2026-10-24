@@ -286,6 +286,24 @@ enum LensCards {
         return shot
     }
 
+    /// The first write when a face is named: the name and headline alone, no photo, so it reaches
+    /// the glasses ahead of the full card, which follows as a second write.
+    static func name(_ person: Person) -> FlexBox {
+        FlexBox(direction: .column, spacing: 3) {
+            Text(person.name, style: .heading)
+            Text(person.headline, style: .body).flexShrink(1)
+        }
+        .padding(22)
+        .background(.card)
+    }
+
+    static func shot(name person: Person) -> LensShot {
+        var shot = LensShot(kind: .person)
+        shot.name = person.name
+        shot.headline = person.headline
+        return shot
+    }
+
     /// The aid's card, as the mirror sees it.
     static func shot(aid view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false) -> LensShot {
         var shot = LensShot(kind: .aid)

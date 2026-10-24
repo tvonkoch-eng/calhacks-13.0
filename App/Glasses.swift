@@ -285,6 +285,11 @@ enum Identification {
     @ObservationIgnored private var lensWriter: Task<Void, Never>?
     @ObservationIgnored private var writeWaiters: [CheckedContinuation<Bool, Never>] = []
     @ObservationIgnored private var lastWriteOK = false
+    /// The card last handed to the lens queue, so an update that changes nothing isn't re-sent:
+    /// every write costs 0.4-1.5 s of radio the video stream is also using.
+    @ObservationIgnored private var sentShot: LensShot?
+    /// True while the lens bench owns the display.
+    private(set) var benching = false
     /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
     @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
@@ -595,6 +600,7 @@ enum Identification {
                 tokens.append(display.statePublisher.listen { [weak self] state in
                     Task { @MainActor in
                         self?.displayReady = state == .started
+                        self?.sentShot = nil
                         self?.renderLens()
                     }
                 })
@@ -1021,6 +1027,7 @@ enum Identification {
         lensWriter?.cancel()
         lensWriter = nil
         queuedView = nil
+        sentShot = nil
         finishWrites(false)
         if !keepContext {
             aidLens = LensView()
@@ -1352,12 +1359,11 @@ enum Identification {
                     return (image, image?.fitted(to: 360))
                 }.value
                 self.autoBusy = at < busyUntil
-                let writes = self.replayLensWrites
                 let scansBefore = self.lastAutoScan
                 await self.ingest(decoded.0, small: decoded.1)
                 if self.lastAutoScan != scansBefore {
-                    let lens = self.replayLensWrites != writes ? Double(self.replayLensMs) : 0
-                    busyUntil = at.addingTimeInterval((Double(self.replayScanMs) + lens) / 1000)
+                    // Lens writes no longer hold up scanning, so a scan only costs the scan.
+                    busyUntil = at.addingTimeInterval(Double(self.replayScanMs) / 1000)
                 }
             }
             if self.replayLensDue != nil { self.replayLensDue = nil; _ = self.lensView() }
@@ -1751,8 +1757,8 @@ enum Identification {
                                   "embedMs": (scan.timing.embedMs * 10).rounded() / 10,
                                   "scanMs": ms(since: start)]
         log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
-        let lensStart = CFAbsoluteTimeGetCurrent()
-        if await sendLens() { log["lensMs"] = ms(since: lensStart) }
+        // Not awaited: the next face can be scanned while this one's card is being written.
+        showCard(chosen.match.person)
         log["totalMs"] = ms(since: start)
         if replaying { log["replayMs"] = Int(clockNow.timeIntervalSince(replayBase) * 1000) }
         SpeedLog.record(log)
@@ -1912,9 +1918,98 @@ enum Identification {
 
     // MARK: - Lens
 
-    private func renderLens() {
-        guard displayReady else { return }
-        send(lensView())
+    /// Queues the lens as it now stands. Returns false when nothing needed writing: no display,
+    /// the bench has it, or the card is the one already sent.
+    @discardableResult
+    private func renderLens() -> Bool {
+        guard displayReady, !benching else { return false }
+        let view = lensView()
+        guard lensShot != sentShot else { return false }
+        sentShot = lensShot
+        send(view)
+        return true
+    }
+
+    /// Waits until the lens queue has drained; true if the last write succeeded.
+    private func writesDone() async -> Bool {
+        guard lensWriter != nil || queuedView != nil else { return lastWriteOK }
+        return await withCheckedContinuation { writeWaiters.append($0) }
+    }
+
+    /// Puts a freshly named face on the lens without holding up the scan. The name alone goes
+    /// first — a tiny write — and the full card follows once it has landed, if the card is still
+    /// theirs. Timings go to the speed log as `lensTiming`.
+    private func showCard(_ person: Person) {
+        if replaying {
+            replayLensDue = clockNow.addingTimeInterval(Double(replayLensMs) / 1000)
+            replayLensWrites += 1
+            return
+        }
+        guard display != nil, displayReady, !benching else { return }
+        let nameShot = LensCards.shot(name: person)
+        lensShot = nameShot
+        sentShot = nameShot
+        let start = CFAbsoluteTimeGetCurrent()
+        send(LensCards.name(person))
+        Task { [weak self] in
+            guard let self else { return }
+            let nameOK = await self.writesDone()
+            var log: [String: Any] = ["event": "lensTiming", "person": person.id, "nameMs": ms(since: start), "nameOK": nameOK]
+            if nameOK, self.knownPerson?.id == person.id {
+                let fullStart = CFAbsoluteTimeGetCurrent()
+                if self.renderLens() {
+                    log["fullOK"] = await self.writesDone()
+                    log["fullMs"] = ms(since: fullStart)
+                }
+            }
+            SpeedLog.record(log)
+        }
+    }
+
+    /// Times real lens writes, `rounds` of each card shape, alternating two people so every write
+    /// changes what is on the lens. Needs the glasses connected; nobody has to be in front of them.
+    /// Returns the median milliseconds per shape.
+    func lensBench(rounds: Int = 10) async -> [String: Double] {
+        guard let display, displayReady, !benching, let store, store.people.count >= 2 else { return [:] }
+        benching = true
+        defer {
+            benching = false
+            sentShot = nil
+            renderLens()
+        }
+        _ = await writesDone()
+        let people = Array(store.people.prefix(2))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let blank = pixel.withUnsafeMutableBytes { raw in
+            CGContext(data: raw.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage()
+        }
+        guard let blank else { return [:] }
+        func full(_ person: Person, photo: Bool) -> FlexBox {
+            let hit = FaceHit(embedding: [], crop: blank, area: 0, box: .zero, sharpness: 0, aligned: false)
+            return LensCards.hud(result: .known(Match(person: person, score: 1), hit),
+                                 avatar: { [store] in photo ? store.lensAvatar($0) : nil },
+                                 identifying: false, confirming: false, connected: 0, identify: {})
+        }
+        let shapes: [(String, (Person) -> FlexBox)] = [
+            ("name", { LensCards.name($0) }),
+            ("fullNoPhoto", { full($0, photo: false) }),
+            ("full", { full($0, photo: true) }),
+        ]
+        var medians: [String: Double] = [:]
+        for (name, make) in shapes {
+            var times: [Double] = []
+            for round in 0..<rounds {
+                let view = make(people[round % 2])
+                let start = CFAbsoluteTimeGetCurrent()
+                do { try await display.send(view) } catch { continue }
+                times.append(ms(since: start))
+            }
+            let sorted = times.sorted()
+            if !sorted.isEmpty { medians[name] = sorted[sorted.count / 2] }
+            SpeedLog.record(["event": "lensBench", "shape": name, "ms": sorted])
+        }
+        return medians
     }
 
     /// The person on the card, if the face side has one.

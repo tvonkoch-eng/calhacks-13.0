@@ -7,6 +7,7 @@ struct StreamLabView: View {
     @Environment(Glasses.self) private var glasses
 
     @State private var runs: [FrameRun] = []
+    @State private var bench: [String: Double] = [:]
 
     var body: some View {
         @Bindable var glasses = glasses
@@ -26,6 +27,23 @@ struct StreamLabView: View {
                 Toggle("Record every frame", isOn: $glasses.recordFrames)
             } footer: {
                 Text("Saves full frames to Files → On My iPhone → CalHacks → frames, up to \(FrameRecorder.cap) per run.")
+            }
+
+            Section {
+                Button(glasses.benching ? "Writing to the lens…" : "Run lens bench") {
+                    Task { bench = await glasses.lensBench() }
+                }
+                .disabled(glasses.benching || !glasses.connected || glasses.replaying)
+                ForEach(["name", "fullNoPhoto", "full"], id: \.self) { shape in
+                    if let ms = bench[shape] {
+                        LabeledContent(shape == "name" ? "Name only" : shape == "full" ? "Full card" : "Full, no photo",
+                                       value: "\(Int(ms.rounded())) ms")
+                    }
+                }
+            } header: {
+                Text("Lens bench")
+            } footer: {
+                Text("Writes each card shape to the glasses 10 times and shows the median. Needs the glasses connected; the lens flickers between two people while it runs.")
             }
 
             Section("Runs") {
