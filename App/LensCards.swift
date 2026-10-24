@@ -1,6 +1,29 @@
 import MWDATDisplay
 import UIKit
 
+/// Everything the lens is being shown, as plain values — the content of a card without its layout.
+///
+/// The SDK offers no way to read a real display back (`createPreviewView()` exists only for a
+/// simulated pair), so the phone cannot screenshot the lens. It can mirror it: `LensCards.hud`
+/// renders this and the panel on the phone draws this, both from the same instance captured at
+/// the moment the card was built. The content therefore cannot drift; only the pixels differ.
+struct LensShot: Equatable {
+    /// Set when a live conversation answer owns the lens; the identity fields are then unused.
+    var answer: String?
+    var echo: String?
+    var name: String?
+    var headline: String?
+    /// Person id, so the mirror can look the avatar up the same way the card did.
+    var photo: String?
+    var primary: [String] = []
+    var details: [String] = []
+    var secondary: [String] = []
+    var title: String?
+    var subtitle: String?
+    var button: String = "Identify"
+    var connected: Int = 0
+}
+
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
 /// who they are and three lines of background.
 enum LensCards {
@@ -28,8 +51,10 @@ enum LensCards {
         connected: Int,
         identify: @escaping @Sendable () -> Void
     ) -> FlexBox {
-        let label = identifying ? "Identifying" : confirming ? "Are you sure?" : "Identify"
-        let bottom = bottomRow(label: label, icon: confirming ? .checkmark : .eye, connected: connected, identify: identify)
+        // One description of the card, rendered here and mirrored on the phone.
+        let shot = Self.shot(result: result, identifying: identifying, confirming: confirming,
+                             connected: connected)
+        let bottom = bottomRow(label: shot.button, icon: confirming ? .checkmark : .eye, connected: connected, identify: identify)
 
         switch result {
         case .known(let match, _):
@@ -38,14 +63,12 @@ enum LensCards {
             // Three text styles exist, with no weights and no colors, so hierarchy is order and
             // emphasis is scarcity: exactly one line is .body -- what they do now -- and the eye
             // finds it because nothing else on the card looks like it.
-            let highlights = Array((person.highlights ?? []).prefix(Self.highlightCount))
-            var primary: [String] = []
-            if let tie = person.tie, !tie.isEmpty { primary.append(tie) }
-            primary += highlights.map { "\u{2014} " + $0 }
-            let secondary = [person.personal, person.source].compactMap { $0 }.filter { !$0.isEmpty }
+            let primary = shot.primary
+            let secondary = shot.secondary
             // Nobody populated yet: fall back to the old school/work/from rows, so a half-filled
-            // people.json still renders something.
-            let details = primary.isEmpty ? Array(person.details.prefix(3)) : []
+            // people.json still renders something. The shot already made that choice; this only
+            // re-reads the rows, because the lens draws an icon per kind and the mirror does not.
+            let details = shot.details.isEmpty ? [] : Array(person.details.prefix(3))
             return FlexBox(direction: .column, spacing: 14) {
                 FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
                     if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
@@ -88,6 +111,41 @@ enum LensCards {
         default:
             return FlexBox(direction: .column) { bottom }.padding(20)
         }
+    }
+
+    /// The card's content, with no layout: what `hud` is about to draw, and what the phone panel
+    /// mirrors. Pure, so calling it costs nothing and it can be captured on every lens write.
+    static func shot(result: Identification, identifying: Bool, confirming: Bool,
+                     connected: Int) -> LensShot {
+        var shot = LensShot()
+        shot.connected = connected
+        shot.button = identifying ? "Identifying" : confirming ? "Are you sure?" : "Identify"
+        switch result {
+        case .known(let match, _):
+            let person = match.person
+            shot.name = person.name
+            shot.headline = person.headline
+            shot.photo = person.id
+            let highlights = Array((person.highlights ?? []).prefix(Self.highlightCount))
+            var primary: [String] = []
+            if let tie = person.tie, !tie.isEmpty { primary.append(tie) }
+            primary += highlights.map { "\u{2014} " + $0 }
+            shot.primary = primary
+            shot.secondary = [person.personal, person.source].compactMap { $0 }.filter { !$0.isEmpty }
+            shot.details = primary.isEmpty ? person.details.prefix(3).map(\.text) : []
+        case .noFace where !identifying, .unknown where !identifying:
+            let (title, subtitle) = message(for: result)
+            shot.title = title
+            shot.subtitle = subtitle
+        default:
+            break
+        }
+        return shot
+    }
+
+    /// A conversation answer, as the mirror sees it.
+    static func shot(answer card: AnswerCard) -> LensShot {
+        LensShot(answer: card.answer.isEmpty ? "\u{2026}" : card.answer, echo: card.echo)
     }
 
     private static func bottomRow(label: String, icon: IconName, connected: Int,

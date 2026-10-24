@@ -106,7 +106,8 @@ struct HomeView: View {
                 // Only takes space when there is something to mirror: an unconditional
                 // 300pt panel above the header blacked out the app on device.
                 LensPanel(lens: glasses.mockLens, pov: glasses.pov, mocking: glasses.mocking,
-                          connected: glasses.connected, identifying: glasses.identifying)
+                          connected: glasses.connected, identifying: glasses.identifying,
+                          shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
                 #endif
                 header
                 ScrollView {
@@ -739,17 +740,91 @@ struct MockLens: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
+/// What the real glasses are showing, redrawn on the phone.
+///
+/// A real pair gives no readback — the SDK's preview view exists only for a simulated one — so
+/// this is not a screenshot of the lens. It is the same `LensShot` the card was built from,
+/// captured at the moment of the send, laid out the way the lens lays it out. The words, the
+/// order, the photo and the counter are guaranteed to match; the typography is a likeness.
+struct LensMirror: View {
+    let shot: LensShot
+    let avatar: (String) -> UIImage?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let answer = shot.answer {
+                Text(answer).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                if let echo = shot.echo {
+                    Text(echo).font(.system(size: 9)).foregroundStyle(Color(white: 0.6))
+                }
+            } else if let name = shot.name {
+                HStack(spacing: 6) {
+                    if let id = shot.photo, let image = avatar(id) {
+                        Image(uiImage: image)
+                            .resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: 28, height: 28)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                        if let headline = shot.headline {
+                            Text(headline).font(.system(size: 9)).foregroundStyle(.white)
+                        }
+                    }
+                }
+                lines(shot.primary, size: 8, shade: 0.85)
+                lines(shot.details, size: 8, shade: 0.85)
+                lines(shot.secondary, size: 8, shade: 0.6)
+            } else if let title = shot.title {
+                Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                if let subtitle = shot.subtitle {
+                    Text(subtitle).font(.system(size: 9)).foregroundStyle(Color(white: 0.6))
+                }
+            }
+            Spacer(minLength: 2)
+            // The lens always carries this row; an answer card is the one thing that replaces it.
+            if shot.answer == nil {
+                HStack(spacing: 4) {
+                    Text("\(shot.connected)")
+                        .font(.system(size: 8, weight: .bold)).foregroundStyle(.black)
+                        .frame(width: 14, height: 14)
+                        .background(Circle().fill(Color(red: 0.20, green: 0.78, blue: 0.45)))
+                    Spacer(minLength: 0)
+                    Text(shot.button)
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(Color.white))
+                }
+            }
+        }
+        .lineLimit(2)
+        .minimumScaleFactor(0.7)
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func lines(_ texts: [String], size: CGFloat, shade: Double) -> some View {
+        ForEach(Array(texts.enumerated()), id: \.offset) { _, line in
+            Text(line).font(.system(size: size)).foregroundStyle(Color(white: shade))
+        }
+    }
+}
+
 /// Always-present frame around the lens, so anyone looking at the phone knows exactly what the
-/// wearer sees and on which rig. In phone-sim mode the black square is MockDeviceKit rendering
-/// the same `FlexBox` the real lens would receive — not a drawing of it. With real glasses there
-/// is nothing to mirror: the SDK only offers a preview view for a simulated pair, so the panel
-/// says so rather than showing a stale or invented card.
+/// wearer sees and on which rig. Both tiles are live with real glasses: the camera tile is the
+/// actual stream off the pair (5 fps, the Bluetooth budget), and the lens tile is a mirror —
+/// the SDK offers a true preview view only for a simulated pair, so with real hardware the phone
+/// redraws the same `LensShot` the card was sent from. Never a stale or invented card: when
+/// nothing has been written to a lens, the tile says so.
 struct LensPanel: View {
     let lens: UIView?
     let pov: UIImage?
     let mocking: Bool
     let connected: Bool
     let identifying: Bool
+    /// What was last written to the lens, for the mirror. Nil when nothing is on it.
+    let shot: LensShot?
+    let avatar: (String) -> UIImage?
 
     private var state: (String, Color) {
         if identifying { return ("Looking", .orange) }
@@ -761,7 +836,7 @@ struct LensPanel: View {
         VStack(spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "eyeglasses").font(.system(size: 12, weight: .semibold))
-                Text(mocking ? "Phone sim · camera + lens" : "Real glasses · tap to switch to phone sim")
+                Text(mocking ? "Phone sim · camera + lens" : "Real glasses · camera + lens mirror")
                     .font(.caption.weight(.semibold))
                 Spacer()
                 Circle().fill(state.1).frame(width: 6, height: 6)
@@ -781,11 +856,13 @@ struct LensPanel: View {
                             .font(.caption2).foregroundStyle(Color(.systemGray))
                     }
                 }
-                tile("Lens") {
+                tile(lens == nil ? "Lens · mirror" : "Lens") {
                     if let lens {
                         MockLens(view: lens)
+                    } else if let shot {
+                        LensMirror(shot: shot, avatar: avatar)
                     } else {
-                        Text("On the glasses\n600 × 600 · right eye")
+                        Text(connected ? "No lens on this pair" : "Not connected")
                             .multilineTextAlignment(.center)
                             .font(.caption2).foregroundStyle(Color(.systemGray))
                     }
