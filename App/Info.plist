@@ -53,6 +53,8 @@
 	<string>$(COACH_MODEL)</string>
 	<key>CoachProvider</key>
 	<string>$(COACH_PROVIDER)</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
@@ -104,6 +106,8 @@
 		<string>bluetooth-peripheral</string>
 		<string>external-accessory</string>
 	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedExternalAccessoryProtocols</key>
