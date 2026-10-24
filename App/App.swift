@@ -6,6 +6,7 @@ struct CalHacksApp: App {
     @State private var store = Store()
     @State private var glasses = Glasses()
     @State private var assistant = Assistant()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         Glasses.configure()
@@ -21,12 +22,15 @@ struct CalHacksApp: App {
                 .environment(glasses)
                 .environment(assistant)
                 .onOpenURL { glasses.handle($0) }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { Task { await assistant.ensureListening() } }
+                }
                 .task {
                     glasses.store = store
                     assistant.glasses = glasses
                     assistant.store = store
                     // Listening is on from launch; the mic pill turns it off.
-                    Task { await assistant.arm() }
+                    Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
                     // when a push lands; Store re-reads the roster on the same notification.
                     NotificationCenter.default.addObserver(forName: Tuning.changed, object: nil, queue: .main) { _ in
@@ -254,7 +258,7 @@ struct HomeView: View {
                 .background(Color(.secondarySystemBackground), in: Capsule())
             }
             Button {
-                if assistant.armed { assistant.disarm() } else { Task { await assistant.arm() } }
+                Task { await assistant.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: assistant.armed ? "mic.fill" : "mic.slash")

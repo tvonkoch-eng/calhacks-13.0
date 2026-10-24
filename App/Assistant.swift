@@ -9,6 +9,8 @@ import Observation
 @MainActor @Observable final class Assistant {
     var armed = false
     var note = ""
+    /// The wearer turned listening off; until they turn it on again, don't re-arm on our own.
+    var mutedByUser = false
 
     @ObservationIgnored let listener = Listener()
     @ObservationIgnored weak var glasses: Glasses? {
@@ -33,7 +35,8 @@ import Observation
         let wearer = (Bundle.main.object(forInfoDictionaryKey: "WearerName") as? String)
             .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 } ?? "Toby"
         aid = Self.makeAid(wearer: wearer)
-        listener.mic = Listener.Mic(rawValue: UserDefaults.standard.string(forKey: "micSource") ?? "") ?? .glasses
+        // New key on purpose: the glasses default of the last build shouldn't carry over.
+        listener.mic = Listener.Mic(rawValue: UserDefaults.standard.string(forKey: "mic") ?? "") ?? .phone
         listener.onLog = { SpeedLog.record($0) }
         listener.onPartial = { [weak self] text in self?.aid.heard(partial: text) }
         listener.onLine = { [weak self] text, speaker, level in self?.aid.heard(line: text, speaker: speaker, level: level) }
@@ -73,11 +76,23 @@ import Observation
         glasses?.showAid(LensView())
     }
 
-    /// Glasses mic (default) or the phone's. Remembered across launches; switches live.
+    /// The mic pill: off is a choice that sticks; on is the default.
+    func toggle() async {
+        if armed { mutedByUser = true; disarm() } else { mutedByUser = false; await arm() }
+    }
+
+    /// Listening is on unless the wearer turned it off: called at launch and on every return to
+    /// the foreground, so a failed start (no route yet, permission sheet) gets another go.
+    func ensureListening() async {
+        guard !armed, !mutedByUser else { return }
+        await arm()
+    }
+
+    /// iPhone mic (default) or the glasses'. Remembered across launches; switches live.
     var mic: Listener.Mic {
         get { listener.mic }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: "micSource")
+            UserDefaults.standard.set(newValue.rawValue, forKey: "mic")
             listener.use(newValue)
         }
     }

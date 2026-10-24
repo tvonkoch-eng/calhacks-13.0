@@ -30,10 +30,12 @@ import Observation
     @ObservationIgnored var onFileEnd: (() -> Void)?
     /// When the file's first audio went out: time zero of the recording, for lining up traces.
     @ObservationIgnored private(set) var fileStarted: Date?
-    /// Which microphone to use (iOS). `glasses` asks iOS for the Bluetooth headset input (the
-    /// glasses' mic array) and falls back to the phone only when the glasses mic isn't there.
+    /// Which microphone to use (iOS). `phone` (default) never opens Bluetooth audio at all.
+    /// `glasses` asks for the hands-free input, the glasses' mic: on Toby's pair that halved the
+    /// camera frame rate, made a lens write take 18 s, and the route flapped every few seconds
+    /// (each flap ~4 s of renegotiation). Kept as an opt-in to experiment with.
     enum Mic: String { case glasses, phone }
-    @ObservationIgnored var mic: Mic = .glasses
+    @ObservationIgnored var mic: Mic = .phone
     /// The input actually in use, e.g. "Ray-Ban Meta (Bluetooth)" or "iPhone Microphone".
     var input = ""
     /// Diagnostics for the host's log (the app's speed.jsonl): audio restarts, route, socket.
@@ -89,7 +91,7 @@ import Observation
                 status = "Mic permission denied"
                 return
             }
-            try startAudio()
+            try await startAudio()
             listening = true
             #if os(iOS)
             watchAudio()
@@ -101,43 +103,53 @@ import Observation
         }
     }
 
-    /// Session, route and tap, from scratch. Called on start and whenever iOS changed the audio
-    /// under us; the tap's format follows the route (the glasses' Bluetooth mic is 16 kHz).
-    private func startAudio() throws {
+    /// Session, route and tap, from scratch. Called on start and whenever the mic really stopped.
+    private func startAudio() async throws {
         #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        // .mixWithOthers so the glasses' own audio session never takes the mic away from us;
-        // .allowBluetooth (hands-free profile) is what exposes the glasses' mic as an input.
-        try session.setCategory(.playAndRecord, mode: .measurement,
-                                options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker])
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
-        let headset = session.availableInputs?.first { $0.portType == .bluetoothHFP }
-        let builtIn = session.availableInputs?.first { $0.portType == .builtInMic }
-        try? session.setPreferredInput(mic == .glasses ? (headset ?? builtIn) : builtIn)
-        let current = session.currentRoute.inputs.first
-        input = current.map { $0.portType == .bluetoothHFP ? "\($0.portName) (Bluetooth)" : $0.portName } ?? "No microphone"
-        if mic == .glasses, headset == nil { input += " · glasses mic not available" }
+        // Off the main thread: with a Bluetooth input these calls block for seconds while the
+        // route renegotiates, and on the main thread that froze the whole app.
+        let mic = self.mic
+        input = try await Task.detached(priority: .userInitiated) { try Self.configureSession(mic) }.value
         #endif
 
         if engine.isRunning { engine.stop() }
         let node = engine.inputNode
         node.removeTap(onBus: 0)
-        let format = node.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            throw NSError(domain: "Listener", code: 2, userInfo: [NSLocalizedDescriptionKey: "No microphone input"])
-        }
-        try uplink.prepare(from: format)
+        // format nil = whatever the hardware delivers right now. Passing the format we had read a
+        // moment earlier crashed the app (NSException in installTap, 10:47) when the route changed
+        // the sample rate in between; the uplink adapts to each buffer's format instead.
         // Realtime audio thread: hand the buffer to the uplink (it converts and sends off this
         // thread) and send only a level reading to the main actor.
-        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, uplink = self.uplink] buffer, _ in
+        node.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self, uplink = self.uplink] buffer, _ in
             uplink.push(buffer)
             let db = Uplink.decibels(buffer)
             Task { @MainActor in self?.level = max(0, min(1, (db + 60) / 60)) }
         }
+        uplink.inputStarted()
         engine.prepare()
         try engine.start()
-        onLog?(["event": "micStart", "input": input, "rate": Int(format.sampleRate)])
+        onLog?(["event": "micStart", "input": input, "rate": Int(node.outputFormat(forBus: 0).sampleRate)])
     }
+
+    #if os(iOS)
+    /// Returns the name of the input in use.
+    nonisolated private static func configureSession(_ mic: Mic) throws -> String {
+        let session = AVAudioSession.sharedInstance()
+        // .mixWithOthers so the glasses' own audio never takes the mic away from us. Bluetooth
+        // (hands-free) only when the glasses mic is wanted: otherwise iOS may route to it anyway.
+        let options: AVAudioSession.CategoryOptions = mic == .glasses
+            ? [.mixWithOthers, .allowBluetooth, .defaultToSpeaker] : [.mixWithOthers, .defaultToSpeaker]
+        try session.setCategory(.playAndRecord, mode: .measurement, options: options)
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        let headset = session.availableInputs?.first { $0.portType == .bluetoothHFP }
+        let builtIn = session.availableInputs?.first { $0.portType == .builtInMic }
+        try? session.setPreferredInput(mic == .glasses ? (headset ?? builtIn) : builtIn)
+        let current = session.currentRoute.inputs.first
+        var name = current.map { $0.portType == .bluetoothHFP ? "\($0.portName) (Bluetooth)" : $0.portName } ?? "No microphone"
+        if mic == .glasses, headset == nil { name += " · glasses mic not available" }
+        return name
+    }
+    #endif
 
     #if os(iOS)
     /// iOS stops the engine without telling the tap: an interruption, a route change (the glasses
@@ -166,10 +178,10 @@ import Observation
                         self.onLog?(["event": "micInterrupted"])
                         return
                     }
-                    // Our own restart posts these too; a real change still gets caught by the
-                    // stall watchdog if it lands inside the window.
-                    guard Date().timeIntervalSince(self.lastRestart) > 1.5 || self.engine.isRunning == false else { return }
-                    self.restartAudio(reason: reason)
+                    // A notification is only a hint. Restarting on every route change looped:
+                    // each restart changed the route again (19 restarts in a minute, app frozen).
+                    // Restart only if the mic actually stopped delivering.
+                    self.checkSoon(reason: reason)
                 }
             }
         }
@@ -178,19 +190,36 @@ import Observation
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, self.listening, self.file == nil else { continue }
-                if self.uplink.secondsSinceInput > 2 { self.restartAudio(reason: "micStalled") }
+                if self.micDead { await self.restartAudio(reason: "micStalled") }
             }
         }
     }
 
-    private func restartAudio(reason: String) {
+    private var micDead: Bool { !engine.isRunning || uplink.secondsSinceInput > 2 }
+
+    private func checkSoon(reason: String) {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, self.listening, self.micDead else { return }
+            await self.restartAudio(reason: reason)
+        }
+    }
+
+    /// At most one restart in flight, and spaced out (5 s, doubling to 30 s while they keep
+    /// failing to stick) so nothing can spin.
+    @ObservationIgnored private var restartGap: TimeInterval = 5
+
+    private func restartAudio(reason: String) async {
         guard !restarting else { return }
+        let since = Date().timeIntervalSince(lastRestart)
+        guard since >= restartGap else { return }
+        restartGap = since < 30 ? min(restartGap * 2, 30) : 5
         restarting = true
         lastRestart = Date()
         defer { restarting = false }
         let before = input
         do {
-            try startAudio()
+            try await startAudio()
             if socket != nil, status.hasPrefix("Mic") { status = "Listening" }
             onLog?(["event": "micRestart", "reason": reason, "from": before, "to": input])
         } catch {
@@ -203,7 +232,9 @@ import Observation
     func use(_ mic: Mic) {
         guard mic != self.mic else { return }
         self.mic = mic
-        if listening, file == nil { restartAudio(reason: "micChosen") }
+        lastRestart = .distantPast
+        restartGap = 5
+        if listening, file == nil { Task { await restartAudio(reason: "micChosen") } }
     }
     #endif
 
@@ -395,6 +426,11 @@ private final class Uplink: @unchecked Sendable {
             throw NSError(domain: "Listener", code: 1, userInfo: [NSLocalizedDescriptionKey: "Can't convert audio to 24 kHz PCM"])
         }
         queue.sync { self.converter = converter; pending.removeAll() }
+        inputStarted()
+    }
+
+    /// A (re)started mic gets a fresh 2 s before the stall watchdog judges it.
+    func inputStarted() {
         lock.lock(); lastInput = Date(); lock.unlock()
     }
 
@@ -460,7 +496,13 @@ private final class Uplink: @unchecked Sendable {
         lock.lock()
         let socket = self.socket
         lock.unlock()
-        guard let socket, let converter else { return }
+        guard let socket else { return }
+        // The mic's format follows the route (48 kHz phone, 16 kHz Bluetooth); follow it.
+        if converter?.inputFormat != buffer.format {
+            converter = AVAudioConverter(from: buffer.format, to: target)
+            pending.removeAll()
+        }
+        guard let converter else { return }
 
         let ratio = target.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32

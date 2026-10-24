@@ -47,7 +47,7 @@ struct MicRow: View {
     var body: some View {
         HStack(spacing: 14) {
             Button {
-                if assistant.armed { assistant.disarm() } else { Task { await assistant.arm() } }
+                Task { await assistant.toggle() }
             } label: {
                 Image(systemName: assistant.armed ? "mic.fill" : "mic.slash")
                     .font(.title3)
