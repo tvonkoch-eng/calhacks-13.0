@@ -13,6 +13,8 @@ struct Person: Codable, Identifiable, Hashable {
     var work: String?
     var from: String?
     var interests: String?
+    /// Short labels for chips: school, company, city.
+    var tags: [String]?
     var isMe: Bool?
 
     /// Background lines in display order.
@@ -33,10 +35,15 @@ struct Match {
     private(set) var gallery: [String: [[Float]]] = [:]
     private(set) var avatars: [String: UIImage] = [:]
     private(set) var lastSeen: [String: Date] = [:]
+    /// Every time each person was recognized, oldest first.
+    private(set) var encounters: [String: [Date]] = [:]
+    private(set) var notes: [String: String] = [:]
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     private var galleryURL: URL { docs.appendingPathComponent("gallery.json") }
     private var seenURL: URL { docs.appendingPathComponent("seen.json") }
+    private var encountersURL: URL { docs.appendingPathComponent("encounters.json") }
+    private var notesURL: URL { docs.appendingPathComponent("notes.json") }
     private func avatarURL(_ id: String) -> URL { docs.appendingPathComponent("avatar-\(id).jpg") }
 
     init() {
@@ -50,6 +57,14 @@ struct Match {
         if let data = try? Data(contentsOf: seenURL) {
             lastSeen = (try? JSONDecoder().decode([String: Date].self, from: data)) ?? [:]
         }
+        if let data = try? Data(contentsOf: encountersURL) {
+            encounters = (try? JSONDecoder().decode([String: [Date]].self, from: data)) ?? [:]
+        }
+        if let data = try? Data(contentsOf: notesURL) {
+            notes = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+        }
+        // Installs from before the encounter log: their last sighting is their first encounter.
+        for (id, date) in lastSeen where encounters[id] == nil { encounters[id] = [date] }
         for person in people {
             if let image = UIImage(contentsOfFile: avatarURL(person.id).path) { avatars[person.id] = image }
             if avatars[person.id] == nil { seedAvatar(person.id) }
@@ -97,12 +112,30 @@ struct Match {
     }
 
     /// Records a conversation now; returns the previous time so a wrong match can be undone.
+    /// Moving forward logs an encounter (sightings within 5 minutes are the same conversation);
+    /// moving back, as when a wrong match is corrected, drops the encounters after `date`.
     @discardableResult func markSeen(_ id: String, at date: Date? = .now) -> Date? {
         let previous = lastSeen[id]
         lastSeen[id] = date
+        var log = encounters[id] ?? []
+        if let date, date >= (previous ?? .distantPast) {
+            if let last = log.last, date.timeIntervalSince(last) < 5 * 60 { log[log.count - 1] = date } else { log.append(date) }
+        } else {
+            log.removeAll { $0 > (date ?? .distantPast) }
+        }
+        encounters[id] = log.isEmpty ? nil : log
         try? JSONEncoder().encode(lastSeen).write(to: seenURL)
+        try? JSONEncoder().encode(encounters).write(to: encountersURL)
         return previous
     }
+
+    func setNote(_ id: String, _ text: String) {
+        notes[id] = text.isEmpty ? nil : text
+        try? JSONEncoder().encode(notes).write(to: notesURL)
+    }
+
+    /// Met today, for the summary line.
+    var metToday: Int { lastSeen.values.filter { Calendar.current.isDateInToday($0) }.count }
     func samples(_ id: String) -> Int { gallery[id]?.count ?? 0 }
 
     func enroll(_ id: String, _ face: FaceHit) {

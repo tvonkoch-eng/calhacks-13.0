@@ -11,7 +11,12 @@
     "role": "CS junior at UCSB",
     "school": "UCSB \u00b7 Computer Science, Junior",
     "work": "LegalTime AI \u00b7 timekeeping for lawyers",
-    "from": "San Diego"
+    "from": "San Diego",
+    "tags": [
+      "UCSB",
+      "LegalTime AI",
+      "San Diego"
+    ]
   },
   {
     "id": "mirabelle",
@@ -19,7 +24,12 @@
     "role": "Financial Math & Stats junior at UCSB",
     "school": "UCSB \u00b7 Honors Financial Math & Statistics, Junior",
     "from": "Gresham, New York",
-    "interests": "Environmental studies"
+    "interests": "Environmental studies",
+    "tags": [
+      "UCSB",
+      "Financial Math",
+      "New York"
+    ]
   },
   {
     "id": "avi",
@@ -27,6 +37,11 @@
     "role": "LSE Economics, year abroad at UCSB",
     "school": "LSE \u00b7 Economics (year abroad at UCSB)",
     "work": "Summer Analyst, Investment Banking \u00b7 BofA London",
-    "from": "London"
+    "from": "London",
+    "tags": [
+      "LSE",
+      "BofA",
+      "London"
+    ]
   }
 ]
