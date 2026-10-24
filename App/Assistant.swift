@@ -84,7 +84,10 @@ import Observation
         aid = Self.makeAid(wearer: wearer)
         speakers = Speakers(wearer: wearer)
         // New key on purpose: the glasses default of the last build shouldn't carry over.
-        listener.mic = Listener.Mic(rawValue: UserDefaults.standard.string(forKey: "mic") ?? "") ?? .phone
+        // Always the iPhone mic at launch: streaming the glasses' mic through the camera stream
+        // kills both video and audio (DAT 1.0.1). The menu can still pick Glasses for one session.
+        listener.mic = .phone
+        UserDefaults.standard.set(Listener.Mic.phone.rawValue, forKey: "mic")
         listener.onLog = { SpeedLog.record($0) }
         listener.onPartial = { [weak self] text in
             guard let self else { return }
