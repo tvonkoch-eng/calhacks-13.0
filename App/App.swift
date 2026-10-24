@@ -10,119 +10,224 @@ struct CalHacksApp: App {
 
     var body: some Scene {
         WindowGroup {
-            GlassesView()
+            HomeView()
                 .environment(store)
                 .environment(glasses)
                 .onOpenURL { glasses.handle($0) }
                 .task {
                     glasses.store = store
+                    #if DEBUG
+                    if let id = ProcessInfo.processInfo.environment["PREVIEW_PERSON"],
+                       let person = store.people.first(where: { $0.id == id }) {
+                        glasses.preview(person)
+                        return
+                    }
+                    #endif
                     await glasses.connectIfRegistered()
                 }
         }
     }
 }
 
-struct GlassesView: View {
+struct HomeView: View {
     @Environment(Store.self) private var store
     @Environment(Glasses.self) private var glasses
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
-                ZStack {
-                    if let snapshot = glasses.snapshot {
-                        Image(uiImage: snapshot).resizable().scaledToFill()
-                    } else {
-                        Color(.secondarySystemBackground)
-                        Image(systemName: "eyeglasses").font(.system(size: 44)).foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 280)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-
-                if !store.hasFaces {
-                    NavigationLink { PeopleView() } label: {
-                        MessageCard(title: "No face photos saved", detail: "Nobody can be recognized yet. Add photos for each person.") {
-                            Image(systemName: "chevron.right").foregroundStyle(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-                resultCard
-                Spacer()
-
-                if glasses.connected {
-                    Button { Task { await glasses.identify() } } label: {
-                        Label(glasses.identifying ? "Identifying…" : "Identify", systemImage: "eye")
-                            .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(glasses.identifying)
-                } else {
-                    Button { Task { await glasses.connect() } } label: {
-                        Label(glasses.connecting ? "Connecting…" : "Connect glasses", systemImage: "eyeglasses")
-                            .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(glasses.connecting)
-                }
-                Text(glasses.status).font(.footnote).foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                header
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .animation(.smooth(duration: 0.3), value: glasses.identifying)
+                actionButton
             }
-            .padding()
-            .navigationTitle("Glasses")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if glasses.connected { Button("Disconnect") { glasses.disconnect() } }
+            .background(Color(.systemBackground))
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Menu {
+                if glasses.connected {
+                    Button("Disconnect glasses", role: .destructive) { glasses.disconnect() }
+                } else {
+                    Button("Connect glasses") { Task { await glasses.connect() } }
                 }
-                ToolbarItem { NavigationLink("People") { PeopleView() } }
+            } label: {
+                HStack(spacing: 7) {
+                    Circle().fill(glasses.connected ? Color.green : Color(.tertiaryLabel)).frame(width: 7, height: 7)
+                    Text(glasses.connected ? "Glasses on" : "Glasses off")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.primary)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(.secondarySystemBackground), in: Capsule())
+            }
+            Spacer()
+            NavigationLink { PeopleView() } label: {
+                Image(systemName: "person.2")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, height: 36)
+                    .background(Color(.secondarySystemBackground), in: Circle())
+            }
+        }
+        .tint(.primary)
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+    }
+
+    @ViewBuilder private var content: some View {
+        if glasses.identifying {
+            VStack(spacing: 14) {
+                ProgressView().controlSize(.large)
+                Text("Recognizing").font(.headline).foregroundStyle(.secondary)
+            }
+        } else {
+            switch glasses.result {
+            case .known(let match, let face):
+                ScrollView {
+                    ProfileView(person: match.person, face: face)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 28)
+                }
+                .scrollIndicators(.hidden)
+            case .ready:
+                EmptyState(symbol: "eyeglasses",
+                           title: "Look at someone",
+                           detail: glasses.connected
+                               ? "Press the capture button on your glasses, or tap Identify."
+                               : "Put on your glasses and connect to get started.")
+            case .noFace:
+                EmptyState(symbol: "person.crop.circle.badge.questionmark",
+                           title: "No one in view",
+                           detail: "Face them and try again.")
+            case .unknown:
+                EmptyState(symbol: "person.crop.circle.badge.plus",
+                           title: "No one saved yet",
+                           detail: "Add photos of the people you want to recognize.")
             }
         }
     }
 
-    @ViewBuilder private var resultCard: some View {
-        switch glasses.result {
-        case .ready:
-            Text("Look at someone, then tap Identify or press the capture button on your glasses.")
-                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        case .noFace:
-            MessageCard(title: "No face found", detail: "Face the person and try again.")
-        case .unknown(let face, let closest):
-            MessageCard(title: "Not in your contacts",
-                        detail: closest.map { "Closest: \($0.person.name) \($0.score.formatted(.number.precision(.fractionLength(2)))), needs \(store.threshold.formatted(.number.precision(.fractionLength(2))))" }) {
-                SaveFaceMenu(face: face, label: "Save as…")
+    private var actionButton: some View {
+        VStack(spacing: 10) {
+            Button {
+                Task { glasses.connected ? await glasses.identify() : await glasses.connect() }
+            } label: {
+                Text(buttonTitle)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color(.systemBackground))
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .background(Color.primary, in: Capsule())
             }
-        case .known(let match, let face):
-            VStack(alignment: .trailing, spacing: 6) {
-                MatchCard(match: match)
-                SaveFaceMenu(face: face, label: "Wrong person?").font(.footnote)
+            .disabled(glasses.identifying || glasses.connecting)
+            if !glasses.connected, glasses.status != "Not connected" {
+                Text(glasses.status).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
         }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+    }
+
+    private var buttonTitle: String {
+        if glasses.connecting { return "Connecting" }
+        if glasses.identifying { return "Recognizing" }
+        return glasses.connected ? "Identify" : "Connect glasses"
     }
 }
 
-struct MessageCard<Accessory: View>: View {
+struct EmptyState: View {
+    let symbol: String
     let title: String
-    let detail: String?
-    @ViewBuilder var accessory: () -> Accessory
-
-    init(title: String, detail: String?, @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }) {
-        self.title = title
-        self.detail = detail
-        self.accessory = accessory
-    }
+    let detail: String
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.headline)
-                if let detail { Text(detail).font(.subheadline).foregroundStyle(.secondary) }
-            }
-            Spacer()
-            accessory()
+        VStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 52, weight: .ultraLight))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 6)
+            Text(title).font(.system(.title2, design: .serif, weight: .semibold))
+            Text(detail).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
-        .padding(14)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 40)
+    }
+}
+
+/// The identified person: photo, name, background as ruled rows, and an opener.
+struct ProfileView: View {
+    @Environment(Store.self) private var store
+    let person: Person
+    let face: FaceHit?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Group {
+                if let image = store.avatars[person.id] {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Color(.secondarySystemBackground)
+                        .overlay(Text(person.name.prefix(1)).font(.system(size: 48, design: .serif)))
+                }
+            }
+            .frame(width: 112, height: 112)
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .padding(.bottom, 20)
+
+            Text(person.name)
+                .font(.system(size: 34, weight: .semibold, design: .serif))
+            Text(person.role)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+                .padding(.bottom, 24)
+
+            ForEach(person.details, id: \.text) { detail in
+                Divider()
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text(label(detail.kind))
+                        .font(.caption.weight(.semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 86, alignment: .leading)
+                    Text(detail.text).font(.body)
+                }
+                .padding(.vertical, 14)
+            }
+            Divider()
+
+            if let opener = person.opener {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("SAY HI")
+                        .font(.caption.weight(.semibold)).tracking(0.8)
+                        .foregroundStyle(.secondary)
+                    Text(opener).font(.system(.title3, design: .serif))
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .padding(.top, 24)
+            }
+
+            if let face {
+                SaveFaceMenu(face: face, label: "Not \(person.name.split(separator: " ").first ?? "them")?")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 18)
+            }
+        }
+    }
+
+    private func label(_ kind: Person.Kind) -> String {
+        switch kind {
+        case .school: "SCHOOL"
+        case .work: "WORK"
+        case .from: "FROM"
+        case .interests: "INTO"
+        }
     }
 }
 
@@ -161,7 +266,6 @@ struct PeopleView: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) { StrictnessSlider().padding() }
         .navigationTitle("People")
         .navigationDestination(for: Person.self) { PersonView(person: $0) }
     }
@@ -188,7 +292,6 @@ struct Avatar: View {
 }
 
 struct PersonRow: View {
-    @Environment(Store.self) private var store
     let person: Person
 
     var body: some View {
@@ -197,10 +300,6 @@ struct PersonRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(person.name).font(.body.weight(.medium))
                 Text(person.role).font(.subheadline).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if store.samples(person.id) == 0 {
-                Text("No face").font(.caption).foregroundStyle(.orange)
             }
         }
     }
@@ -213,57 +312,20 @@ struct PersonView: View {
     var body: some View {
         List {
             Section {
-                HStack(spacing: 16) {
-                    Avatar(person: person, size: 72)
-                    VStack(alignment: .leading) {
-                        Text(person.name).font(.title2.weight(.semibold))
-                        Text(person.role).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            if !person.details.isEmpty {
-                Section("About") {
-                    ForEach(person.details, id: \.text) { DetailRow(kind: $0.kind, text: $0.text) }
-                }
+                ProfileView(person: person, face: nil)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 8, trailing: 4))
             }
             Section {
-                NavigationLink("Add face photos") { EnrollView(person: person) }
+                NavigationLink("Add photos") { EnrollView(person: person) }
                 if store.samples(person.id) > 0 {
-                    Button("Clear face photos", role: .destructive) { store.reset(person.id) }
+                    Button("Remove photos", role: .destructive) { store.reset(person.id) }
                 }
             } footer: {
-                Text("\(store.samples(person.id)) face samples")
+                Text(store.samples(person.id) == 1 ? "1 photo" : "\(store.samples(person.id)) photos")
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-struct MatchCard: View {
-    let match: Match?
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if let match {
-                Avatar(person: match.person, size: 52)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text(match.person.name).font(.headline)
-                        Spacer()
-                        Text(match.score, format: .number.precision(.fractionLength(2)))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    Text(match.person.role).font(.subheadline).foregroundStyle(.secondary)
-                    ForEach(match.person.details, id: \.text) { DetailRow(kind: $0.kind, text: $0.text).font(.footnote) }
-                }
-            } else {
-                Text("Unknown").font(.headline).foregroundStyle(.secondary)
-                Spacer()
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -336,39 +398,3 @@ struct EnrollView: View {
     }
 }
 
-struct DetailRow: View {
-    let kind: Person.Kind
-    let text: String
-
-    var body: some View {
-        Label {
-            Text(text)
-        } icon: {
-            Image(systemName: symbol).foregroundStyle(.secondary)
-        }
-    }
-
-    private var symbol: String {
-        switch kind {
-        case .school: "graduationcap"
-        case .work: "briefcase"
-        case .from: "house"
-        case .interests: "heart"
-        }
-    }
-}
-
-struct StrictnessSlider: View {
-    @Environment(Store.self) private var store
-
-    var body: some View {
-        @Bindable var store = store
-        HStack {
-            Text("Match strictness").font(.caption)
-            Slider(value: $store.threshold, in: 0.5...0.98)
-            Text(store.threshold, format: .number.precision(.fractionLength(2))).font(.caption.monospacedDigit())
-        }
-        .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(.thinMaterial, in: Capsule())
-    }
-}

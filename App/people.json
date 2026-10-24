@@ -3,13 +3,16 @@
   { "id": "joaquin", "name": "Joaquin Del Pego", "role": "CS junior at UCSB",
     "school": "UCSB · Computer Science, Junior",
     "work": "LegalTime AI · timekeeping for lawyers",
-    "from": "San Diego" },
+    "from": "San Diego",
+    "opener": "Ask what he's building at LegalTime AI" },
   { "id": "mirabelle", "name": "Mirabelle Brown", "role": "Financial Math & Stats junior at UCSB",
     "school": "UCSB · Honors Financial Math & Statistics, Junior",
     "from": "Gresham, New York",
-    "interests": "Environmental studies" },
+    "interests": "Environmental studies",
+    "opener": "Ask what pulled her toward environmental studies" },
   { "id": "avi", "name": "Avi Shah", "role": "LSE Economics, year abroad at UCSB",
     "school": "LSE · Economics (year abroad at UCSB)",
     "work": "Summer Analyst, Investment Banking · BofA London",
-    "from": "London" }
+    "from": "London",
+    "opener": "Ask how Santa Barbara compares to London" }
 ]

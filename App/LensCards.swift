@@ -1,14 +1,15 @@
 import MWDATDisplay
 import UIKit
 
-/// What the Ray-Ban Display lens shows. One root FlexBox per send.
+/// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
+/// who they are, three lines of background, one thing to say.
 enum LensCards {
     static func working() -> FlexBox {
-        FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+        FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
             Icon(name: .eye)
-            Text("Identifying…", style: .heading)
+            Text("Recognizing", style: .heading)
         }
-        .padding(20)
+        .padding(24)
         .background(.card)
     }
 
@@ -21,24 +22,25 @@ enum LensCards {
     ) -> FlexBox {
         switch result {
         case .ready:
-            return FlexBox(direction: .column, spacing: 10) {
-                FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
-                    Icon(name: .eye)
-                    Text("Ready", style: .heading)
+            return FlexBox(direction: .column, spacing: 14) {
+                FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
+                    Icon(name: .smartGlasses)
+                    FlexBox(direction: .column, spacing: 2) {
+                        Text("Ready", style: .heading)
+                        Text("Look at someone, then identify", style: .meta, color: .secondary)
+                    }
                 }
-                Text(hasFaces ? "Look at someone, then press Identify" : "No faces saved yet. Add them in the phone app",
-                     style: .meta, color: .secondary)
                 Button(label: "Identify", style: .primary, iconName: .eye, onClick: identify)
             }
-            .padding(20)
+            .padding(24)
             .background(.card)
 
         case .known(let match, _):
             let person = match.person
             let photo = avatar(person.id)
-            let details = person.details
-            return FlexBox(direction: .column, spacing: 12) {
-                FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
+            let details = Array(person.details.prefix(3))
+            return FlexBox(direction: .column, spacing: 16) {
+                FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
                     if let photo {
                         Image(image: photo, sizePreset: .icon, cornerRadius: .medium)
                     } else {
@@ -49,30 +51,35 @@ enum LensCards {
                         Text(person.role, style: .meta, color: .secondary)
                     }
                 }
-                for detail in details {
-                    FlexBox(direction: .row, spacing: 8, crossAlignment: .center) {
-                        Icon(name: icon(detail.kind), style: .outline)
-                        Text(detail.text, style: .body)
+                FlexBox(direction: .column, spacing: 10) {
+                    for detail in details {
+                        FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                            Icon(name: icon(detail.kind), style: .outline)
+                            Text(detail.text, style: .body)
+                        }
+                    }
+                }
+                if let opener = person.opener {
+                    FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                        Icon(name: .speechBubble)
+                        Text(opener, style: .body)
                     }
                 }
                 ButtonGroup {
+                    Button(label: "Done", style: .primary, iconName: .checkmark, onClick: dismiss)
+                        .actionRole(.primary)
                     Button(label: "Again", style: .secondary, iconName: .twoArrowsClockwise, onClick: identify)
-                    Button(label: "Done", style: .outline, iconName: .checkmark, onClick: dismiss)
                 }
             }
-            .padding(20)
+            .padding(24)
             .background(.card)
 
         case .unknown:
-            return message(
-                icon: .person,
-                title: hasFaces ? "Not in your contacts" : "No faces saved yet",
-                detail: hasFaces ? "Save them from the phone app" : "Add photos in the phone app",
-                identify: identify, dismiss: dismiss
-            )
+            return message(icon: .person, title: "No one saved yet", detail: "Add people in the app",
+                           identify: identify, dismiss: dismiss)
 
         case .noFace:
-            return message(icon: .eye, title: "No face in view", detail: "Face them and try again",
+            return message(icon: .eye, title: "No one in view", detail: "Look at them and try again",
                            identify: identify, dismiss: dismiss)
         }
     }
@@ -81,18 +88,21 @@ enum LensCards {
         icon: IconName, title: String, detail: String,
         identify: @escaping @Sendable () -> Void, dismiss: @escaping @Sendable () -> Void
     ) -> FlexBox {
-        FlexBox(direction: .column, spacing: 10) {
-            FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+        FlexBox(direction: .column, spacing: 14) {
+            FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
                 Icon(name: icon)
-                Text(title, style: .heading)
+                FlexBox(direction: .column, spacing: 2) {
+                    Text(title, style: .heading)
+                    Text(detail, style: .meta, color: .secondary)
+                }
             }
-            Text(detail, style: .meta, color: .secondary)
             ButtonGroup {
-                Button(label: "Again", style: .secondary, iconName: .twoArrowsClockwise, onClick: identify)
-                Button(label: "Done", style: .outline, iconName: .checkmark, onClick: dismiss)
+                Button(label: "Again", style: .primary, iconName: .twoArrowsClockwise, onClick: identify)
+                    .actionRole(.primary)
+                Button(label: "Done", style: .secondary, iconName: .checkmark, onClick: dismiss)
             }
         }
-        .padding(20)
+        .padding(24)
         .background(.card)
     }
 

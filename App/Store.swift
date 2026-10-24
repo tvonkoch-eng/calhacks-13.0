@@ -13,6 +13,7 @@ struct Person: Codable, Identifiable, Hashable {
     var work: String?
     var from: String?
     var interests: String?
+    var opener: String?
     var isMe: Bool?
 
     /// Background lines in display order.
@@ -32,9 +33,6 @@ struct Match {
     private(set) var people: [Person] = []
     private(set) var gallery: [String: [[Float]]] = [:]
     private(set) var avatars: [String: UIImage] = [:]
-    var threshold: Float = UserDefaults.standard.object(forKey: "threshold") as? Float ?? 0.80 {
-        didSet { UserDefaults.standard.set(threshold, forKey: "threshold") }
-    }
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     private var galleryURL: URL { docs.appendingPathComponent("gallery.json") }
@@ -75,9 +73,10 @@ struct Match {
     /// Headshot from a bundled App/Faces/<id>.jpg|png becomes the avatar only; match examples come from the photo library.
     private func seedAvatar(_ id: String) {
         guard let url = ["jpg", "jpeg", "png"].lazy.compactMap({ Bundle.main.url(forResource: id, withExtension: $0) }).first,
-              let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
-              let face = FaceEngine.faces(in: image).first else { return }
-        let avatar = UIImage(cgImage: face.crop)
+              let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return }
+        // Face crop when Vision finds one, otherwise the headshot as is.
+        guard let avatar = FaceEngine.faces(in: image).first.map({ UIImage(cgImage: $0.crop) })
+                ?? UIImage(contentsOfFile: url.path) else { return }
         avatars[id] = avatar
         try? avatar.jpegData(compressionQuality: 0.8)?.write(to: avatarURL(id))
     }
@@ -105,16 +104,8 @@ struct Match {
 
     var hasFaces: Bool { gallery.values.contains { !$0.isEmpty } }
 
-    /// Closest person regardless of threshold (for showing why something was "unknown").
-    func closest(_ embedding: [Float]) -> Match? { ranked(embedding).first }
-
-    /// Best cosine similarity per person; a match needs to clear the threshold and beat the runner-up.
-    func match(_ embedding: [Float]) -> Match? {
-        let ranked = ranked(embedding)
-        guard let top = ranked.first, top.score >= threshold else { return nil }
-        if ranked.count > 1, top.score - ranked[1].score < 0.02 { return nil }
-        return top
-    }
+    /// The team is tiny and everyone is known, so the closest person always wins.
+    func match(_ embedding: [Float]) -> Match? { ranked(embedding).first }
 
     private func ranked(_ embedding: [Float]) -> [Match] {
         people.compactMap { person -> Match? in

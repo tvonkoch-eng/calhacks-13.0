@@ -9,8 +9,8 @@ import UIKit
 enum Identification {
     case ready
     case noFace
-    case unknown(FaceHit, closest: Match?)
-    case known(Match, FaceHit)
+    case unknown(FaceHit)
+    case known(Match, FaceHit?)
 }
 
 /// Meta glasses session. Nothing streams: pressing Identify (lens button, glasses capture
@@ -161,12 +161,19 @@ enum Identification {
     /// Re-match the last face after it was saved to someone.
     func rematch() {
         switch result {
-        case .known(_, let face), .unknown(let face, _):
+        case .known(_, let face?), .unknown(let face):
             result = classify(face)
             renderLens()
         default: break
         }
     }
+
+    #if DEBUG
+    /// Screenshot hook: PREVIEW_PERSON=<id> shows that person's card without glasses.
+    func preview(_ person: Person) {
+        result = .known(Match(person: person, score: 1), nil)
+    }
+    #endif
 
     func dismiss() {
         result = .ready
@@ -175,8 +182,7 @@ enum Identification {
 
     private func classify(_ face: FaceHit) -> Identification {
         guard let store else { return .noFace }
-        if let match = store.match(face.embedding) { return .known(match, face) }
-        return .unknown(face, closest: store.closest(face.embedding))
+        return store.match(face.embedding).map { .known($0, face) } ?? .unknown(face)
     }
 
     private func teardown(status: String) {
