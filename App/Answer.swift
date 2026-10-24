@@ -17,9 +17,14 @@ enum Provider: String {
         }
     }
 
+    /// Measured against this exact system prompt on 2026-10-23 (see Tests/groq-latency.md):
+    /// qwen3.8-27b answers in ~100 ms to first token and got 20/20 of our answer-vs-SKIP cases.
+    /// Do NOT swap in Groq's gpt-oss models — they are reasoning models, so they spend the whole
+    /// token budget on hidden reasoning before emitting any content, which both doubles the
+    /// latency and, at a small max_tokens, returns an empty answer that looks like a SKIP.
     var model: String {
         switch self {
-        case .groq: "llama-3.3-70b-versatile"
+        case .groq: "qwen/qwen3.8-27b"
         case .cerebras: "llama-3.3-70b"
         case .openai: "gpt-4o-mini"
         }

@@ -127,8 +127,14 @@ struct Turn: Identifiable {
     private func commit(_ candidate: Candidate?) {
         defer { firedText = "" }
         guard let candidate else {
-            // Not a question after all (or they trailed off) — pull anything speculative back down.
-            if let turn = turns.first, turn.live, turn.answer.isEmpty { drop() }
+            // Not a question after all, or they trailed off. Abandon a speculation that has nothing
+            // to show; leave a partial answer up, since they did ask for it.
+            if let turn = turns.first, turn.live, turn.answer.isEmpty {
+                answerTask?.cancel()
+                generation += 1
+                turns[0].state = .skipped
+                drop()
+            }
             return
         }
         guard var turn = turns.first, !firedText.isEmpty else {
