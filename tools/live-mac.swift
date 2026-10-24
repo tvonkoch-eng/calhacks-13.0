@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Speech
+import CoreAudio
 
 // Live side-by-side evaluation on a Mac. One mic, several engines at once:
 //
@@ -58,17 +59,34 @@ final class VoiceClock: @unchecked Sendable {
     private var floor: Float = -50
     private var last = Date.distantPast
     private var loudest: Float = -120
+    private var buffers = 0
+    private var peaks: [Float] = []
     var lastVoice: Date { lock.lock(); defer { lock.unlock() }; return last }
     /// False when every buffer is digital silence, which is what a mic without permission delivers.
     var heardAnything: Bool { lock.lock(); defer { lock.unlock() }; return loudest > -100 }
+    /// "212 buffers, peak per channel: -38 dB, -120 dB"
+    var report: String {
+        lock.lock(); defer { lock.unlock() }
+        let p = peaks.map { String(format: "%.0f dB", 20 * log10(max($0, 1e-6))) }.joined(separator: ", ")
+        return "\(buffers) buffers, peak per channel: \(p.isEmpty ? "none" : p)"
+    }
 
     /// Returns whether this buffer is voiced.
     @discardableResult func measure(_ buffer: AVAudioPCMBuffer) -> Bool {
-        guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return false }
+        lock.lock(); buffers += 1; lock.unlock()
+        guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return false }
+        let n = Int(buffer.format.channelCount), frames = Int(buffer.frameLength)
+        // Loudest channel wins: on a multi-channel input, channel 0 alone can be silent.
         var sum: Float = 0
-        for i in 0..<Int(buffer.frameLength) { sum += data[i] * data[i] }
-        let db = 10 * log10(max(sum / Float(buffer.frameLength), 1e-12))
+        var channelPeaks = [Float](repeating: 0, count: n)
+        for c in 0..<n {
+            var s: Float = 0
+            for i in 0..<frames { let v = channels[c][i]; s += v * v; channelPeaks[c] = max(channelPeaks[c], abs(v)) }
+            sum = max(sum, s)
+        }
+        let db = 10 * log10(max(sum / Float(frames), 1e-12))
         lock.lock(); defer { lock.unlock() }
+        if peaks.count != n { peaks = channelPeaks } else { for c in 0..<n { peaks[c] = max(peaks[c], channelPeaks[c]) } }
         loudest = max(loudest, db)
         let voiced = db > floor + 8
         if voiced { last = Date() } else { floor = min(-25, max(-60, floor * 0.98 + db * 0.02)) }
@@ -424,6 +442,24 @@ enum Whisper {
 
 // MARK: - Main
 
+/// The default input device's name, e.g. "MacBook Pro Microphone" or "AirPods Pro".
+func inputName() -> String {
+    var id = AudioDeviceID(0), size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &id) == noErr else { return "unknown input" }
+    var name: Unmanaged<CFString>?
+    size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    address.mSelector = kAudioObjectPropertyName
+    guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &name) == noErr, let name else { return "unknown input" }
+    return name.takeRetainedValue() as String
+}
+
+/// Global on purpose: run() returns once everything is started, and an engine that goes out of
+/// scope stops delivering audio without any error.
+let engine = AVAudioEngine()
+var lanes: [AnyObject] = []
+
 @MainActor func run() async throws {
     guard !museKey.isEmpty else { print("No MUSE_API_KEY in Secrets.xcconfig"); exit(1) }
     // Without this, macOS can throttle a terminal process in the background — a stalled mic
@@ -431,7 +467,6 @@ enum Whisper {
     let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "live mic")
     _ = activity
 
-    let engine = AVAudioEngine()
     let format = engine.inputNode.outputFormat(forBus: 0)
     let muse = MuseLane()
     let deepgram = deepgramKey.isEmpty ? nil : DeepgramLane()
@@ -456,6 +491,7 @@ enum Whisper {
         utterances.push(buffer, voiced: voiced)
     }
     try engine.start()
+    lanes = [muse, apple, utterances] + (deepgram.map { [$0] } ?? [])
 
     say("Listening \(Int(seconds)) s on the \(Int(format.sampleRate)) Hz mic. Talk normally; Ctrl-C for the summary.")
     say("stt      MUSE (drives questions) · APPLE" + (groqKey.isEmpty ? "" : " · WHISPER")
@@ -468,7 +504,8 @@ enum Whisper {
     Task {
         try? await Task.sleep(for: .seconds(4))
         if !muse.connected { say("MUSE     still not connected after 4 s — check the network / MUSE_API_KEY") }
-        else if !clock.heardAnything { say("MIC      no sound reaching the tool — allow your terminal in System Settings → Privacy & Security → Microphone, then rerun") }
+        else if !clock.heardAnything { say("MIC      no sound reaching the tool (\(clock.report)) — allow your terminal in System Settings → Privacy & Security → Microphone, then rerun") }
+        say("MIC      \(inputName()) · \(format.channelCount) ch @ \(Int(format.sampleRate)) Hz · \(clock.report)")
     }
     Task {
         if let problem = await apple.start() { say("APPLE    off: \(problem)") }
