@@ -76,21 +76,26 @@ struct Answerer {
 
     private static let prompt = """
     You help someone wearing smart glasses during a live, in-person conversation. The input is a \
-    live speech transcript of a question someone just asked out loud, sometimes after the last few \
-    lines of the conversation. The question may be cut off mid-sentence — infer the obvious full \
-    question and answer that. Use the conversation only to work out what the question refers to. \
-    Speech recognition mishears jargon: read "the sharp on a market making book" as the Sharpe \
-    ratio, and so on, when the conversation makes the meaning clear.
+    live speech transcript of a question someone just asked out loud, sometimes after what's known \
+    about the other person and the last few lines of the conversation. The question may be cut off \
+    mid-sentence — infer the obvious full question and answer that. Speech recognition mishears \
+    jargon: read "the sharp on a market making book" as the Sharpe ratio, and so on, when the \
+    conversation makes the meaning clear.
 
     Answer in ONE line of at most 12 words. No preamble, no restating the question, no punctuation \
-    at the end. If the answer is a number or a name, lead with it. Plain facts only.
+    at the end. If the answer is a number or a name, lead with it. Plain facts only. If the \
+    conversation or what's known about them answers it, answer from that.
+
+    Reply with exactly WEB, and nothing else, if it is a public fact you can't give reliably from \
+    memory: news or anything recent, prices, scores, schedules, or a specific company, product or \
+    paper you don't know well. You do know the current date and time (below): use them for time \
+    zones, ages and countdowns.
 
     Reply with exactly SKIP, and nothing else, if the question is personal or social (about the \
-    people talking, their feelings, plans, opinions or preferences, or anything the conversation \
-    shows is theirs: their company, project, school, family), rhetorical, a request to do \
-    something, too fragmentary to guess at, or needs live information you don't have (schedules, \
-    prices, scores, today's news). You do know the current date and time (below): use them for \
-    time zones, ages and countdowns. Never guess about the people talking.
+    people talking, their feelings, plans, opinions or preferences, or anything that's theirs: \
+    their company, project, school, family) and nothing above answers it; or if it is rhetorical, \
+    a request to do something, or too fragmentary to guess at. Never guess about the people \
+    talking, and never send them to the web.
     """
 
     /// "I don't have real-time…", "Sorry, …": a refusal on the lens is worse than nothing, so it is
@@ -141,7 +146,8 @@ struct Answerer {
     }
 
     /// Streams the answer. Yields a growing string; the last value is the whole answer.
-    /// Yields nothing at all when the model says SKIP.
+    /// Yields nothing at all when the model says SKIP; throws `AnswerError.lookup` when it says the
+    /// answer needs the web.
     /// `context` is the last few lines of the conversation, so "when did it come out" can resolve
     /// "it". `provider`, `key` and `model` default to the app's configuration.
     static func stream(_ question: String, context: String = "", provider: Provider = provider,
@@ -191,14 +197,26 @@ struct Answerer {
                         answer += chunk
                         // Bail the instant the model starts refusing; nothing reaches the lens. Some
                         // models stream "SKIP" as "SK" + "IP", so hold back anything that could still
-                        // turn into it.
+                        // turn into it, or into WEB.
                         let head = answer.trimmed.uppercased()
                         if head.hasPrefix("SKIP") || Answerer.refuses(head) {
                             continuation.finish()
                             return
                         }
-                        if "SKIP".hasPrefix(head) || head == "I" || head == "AS" { continue }
+                        // "WEB", "WEB." or "WEB: …" is the sentinel; "Webb telescope" is an answer.
+                        if head.hasPrefix("WEB"), !(head.dropFirst(3).first?.isLetter ?? false) {
+                            if head.count > 3 {
+                                continuation.finish(throwing: AnswerError.lookup)
+                                return
+                            }
+                            continue
+                        }
+                        if "SKIP".hasPrefix(head) || "WEB".hasPrefix(head) || head == "I" || head == "AS" { continue }
                         continuation.yield(answer.trimmed)
+                    }
+                    if answer.trimmed.uppercased() == "WEB" {
+                        continuation.finish(throwing: AnswerError.lookup)
+                        return
                     }
                     continuation.finish()
                 } catch is CancellationError {
@@ -215,11 +233,14 @@ struct Answerer {
 enum AnswerError: LocalizedError {
     case unconfigured
     case http(Int)
+    /// A public fact the model can't give from memory: look it up (Aid.lookUp).
+    case lookup
 
     var errorDescription: String? {
         switch self {
         case .unconfigured: "No answer API key — add one to Secrets.xcconfig"
         case .http(let code): "Answer service returned \(code)"
+        case .lookup: "Needs a lookup"
         }
     }
 }
