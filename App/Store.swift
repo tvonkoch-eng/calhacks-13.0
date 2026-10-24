@@ -38,6 +38,8 @@ struct Match {
     /// Every time each person was recognized, oldest first.
     private(set) var encounters: [String: [Date]] = [:]
     private(set) var notes: [String: String] = [:]
+    /// Small copies of avatars for the lens; every lens update ships the image over Bluetooth.
+    @ObservationIgnored private var lensAvatars: [String: UIImage] = [:]
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     private var galleryURL: URL { docs.appendingPathComponent("gallery.json") }
@@ -141,6 +143,15 @@ struct Match {
     var metToday: Int { lastSeen.values.filter { Calendar.current.isDateInToday($0) }.count }
     func samples(_ id: String) -> Int { gallery[id]?.count ?? 0 }
 
+    func lensAvatar(_ id: String) -> UIImage? {
+        if let cached = lensAvatars[id] { return cached }
+        guard let avatar = avatars[id] else { return nil }
+        let size = CGSize(width: 96, height: 96)
+        let small = UIGraphicsImageRenderer(size: size).image { _ in avatar.draw(in: CGRect(origin: .zero, size: size)) }
+        lensAvatars[id] = small
+        return small
+    }
+
     func enroll(_ id: String, _ face: FaceHit) {
         gallery[id, default: []].append(face.embedding)
         if avatars[id] == nil {
@@ -152,6 +163,7 @@ struct Match {
     }
 
     func reset(_ id: String) {
+        lensAvatars[id] = nil
         gallery[id] = nil
         avatars[id] = nil
         try? FileManager.default.removeItem(at: avatarURL(id))

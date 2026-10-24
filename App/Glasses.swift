@@ -30,8 +30,9 @@ enum Identification {
     case known(Match, FaceHit?)
 }
 
-/// Meta glasses session. Nothing streams: pressing Identify (lens button, glasses capture
-/// button, or the phone) takes one photo, matches the largest face, and shows the card on the lens.
+/// Meta glasses session. Pressing Identify (lens button, glasses capture button, or the phone)
+/// grabs one frame from the glasses camera, matches the largest face, and shows the card on the lens.
+/// The camera stream only runs around a scan and stays warm briefly so the next one is instant.
 @MainActor @Observable final class Glasses {
     var status = "Not connected"
     var connected = false
@@ -52,10 +53,17 @@ enum Identification {
     @ObservationIgnored private var displayReady = false
     @ObservationIgnored private var tokens: [any AnyListenerToken] = []
     @ObservationIgnored private var inputTask: Task<Void, Never>?
-    @ObservationIgnored private var photoWaiter: CheckedContinuation<CIImage?, Never>?
     @ObservationIgnored private var frameWaiter: CheckedContinuation<CIImage?, Never>?
+    @ObservationIgnored private var frameRequest = UUID()
     @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces", qos: .userInitiated)
-    @ObservationIgnored private var photoBytes = 0
+    /// Starting the glasses stream costs ~2 s, so it stays up this long after a scan.
+    @ObservationIgnored private let warmFor: Duration = .seconds(20)
+    @ObservationIgnored private var streamLive = false
+    @ObservationIgnored private var coolDown: Task<Void, Never>?
+    /// Set by Disconnect so we don't reconnect behind the user's back.
+    @ObservationIgnored private var userDisconnected = false
+    @ObservationIgnored private var lastAutoReconnect = Date.distantPast
+    @ObservationIgnored private var watchTask: Task<Void, Never>?
     /// Pressing Identify on the glasses while someone is on screen asks first, so a stray pinch
     /// can't wipe the person you're talking to.
     @ObservationIgnored private var confirming = false
@@ -85,6 +93,7 @@ enum Identification {
 
     func connect() async {
         guard !connected, !connecting else { return }
+        userDisconnected = false
         connecting = true
         defer { connecting = false }
         let wearables = Wearables.shared
@@ -131,38 +140,31 @@ enum Identification {
             let session = try wearables.createSession(deviceSelector: selector)
             self.session = session
             tokens.append(session.statePublisher.listen { [weak self] state in
-                guard state == .stopped else { return }
-                Task { @MainActor in self?.teardown(status: "Glasses disconnected") }
+                Task { @MainActor in self?.sessionChanged("\(state)", stopped: state == .stopped) }
             })
             // Subscribe before start(): a stream created afterwards can miss the .started transition.
             let states = session.stateStream()
             try session.start()
             for await state in states where state == .started { break }
 
-            // The stream is never started except as a one-frame fallback; photos come from camera.photo.
-            guard let camera = try session.addCamera(config: StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 15)) else {
+            // Standalone photo capture failed instantly on every scan (0 bytes in ~20 ms), so frames come
+            // from the stream. Medium (504x896) keeps Bluetooth load down; faces at talking distance
+            // are still ~150 px.
+            guard let camera = try session.addCamera(config: StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 15)) else {
                 status = "Glasses camera unavailable"
                 return
             }
-            tokens.append(camera.photo.photoDataPublisher.listen { [weak self] capture in
-                let image = CIImage(data: capture.imageData, options: [.applyOrientationProperty: true])
-                let bytes = capture.imageData.count
-                Task { @MainActor in
-                    self?.photoBytes = bytes
-                    self?.resumePhoto(image)
-                }
-            })
-            tokens.append(camera.photo.errorPublisher.listen { [weak self] error in
-                Task { @MainActor in
-                    self?.status = error.localizedDescription
-                    self?.resumePhoto(nil)
-                }
-            })
             tokens.append(camera.stream.videoFramePublisher.listen { [weak self] frame in
-                guard let image = frame.makeUIImage().flatMap({ CIImage(image: $0) }) else { return }
-                Task { @MainActor in self?.resumeFrame(image) }
+                Task { @MainActor in
+                    // Only decode frames someone is waiting for.
+                    guard let self, self.frameWaiter != nil else { return }
+                    self.resumeFrame(frame.makeUIImage().flatMap { CIImage(image: $0) })
+                }
             })
-            camera.photo.start()
+            tokens.append(camera.stream.errorPublisher.listen { error in
+                let message = error.localizedDescription
+                Task { @MainActor in SpeedLog.record(["event": "streamError", "error": message]) }
+            })
             self.camera = camera
 
             if wearables.deviceForIdentifier(found)?.supportsDisplay() == true {
@@ -180,6 +182,8 @@ enum Identification {
 
             connected = true
             status = display == nil ? "Connected" : "Connected · lens on"
+            SpeedLog.record(["event": "connected"])
+            watchForGlasses()
         } catch {
             status = (error as? LocalizedError)?.errorDescription ?? "Couldn't connect to your glasses. Try again."
         }
@@ -203,7 +207,43 @@ enum Identification {
         }
     }
 
+    /// The device decides when a session pauses or ends (band hiccups, another app, folding the
+    /// glasses). Log every transition; on an unexpected stop, try one reconnect.
+    private func sessionChanged(_ state: String, stopped: Bool) {
+        SpeedLog.record(["event": "session", "state": state])
+        guard stopped, connected else { return }
+        teardown(status: "Glasses disconnected")
+        reconnectSoon(reason: "sessionStopped")
+    }
+
+    /// At most one automatic reconnect every 30 s, so a device that keeps ending the session
+    /// can't put us in a loop.
+    private func reconnectSoon(reason: String) {
+        guard !userDisconnected, Date().timeIntervalSince(lastAutoReconnect) > 30 else { return }
+        lastAutoReconnect = Date()
+        SpeedLog.record(["event": "reconnect", "reason": reason])
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            await self?.connect()
+        }
+    }
+
+    /// Reconnect when the glasses come back (unfolded, back in range).
+    private func watchForGlasses() {
+        guard watchTask == nil else { return }
+        let finder = AutoDeviceSelector(wearables: Wearables.shared)
+        watchTask = Task { [weak self] in
+            var available = true
+            for await id in finder.activeDeviceStream() {
+                guard let self else { return }
+                if id != nil, !available, !self.connected, !self.connecting { self.reconnectSoon(reason: "glassesAvailable") }
+                available = id != nil
+            }
+        }
+    }
+
     func disconnect() {
+        userDisconnected = true
         display?.stop()
         session?.stop()
         teardown(status: "Not connected")
@@ -211,34 +251,41 @@ enum Identification {
 
     /// `source` is only for the speed log: phone, lens, or glasses (capture/action button).
     func identify(source: String = "phone") async {
-        guard connected, !identifying, let store else { return }
+        guard connected, !identifying, let store else {
+            SpeedLog.record(["event": "skipped", "source": source,
+                             "reason": !connected ? "notConnected" : identifying ? "busy" : "noStore"])
+            return
+        }
         let start = CFAbsoluteTimeGetCurrent()
         identifying = true
-        var log: [String: Any] = ["source": source, "resolution": photoResolution.rawValue, "quality": photoQuality.rawValue]
-        defer { identifying = false }
-
-        async let capturing = capturePhoto()
-        renderLens()
-        var image = await capturing
-        log["captureMs"] = ms(since: start)
-        log["path"] = "photo"
-        log["bytes"] = photoBytes
-        if image == nil {
-            let fallback = CFAbsoluteTimeGetCurrent()
-            image = await grabFrame()
-            log["path"] = "frame"
-            log["fallbackMs"] = ms(since: fallback)
+        var log: [String: Any] = ["source": source, "resolution": "medium-stream", "warm": streamLive]
+        defer {
+            identifying = false
+            coolStream()
         }
-        guard let image else {
+        renderLens()
+
+        // A cold stream's first frames can be dark while exposure settles: give it three frames.
+        var scan: (hit: FaceHit?, timing: FaceTiming) = (nil, FaceTiming())
+        var frames = 0
+        repeat {
+            guard let image = await nextFrame() else { break }
+            frames += 1
+            if frames == 1 {
+                log["frameMs"] = ms(since: start)
+                log["width"] = Int(image.extent.width)
+                log["height"] = Int(image.extent.height)
+            }
+            scan = await scanLargest(image)
+        } while scan.hit == nil && frames < 3
+        log["frames"] = frames
+        log["captureMs"] = ms(since: start)
+        guard frames > 0 else {
             result = .noFace
             log["outcome"] = "noImage"
             await finish(&log, start: start)
             return
         }
-        log["width"] = Int(image.extent.width)
-        log["height"] = Int(image.extent.height)
-
-        let scan = await scanLargest(image)
         log["detectMs"] = (scan.timing.detectMs * 10).rounded() / 10
         log["embedMs"] = (scan.timing.embedMs * 10).rounded() / 10
         log["faces"] = scan.timing.faces
@@ -265,15 +312,6 @@ enum Identification {
         if await sendLens() { log["lensMs"] = ms(since: lensStart) }
         log["totalMs"] = ms(since: start)
         SpeedLog.record(log)
-    }
-
-    /// Photo size is tunable without a rebuild: launch with `-photoResolution small -photoQuality low`.
-    private var photoResolution: PhotoResolution {
-        UserDefaults.standard.string(forKey: "photoResolution").flatMap(PhotoResolution.init(rawValue:)) ?? .medium
-    }
-
-    private var photoQuality: PhotoQuality {
-        UserDefaults.standard.string(forKey: "photoQuality").flatMap(PhotoQuality.init(rawValue:)) ?? .medium
     }
 
     private func recordSeen() {
@@ -367,7 +405,8 @@ enum Identification {
         pendingSend = nil
         answer = nil
         result = .ready
-        resumePhoto(nil)
+        coolDown?.cancel()
+        streamLive = false
         resumeFrame(nil)
         self.status = status
     }
@@ -393,39 +432,38 @@ enum Identification {
 
     // MARK: - Camera
 
-    private func capturePhoto() async -> CIImage? {
-        guard let photo = camera?.photo else { return nil }
-        return await withCheckedContinuation { done in
-            photoWaiter = done
-            photoBytes = 0
-            photo.capturePhoto(resolution: photoResolution, quality: photoQuality)
-            Task {
-                try? await Task.sleep(for: .seconds(8))
-                resumePhoto(nil)
-            }
-        }
-    }
-
-    /// Fallback when photo capture isn't available: run the stream just long enough for one frame.
-    private func grabFrame() async -> CIImage? {
+    /// The next frame from the glasses camera, starting the stream if it's cold.
+    private func nextFrame() async -> CIImage? {
         guard let camera else { return nil }
-        camera.photo.stop()
-        camera.stream.start()
-        let frame = await withCheckedContinuation { done in
+        coolDown?.cancel()
+        if !streamLive {
+            camera.stream.start()
+            streamLive = true
+        }
+        let request = UUID()
+        frameRequest = request
+        return await withCheckedContinuation { done in
             frameWaiter = done
-            Task {
+            Task { [weak self] in
                 try? await Task.sleep(for: .seconds(5))
-                resumeFrame(nil)
+                // Only time out this request, never a later one.
+                guard let self, self.frameRequest == request else { return }
+                self.resumeFrame(nil)
             }
         }
-        camera.stream.stop()
-        camera.photo.start()
-        return frame
     }
 
-    private func resumePhoto(_ image: CIImage?) {
-        photoWaiter?.resume(returning: image)
-        photoWaiter = nil
+    /// Stop the stream once nobody has scanned for `warmFor`.
+    private func coolStream() {
+        coolDown?.cancel()
+        guard streamLive else { return }
+        coolDown = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.warmFor)
+            guard !Task.isCancelled, self.streamLive else { return }
+            self.camera?.stream.stop()
+            self.streamLive = false
+        }
     }
 
     private func resumeFrame(_ image: CIImage?) {
@@ -458,7 +496,7 @@ enum Identification {
     private func hud() -> FlexBox {
         LensCards.hud(
             result: result,
-            avatar: { [store] in store?.avatars[$0] },
+            avatar: { [store] in store?.lensAvatar($0) },
             identifying: identifying,
             confirming: confirming,
             connected: store?.connectedCount ?? 0,
