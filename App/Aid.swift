@@ -140,6 +140,26 @@ enum Talk {
         return !all.isEmpty && Double(all.intersection(said).count) / Double(all.count) >= 0.8
     }
 
+    /// Was `term` (or, for a misheard term defined under its real name, most of its longer words)
+    /// just said? Keeps the coach from defining things from three minutes ago.
+    static func mentioned(_ term: String, in recent: String) -> Bool {
+        let said = Set(recent.split(separator: " ").map(String.init))
+        let parts = normalized(term).split(separator: " ").map(String.init)
+        guard !parts.isEmpty else { return false }
+        if recent.contains(normalized(term)) { return true }
+        let long = parts.filter { $0.count >= 4 }
+        guard !long.isEmpty else { return parts.allSatisfy(said.contains) }
+        return Double(long.filter { word in said.contains { $0.hasPrefix(String(word.prefix(4))) } }.count) / Double(long.count) >= 0.5
+    }
+
+    /// "No, this is my first hackathon": a reply on the wearer's behalf, claiming things about them
+    /// the aid can't know. An interjection asks or says something to the other person instead.
+    static func speaksForWearer(_ text: String) -> Bool {
+        let t = text.lowercased().replacingOccurrences(of: "\u{2019}", with: "'").trimmingCharacters(in: .whitespaces)
+        return ["no,", "no ", "nope", "yes", "yeah", "yep", "i ", "i'm", "i've", "i'd", "i'll", "my ", "me "]
+            .contains { t.hasPrefix($0) }
+    }
+
     /// "Hey, I'm Priya" → "Priya". Only a capitalized word after a first-person introduction, so
     /// "I'm building" or "I'm really tired" never count.
     static func introducedName(in text: String) -> String? {
@@ -274,16 +294,22 @@ enum Talk {
         lastSpeech = Date()
         silent = false
         partial = text
+        // Diarized turns alternate, so a turn in progress right after theirs is most likely ours.
+        let mine = predictedWearer()
+        compositor.hold(mine, at: Date())
         let (closed, open) = Talk.sentences(text)
         // A sentence closed inside the turn: to the answer lane that is an endpoint. Diarized turns
         // run until the speaker changes, so "Do you know X? Anyway, …" must not wait for "anyway".
         if closed.count > closedInTurn {
-            for sentence in closed[closedInTurn...] { answerHeard(sentence, endpointed: true) }
+            for sentence in closed[closedInTurn...] { answerHeard(sentence, endpointed: true, mine: mine) }
+            let newest = closed[closedInTurn...].joined(separator: " ")
             closedInTurn = closed.count
-            // A long turn by the other person gets coached mid-way, at most every 10 s.
-            if !predictedWearer(), text.split(separator: " ").count >= 15, Date().timeIntervalSince(lastCoach) > 10 { coachSoon() }
+            // Coach each real sentence of theirs as it lands, so a definition is up while they're
+            // still talking and the wearer is listening anyway.
+            if !mine, newest.split(separator: " ").count >= 6, Date().timeIntervalSince(lastCoach) > 4 { coachSoon() }
         }
-        if !open.isEmpty { answerHeard(open, endpointed: false) }
+        if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
+        publish()
     }
 
     /// A finished turn. `level` is its loudness in dB, for telling the wearer apart.
@@ -292,13 +318,15 @@ enum Talk {
         guard !text.isEmpty else { return }
         lastSpeech = Date()
         silent = false
+        let mine = roles.isWearer(speaker)
         let (closed, open) = Talk.sentences(text)
         if closed.count > closedInTurn {
-            for sentence in closed[closedInTurn...] { answerHeard(sentence, endpointed: true) }
+            for sentence in closed[closedInTurn...] { answerHeard(sentence, endpointed: true, mine: mine) }
         }
-        if !open.isEmpty { answerHeard(open, endpointed: true) }
+        if !open.isEmpty { answerHeard(open, endpointed: true, mine: mine) }
         partial = ""
         closedInTurn = 0
+        compositor.hold(false, at: Date())
 
         if let speaker {
             let guessed = roles.wearer
@@ -331,8 +359,12 @@ enum Talk {
                 roles.lock(speaker)
                 log(.roles, "You are speaker \(speaker)", detail: "you said the suggestion")
             }
-            publish()
+        } else if let followup = lens.followup, roles.isWearer(speaker), !Talk.isBackchannel(text) {
+            // An interjection is for the wearer's next turn. They've taken it; the moment passed.
+            compositor.pin(nil, at: Date())
+            log(.followup, "passed", detail: followup)
         }
+        publish()
 
         if !roles.isWearer(speaker), !Talk.isBackchannel(text) { coachSoon() }
         watchForSilence()
@@ -379,8 +411,15 @@ enum Talk {
     @ObservationIgnored private var closedInTurn = 0
     @ObservationIgnored private var nextCard = 0
 
-    private func answerHeard(_ text: String, endpointed: Bool) {
+    /// `mine`: the wearer is the one asking. Then the other person is about to answer, and an
+    /// answer on the lens only competes with them (the judge, on "how long does that take":
+    /// "encouraging Toby to look away from the person actually answering").
+    private func answerHeard(_ text: String, endpointed: Bool, mine: Bool) {
         guard config.answers != nil else { return }
+        if mine, roles.known {
+            if endpointed { commit(nil) }
+            return
+        }
         guard let candidate = QuestionGate.candidate(in: text) else {
             if endpointed { commit(nil) }
             return
@@ -533,8 +572,11 @@ enum Talk {
         let now = Date()
         switch turn.state {
         case .thinking, .answering, .done:
-            compositor.show(Card(kind: .answer, title: turn.answer.isEmpty ? "\u{2026}" : turn.answer,
-                                 detail: Self.echo(turn.question), live: turn.state != .done, id: turn.card), at: now)
+            // Nothing goes up until there is an answer: a "…" for every question-shaped phrase was
+            // half of everything on the lens, and most of those turned out to be SKIPs.
+            guard !turn.answer.isEmpty else { return }
+            compositor.show(Card(kind: .answer, title: turn.answer, detail: Self.echo(turn.question),
+                                 live: turn.state != .done, id: turn.card), at: now)
         case .skipped, .failed:
             compositor.remove(id: turn.card, kind: .answer, at: now)
         }
@@ -583,7 +625,8 @@ enum Talk {
             coachPending = true
             return
         }
-        guard let coach = model(config.coach, blockedUntil: coachBlockedUntil, reserve: 1) else {
+        // Answers get first claim on a capped primary: the coach leaves three of the minute's calls.
+        guard let coach = model(config.coach, blockedUntil: coachBlockedUntil, reserve: 3) else {
             coachPending = true   // rate-limited with no backup: blockCoach retries when it lifts
             return
         }
@@ -657,7 +700,8 @@ enum Talk {
     }
 
     private func coachInput() -> Coach.Input {
-        var transcript = transcriptLines(last: 12)
+        // Networking conversations are short; the whole of one fits, so nothing said early is lost.
+        var transcript = transcriptLines(last: 24)
         if !partial.isEmpty { transcript.append("\(predictedTag()) (still talking): \(partial)") }
         let lull = silent
         if silent {
@@ -671,7 +715,13 @@ enum Talk {
 
     private func apply(_ advice: Coach.Advice, interject: Bool) {
         let now = Date()
-        for term in advice.define where !defined.contains(where: { $0.caseInsensitiveCompare(term.term) == .orderedSame }) {
+        let recent = Talk.normalized((lines.suffix(2).map(\.text) + [partial]).joined(separator: " "))
+        // Only a term just said, of real substance, that the coach is sure of: "LO — likely
+        // misheard LLM" (it was Elo) is worse than nothing.
+        let unsure = ["misheard", "likely", "probably", "possibly", "unclear", "perhaps"]
+        for term in advice.define where !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + term.meaning)) })
+            && term.term.count >= 3 && Talk.mentioned(term.term, in: recent)
+            && !unsure.contains(where: term.meaning.lowercased().contains) {
             defined.append(term.term)
             nextCard += 1
             compositor.show(Card(kind: .definition, title: term.term, detail: term.meaning, id: nextCard), at: now)
@@ -688,7 +738,7 @@ enum Talk {
         case .say(let text):
             // Advice is computed on the transcript as it was; if the wearer has since said it, it's stale.
             let said = lines.suffix(2).contains { roles.tag($0.speaker) != "THEM" && Talk.echoes($0.text, text) }
-            if interject, !said, Talk.normalized(text) != Talk.normalized(lens.followup ?? "") {
+            if interject, !said, !Talk.speaksForWearer(text), Talk.normalized(text) != Talk.normalized(lens.followup ?? "") {
                 lastInterjection = now
                 compositor.pin(text, at: now)
                 log(.followup, text)
@@ -747,7 +797,7 @@ enum Talk {
         log(.lookup, query, detail: "looking up with \(researcher.name)")
         let context = transcript(last: 6)
         let started = Date()
-        let condenser = model(config.coach, blockedUntil: coachBlockedUntil, reserve: 1)
+        let condenser = model(config.coach, blockedUntil: coachBlockedUntil, reserve: 3)
         researchTask = Task { [weak self] in
             do {
                 var finding = try await researcher.research(query, context: context)

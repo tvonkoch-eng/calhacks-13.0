@@ -28,6 +28,8 @@ import Observation
     /// Stream this file instead of the mic (testing). Called back with `onFileEnd` when it ran out.
     @ObservationIgnored var file: URL?
     @ObservationIgnored var onFileEnd: (() -> Void)?
+    /// When the file's first audio went out: time zero of the recording, for lining up traces.
+    @ObservationIgnored private(set) var fileStarted: Date?
 
     static let model = "muse-voice-transcribe-1.0"
     static let mode = "DIARIZATION"
@@ -129,6 +131,7 @@ import Observation
             while !uplink.ready, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
             let chunk = AVAudioFrameCount(format.sampleRate / 20)   // 50 ms
             var clock = Date()
+            self?.fileStarted = clock
             var trailing: TimeInterval = 0
             while !Task.isCancelled, trailing < 3 {
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunk),

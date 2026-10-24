@@ -78,7 +78,9 @@ struct Answerer {
     You help someone wearing smart glasses during a live, in-person conversation. The input is a \
     live speech transcript of a question someone just asked out loud, sometimes after the last few \
     lines of the conversation. The question may be cut off mid-sentence — infer the obvious full \
-    question and answer that. Use the conversation only to work out what the question refers to.
+    question and answer that. Use the conversation only to work out what the question refers to. \
+    Speech recognition mishears jargon: read "the sharp on a market making book" as the Sharpe \
+    ratio, and so on, when the conversation makes the meaning clear.
 
     Answer in ONE line of at most 12 words. No preamble, no restating the question, no punctuation \
     at the end. If the answer is a number or a name, lead with it. Plain facts only.

@@ -10,10 +10,17 @@ import Foundation
 // While it runs: type m + Enter if the last line was you, q + Enter to stop.
 
 var arguments = Array(CommandLine.arguments.dropFirst())
-var file: URL?
-if let i = arguments.firstIndex(of: "--file"), i + 1 < arguments.count {
-    file = URL(fileURLWithPath: arguments[i + 1])
-    arguments.removeSubrange(i...(i + 1))
+func option(_ name: String) -> String? {
+    guard let i = arguments.firstIndex(of: name), i + 1 < arguments.count else { return nil }
+    defer { arguments.removeSubrange(i...(i + 1)) }
+    return arguments[i + 1]
+}
+let file = option("--file").map { URL(fileURLWithPath: $0) }
+/// --trace x.jsonl: every line, event and lens state with its time in the recording, for
+/// tools/evaluate.py.
+let trace = option("--trace").flatMap { path -> FileHandle? in
+    FileManager.default.createFile(atPath: path, contents: nil)
+    return FileHandle(forWritingAtPath: path)
 }
 let seconds = Double(arguments.first ?? "") ?? 1800
 let t0 = Date()
@@ -96,8 +103,27 @@ func drawLens(_ view: LensView) {
                 self?.finish()
             }
         }
-        aid.onEvent = { [weak self] event in self?.show(event) }
-        aid.onLens = { [weak self] view in self?.lensChanged(view) }
+        aid.onEvent = { [weak self] event in
+            self?.show(event)
+            self?.record(["kind": "\(event.kind)", "text": event.text, "detail": event.detail,
+                          "speaker": event.speaker ?? NSNull(), "tag": self.map { $0.aid.tag(event.speaker) } ?? "?"], at: event.at)
+        }
+        aid.onLens = { [weak self] view in
+            self?.lensChanged(view)
+            let card: Any = view.card.map { ["kind": "\($0.kind)", "title": $0.title, "detail": $0.detail, "live": $0.live,
+                                              "id": $0.id] } ?? NSNull()
+            self?.record(["kind": "lens", "header": view.header ?? NSNull(), "card": card,
+                          "followup": view.followup ?? NSNull()], at: Date())
+        }
+    }
+
+    /// One trace line, timed from the start of the recording (or of the run, on the mic).
+    func record(_ fields: [String: Any], at date: Date) {
+        guard let trace else { return }
+        var line = fields
+        line["t"] = (date.timeIntervalSince(listener.fileStarted ?? t0) * 100).rounded() / 100
+        guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]) else { return }
+        trace.write(data + Data("\n".utf8))
     }
 
     func start() async {
@@ -180,6 +206,10 @@ func drawLens(_ view: LensView) {
         if let header = aid.them.header {
             out("         them: \(header)" + (aid.them.facts.isEmpty ? "" : "; " + aid.them.facts.joined(separator: "; ")))
         }
+        let labels = Set(aid.lines.compactMap(\.speaker))
+        record(["kind": "summary", "timings": aid.timings, "them": aid.them.summary,
+                "roles": Dictionary(uniqueKeysWithValues: labels.map { ($0, aid.tag($0)) })], at: Date())
+        try? trace?.close()
         exit(0)
     }
 }

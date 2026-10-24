@@ -42,22 +42,35 @@ struct Card: Equatable {
 ///    `minDwell` (`answerDwell` for a finished answer; never while one streams). Otherwise it
 ///    queues, and a queued card that waited longer than `maxWait` is dropped: an old definition
 ///    is worse than none.
+/// 4. While the wearer talks (`hold`), nothing new goes up but answers: a card that lands mid-
+///    sentence pulls their eyes off the person. It waits, and shows when they stop if still fresh.
 struct Compositor {
     private(set) var view = LensView()
 
     static let ttl: [Card.Kind: TimeInterval] = [.answer: 12, .definition: 8, .research: 14]
     static let minDwell: TimeInterval = 2.5
     static let answerDwell: TimeInterval = 5
-    static let maxWait: TimeInterval = 8
-    /// An interjection is for the moment it was offered; then it fades.
-    static let followupLife: TimeInterval = 45
+    /// How long a card may wait for the slot (or for the wearer to stop talking) before it is
+    /// stale. In a fast conversation a definition is worth little five seconds on.
+    static let maxWait: [Card.Kind: TimeInterval] = [.answer: 3, .definition: 5, .research: 15]
+    /// An interjection is for the wearer's next turn (Aid clears it once they've spoken); if they
+    /// don't take it, it fades.
+    static let followupLife: TimeInterval = 20
 
     private var shownAt = Date.distantPast
     private var expiresAt: Date?
     private var waiting: [(card: Card, since: Date)] = []
     private var pinnedAt = Date.distantPast
+    /// While the wearer talks nothing new goes up except answers; a suggestion waits here.
+    private(set) var holding = false
+    private var heldFollowup: (text: String, since: Date)?
 
     mutating func show(_ card: Card, at now: Date) {
+        if holding, card.kind != .answer, view.card?.id != card.id {
+            waiting.removeAll { $0.card.kind == card.kind && $0.card.title == card.title }
+            waiting.append((card, now))
+            return
+        }
         if let current = view.card {
             if current.id == card.id, current.kind == card.kind {
                 // The same card, updated: an answer streaming in, or finishing.
@@ -91,8 +104,25 @@ struct Compositor {
     /// `nil` or empty clears the suggestion.
     mutating func pin(_ followup: String?, at now: Date) {
         let text = followup?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if holding, let text, !text.isEmpty {
+            heldFollowup = (text, now)
+            return
+        }
+        heldFollowup = nil
         view.followup = (text?.isEmpty ?? true) ? nil : text
         pinnedAt = now
+    }
+
+    /// The wearer started or stopped talking. Letting go puts up whatever waited, if still fresh.
+    mutating func hold(_ on: Bool, at now: Date) {
+        guard on != holding else { return }
+        holding = on
+        guard !on else { return }
+        if let held = heldFollowup {
+            heldFollowup = nil
+            if now.timeIntervalSince(held.since) <= Self.maxWait[.definition]! { pin(held.text, at: now) }
+        }
+        tick(at: now)
     }
 
     mutating func setHeader(_ header: String?) {
@@ -108,6 +138,7 @@ struct Compositor {
         if view.followup != nil, now.timeIntervalSince(pinnedAt) >= Self.followupLife {
             view.followup = nil
         }
+        guard !holding else { return }
         // A waiting card can also take over once the current one has had its minimum time up.
         if let current = view.card, let first = waiting.first, replaces(current, with: first.card, at: now) {
             waiting.removeFirst()
@@ -125,6 +156,7 @@ struct Compositor {
         var dates: [Date] = []
         if let expiresAt { dates.append(expiresAt) }
         if view.followup != nil { dates.append(pinnedAt.addingTimeInterval(Self.followupLife)) }
+        if view.card == nil, !holding, let first = waiting.first { dates.append(first.since) }
         if let card = view.card, !waiting.isEmpty {
             dates.append(shownAt.addingTimeInterval(card.kind == .answer ? Self.answerDwell : Self.minDwell))
         }
@@ -147,8 +179,8 @@ struct Compositor {
     }
 
     private mutating func promote(at now: Date) {
-        guard view.card == nil else { return }
-        waiting.removeAll { now.timeIntervalSince($0.since) > Self.maxWait }
+        guard view.card == nil, !holding else { return }
+        waiting.removeAll { now.timeIntervalSince($0.since) > Self.maxWait[$0.card.kind] ?? 5 }
         // Most important first, then oldest.
         guard let index = waiting.indices.max(by: { waiting[$0].card.kind < waiting[$1].card.kind }) else { return }
         let next = waiting.remove(at: index)

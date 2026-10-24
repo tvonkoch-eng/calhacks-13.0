@@ -123,8 +123,10 @@ enum QuestionGate {
             if ["do", "would"].contains(words[1]), count > 3, opinion.contains(words[3]) { return nil }
         }
 
+        // A question mark alone isn't enough: "like live captions?", "really?", "no way?" are the
+        // listener reacting, not asking anything the lens could answer.
         let interrogative = wh.contains(first) || aux.contains(first) || peeled
-        guard interrogative || explicitMark else { return nil }
+        guard interrogative else { return nil }
 
         // Strong once there is enough of the clause to guess the whole question *and* the clause
         // does not stop mid-phrase. An explicit "?" from the recognizer means it is definitely done.

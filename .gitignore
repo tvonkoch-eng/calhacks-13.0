@@ -5,3 +5,4 @@ DerivedData/
 build-sim/
 Secrets.xcconfig
 .venv-moss/
+.build/

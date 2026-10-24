@@ -61,8 +61,30 @@ do {
     var stale = Compositor()
     stale.show(answer("x", live: true), at: at(0))
     stale.show(definition, at: at(0))
-    stale.remove(id: 9, kind: .answer, at: at(Compositor.maxWait + 1))
+    stale.remove(id: 9, kind: .answer, at: at(Compositor.maxWait[.definition]! + 1))
     check(stale.view.card == nil, "a definition that waited too long is dropped")
+}
+
+// Nothing new goes up while the wearer talks, except an answer.
+do {
+    var lens = Compositor()
+    lens.hold(true, at: at(0))
+    lens.show(definition, at: at(0.5))
+    lens.pin("What made you pick CAR T?", at: at(0.6))
+    check(lens.view.card == nil && lens.view.followup == nil, "held while the wearer talks")
+    lens.show(answer("2,225 nautical miles", live: false), at: at(1))
+    check(lens.view.card?.kind == .answer, "an answer still goes up")
+    var late = Compositor()
+    late.hold(true, at: at(0))
+    late.show(definition, at: at(0))
+    late.pin("What made you pick CAR T?", at: at(0))
+    late.hold(false, at: at(2))
+    check(late.view.card == definition && late.view.followup == "What made you pick CAR T?", "shown when they stop, if fresh")
+    var stale = Compositor()
+    stale.hold(true, at: at(0))
+    stale.show(definition, at: at(0))
+    stale.hold(false, at: at(Compositor.maxWait[.definition]! + 1))
+    check(stale.view.card == nil, "dropped if they talked too long")
 }
 
 // A finished answer gets read, then yields to what was just said.
@@ -88,6 +110,7 @@ do {
     check(QuestionGate.candidate(in: "how do you say thank you in Japanese")?.confidence == .strong, "generic-you how-to still passes")
     check(QuestionGate.candidate(in: "Oh, interesting, how do you think about the regulation side?") == nil, "asking their view is personal")
     check(QuestionGate.candidate(in: "Uh, congrats, how was it?") == nil, "a check-in about their experience is personal")
+    check(QuestionGate.candidate(in: "Oh, no way, like live captions?") == nil, "a reaction with a question mark is not a question")
     check(QuestionGate.candidate(in: "How was the Eiffel Tower built?") != nil, "but a factual how-was question passes")
 }
 
@@ -127,7 +150,15 @@ do {
     check(!Talk.echoes("How was the wedding?", "What made you switch from paralegal to CS?"), "a different question does not")
     check(Talk.echoes("Congrats. What does Relit do?", "What does Relit do?"), "a short suggestion said word for word")
     check(!Talk.echoes("What do you do?", "What does Relit do?"), "but not a different short question")
+    check(Talk.speaksForWearer("No, this is my first hackathon."), "a reply on the wearer's behalf is refused")
+    check(Talk.speaksForWearer("I'm working on the aid myself"), "so is a claim about the wearer")
+    check(!Talk.speaksForWearer("What roles are you hiring for?"), "a question to them is fine")
     check(Talk.same("was a paralegal for two years", "paralegal for two years"), "near-duplicate facts")
+    check(Talk.mentioned("tumor microenvironment", in: Talk.normalized("notoriously hard because of the tumor microenvironment")),
+          "a term in the newest line counts")
+    check(!Talk.mentioned("LLM-as-a-judge", in: Talk.normalized("we just closed our seed lux led it")), "an old term does not")
+    check(Talk.mentioned("LoRA adapter", in: Talk.normalized("we fine tune a lawyer adapter on contracts")),
+          "a misheard term defined under its real name counts")
     check(!Talk.same("flies back to Toronto Monday", "paralegal for two years"), "different facts")
     let s1 = Talk.sentences("Do you know how far it is? Anyway, I fly")
     check(s1.closed == ["Do you know how far it is?"] && s1.open == "Anyway, I fly", "splits closed and open sentences")
@@ -144,7 +175,7 @@ do {
     let one = Coach.parse(#"{"define": {"term": "LoRA", "meaning": "cheap fine-tuning"}, "followup": null, "them": null, "facts": null, "research": null, "wearer": null}"#)
     check(one?.define.count == 1 && one?.followup == .keep && one?.facts == [], "single definition object, nulls")
     let two = Coach.parse(#"Sure: {"define": [{"term":"SAFE","meaning":"a"},{"term":"pro rata","meaning":"b"},{"term":"x","meaning":"c"}], "followup": "", "them": {"name": "Daniela", "label": null}, "facts": ["sails"], "research": "GENIUS Act status", "wearer": "b"}"#)
-    check(two?.define.count == 2, "at most two definitions")
+    check(two?.define.count == 1 && two?.define.first?.term == "SAFE", "one definition at a time, the first")
     check(two?.followup == .clear, "empty follow-up clears")
     check(two?.name == "Daniela" && two?.label == nil, "them fields")
     check(two?.research == "GENIUS Act status", "research")

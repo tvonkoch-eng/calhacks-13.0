@@ -54,21 +54,30 @@ enum Coach {
     Reply with one JSON object with exactly these keys:
 
     "define": [{"term": "...", "meaning": "..."}]
-      Only a genuinely complicated or obscure term in the newest line that the wearer, given their \
+      At most one: the single least familiar term in the newest line that the wearer, given their \
     background, would probably not know: specialist jargon, a technical method, a niche name, a \
-    foreign phrase. Never common business, tech, academic or everyday words (Series A, startup, \
-    latency, API, ICU). Speech recognition mangles jargon: if a term looks misheard, define what \
+    foreign phrase. Anything in the wearer's own field is never defined (a finance student knows \
+    the Greeks, Sharpe ratio, market making; a CS student knows APIs, latency, LLMs). Never common \
+    business, tech, academic or everyday words (Series A, startup, latency, API, ICU). Skip a term \
+    the speaker explains in the same breath ("CAR T, so engineered T cells") and pick the next \
+    least familiar one instead. Speech recognition mangles jargon: if a term looks misheard, define what \
     was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
-    unsure. "meaning" is at most 8 plain words. At most 2. Usually [].
+    unsure. "meaning" is at most 8 plain words. Usually [].
 
     "followup": "..." or "" or null
-      A tasteful interjection: a question or remark the wearer could say next, at most 12 words, in \
-    their own voice, no greeting, no name. Offer one only when "Interjection allowed" is yes and it \
-    would genuinely help: THEM shared something personal and substantial that invites a warm, \
-    specific follow-up, or the conversation stalled. Never generic ("what do you do", "tell me \
-    more"), never something the wearer would obviously say anyway, never interview-like, never \
-    about something already asked or answered. When in doubt, null. null also keeps the current \
-    one; "" clears it once it no longer fits.
+      A tasteful interjection: a line the wearer could say next, at most 12 words, in their own \
+    voice, no greeting, no name. Offer one only when "Interjection allowed" is yes and the moment \
+    is one of these:
+      - an opening the wearer can act on: they're hiring, an invitation, an offer to introduce, a \
+    next step ("you should apply" → ask how, or for a contact);
+      - news or feeling THEM just shared that the wearer hasn't responded to yet;
+      - the conversation stalled: revive a thread THEM mentioned earlier.
+      It is something the wearer asks or says to THEM, about THEM or the moment. You know nothing \
+    about the wearer, so never answer a question for them and never state anything about their \
+    life, plans or work. Never a generic or technical quiz question about what they just said, \
+    never something the wearer would obviously say anyway, never about something already asked or \
+    answered. When in doubt, null. null also keeps the current one; "" clears it once it no \
+    longer fits.
 
     "them": {"name": "..."} or null
       THEM's first name, once they say it.
@@ -142,7 +151,7 @@ enum Coach {
 
         var result = Advice()
         let terms = (object["define"] as? [[String: Any]]) ?? ((object["define"] as? [String: Any]).map { [$0] } ?? [])
-        result.define = terms.prefix(2).compactMap { entry in
+        result.define = terms.prefix(1).compactMap { entry in
             guard let term = clean(entry["term"]), let meaning = clean(entry["meaning"]) else { return nil }
             return (term, meaning)
         }
