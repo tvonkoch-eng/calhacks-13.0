@@ -91,6 +91,10 @@ enum Identification {
     /// The lens never shows this: the camera is input, the lens is output. The phone shows both,
     /// so the wearer's view and the wearer's display can be watched while a session runs.
     var pov: UIImage?
+    /// The pixel size of the frames actually arriving (`pov` is a downscale of these). The phone's
+    /// lens panel lays the camera out at this size so the lens can sit on it at its own 600 px.
+    /// Written only when it changes, so it costs no redraws.
+    var frameSize: CGSize?
     @ObservationIgnored private var lastPov = Date.distantPast
     /// Frame sizes and arrival times since the camera was attached. Resolution and frame rate are
     /// *requests*: the SDK's bandwidth governor quietly degrades both when the radio is loaded, so
@@ -171,7 +175,8 @@ enum Identification {
     private var streamConfig: StreamConfiguration {
         #if DEBUG
         // A simulated pair is a local AVCaptureSession with no radio at all.
-        if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24) }
+        // High, as on the real pair, so the phone sim's frame is the same 720 x 1280 the glasses send.
+        if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 24) }
         #endif
         let fps = UInt(streamFps)
         let resolution: StreamingResolution = switch streamRes {
@@ -1282,11 +1287,13 @@ enum Identification {
     private func ingest(_ image: UIImage?, small: UIImage?) async {
         lastFrameAt = Date()
         noteFrame(image)
-        // Every frame is already decoded and downscaled for the face path, whether or not anyone
-        // is looking at the phone, so showing it costs one texture upload and no extra radio time.
-        if let small, Date().timeIntervalSince(lastPov) > 0.04 {
+        // Every frame is already decoded, whether or not anyone is looking at the phone, so
+        // showing it costs one texture upload and no extra radio time. The full frame, not the
+        // 360 px face-path copy: the lens panel lays the lens over it pixel for pixel, and a
+        // downscale blown back up to 720 is soft and no longer what the wearer is seeing.
+        if let shown = image ?? small, Date().timeIntervalSince(lastPov) > 0.04 {
             lastPov = Date()
-            pov = small
+            pov = shown
         }
         // A press parked on a continuation always wins the frame.
         if frameWaiter != nil {
@@ -1486,6 +1493,8 @@ enum Identification {
         let scale = image.scale
         let key = "\(Int(image.size.width * scale))x\(Int(image.size.height * scale))"
         frameSizes[key, default: 0] += 1
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        if frameSize != size { frameSize = size }
         statsFrames += 1
         secFrames += 1
         let now = clockNow
