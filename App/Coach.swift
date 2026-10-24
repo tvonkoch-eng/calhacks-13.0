@@ -65,29 +65,35 @@ enum Coach {
     Reply with one JSON object with exactly these keys:
 
     "ask": "..." or null
-      When the newest THEM line asks for a public fact, a lookup or a task (something nearby, the \
-    weather, the news, a company's latest) but speech recognition garbled it or left it implicit \
-    ("you know how much figure raised the robot ones", "whats that stable coin bill again"): the \
-    request as one clear, self-contained question, resolving "it" or "they" from the transcript \
-    ("How much did Figure AI raise in its latest round?"). null if it is personal or social (about \
-    the people talking), rhetorical, or no request at all. A question about this place or event \
-    ("how many people are at this thing", "when does it end") only when "Where" names it, resolved \
-    to it ("How many attendees does Cal Hacks 13.0 have?"); otherwise null. Usually null.
+      The second look at the newest line, from either speaker. A separate system answers \
+    questions live but misses some (speech recognition drops the "?", garbles words, or the \
+    question is implicit), so whenever the newest line asks for a public fact, a number, a \
+    definition, a lookup or a task (something nearby, the weather, the news, a company's latest, \
+    "how many law firms are in California", "you know how much figure raised the robot ones", \
+    "whats that stable coin bill again"), give it here even if it was phrased clearly: the request \
+    as one clear, self-contained question, resolving "it" or "they" from the transcript ("How much \
+    did Figure AI raise in its latest round?"). Duplicates are filtered out for you. null if it is \
+    personal or social (about the people talking, "how did you get into that", "what are you \
+    working on"), rhetorical, already answered in the transcript, or no request at all. A question \
+    about this place or event ("how many people are at this thing", "when does it end") only when \
+    "Where" names it, resolved to it ("How many attendees does Cal Hacks 13.0 have?"); otherwise null.
 
     "define": [{"term": "...", "meaning": "..."}]
-      At most one: the single least familiar term in the newest line that the wearer, given their \
-    background, would probably not know: specialist jargon, a technical method, a scientific or \
-    legal concept, a foreign phrase. Only established concepts, never a specific law, company, \
-    product, person or event: those change, and you may not know the latest. Anything in the \
-    wearer's own field is never defined (a finance student knows \
-    the Greeks and hedging them (gamma scalping, delta hedging), Sharpe ratio, market making; a CS student knows APIs, latency, LLMs). Never common \
-    business, tech, academic or everyday words (Series A, startup, latency, API, ICU). Skip a term \
-    the speaker explains in the same breath ("CAR T, so engineered T cells") and pick the next \
-    least familiar one instead. Speech recognition mangles jargon: if a term looks misheard, define what \
+      At most one: the most interesting technical or specialist term in the newest line, from \
+    either speaker: finance (financial derivatives, short selling, a yield curve), science, \
+    engineering, medicine, law, a named method or model (Black-Scholes, transformers, CRISPR), a \
+    foreign phrase. The point is to make the conversation richer, so lean toward giving one when \
+    a line has a real concept in it, even one the wearer roughly knows. Only established concepts, \
+    never a specific law, company, product, person or event: those change, and you may not know \
+    the latest. Never plain everyday or generic business words (startup, meeting, team, money, \
+    app, AI, coding, hackathon). Skip a term the speaker explains in the same breath and pick the \
+    next one instead. Speech recognition mangles jargon: if a term looks misheard, define what \
     was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
     unsure. Never define an acronym or word you don't know as an established term: an unfamiliar \
     acronym is usually a misheard familiar one (LOM for LLM), so define the real term only if it \
-    is itself obscure, otherwise nothing; never invent an expansion. "meaning" is at most 8 plain words. Usually [].
+    is a real concept, otherwise nothing; never invent an expansion. "meaning": what it is in plain words, then one concrete example or striking fact \
+    that makes it interesting ("A contract whose value tracks another asset; e.g. options, \
+    futures, swaps"), at most 18 words. [] when the line has no such term.
 
     "suggest": [{"say": "...", "score": 1-5}] or null
       Only when "Suggest now" is yes, otherwise null. Up to three different things the wearer \
@@ -116,7 +122,7 @@ enum Coach {
     static func message(_ input: Input) -> String {
         func list(_ items: [String]) -> String { items.isEmpty ? "none" : items.joined(separator: ", ") }
         return """
-        Wearer: \(input.wearer)\(input.background.isEmpty ? "" : " (\(input.background)); never define what they would know")
+        Wearer: \(input.wearer)\(input.background.isEmpty ? "" : " (\(input.background))")
         Where: \(input.situation.isEmpty ? "unknown" : input.situation)
         Known about them: \(input.known.isEmpty ? "nothing yet" : input.known)
         Already defined: \(list(input.defined))

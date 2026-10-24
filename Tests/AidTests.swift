@@ -29,41 +29,57 @@ do {
     check(lens.view.followup == nil, "follow-up goes stale eventually")
 }
 
-// An answer was asked for out loud: it takes the slot at once and holds it while live.
+// Cards stack, newest on top: a second answer no longer wipes the first.
+do {
+    var lens = Compositor()
+    lens.show(answer("3,474 km across", live: false, id: 1), at: at(0))
+    lens.show(answer("384,400 km away", live: false, id: 2), at: at(2))
+    check(lens.view.cards.map(\.title) == ["384,400 km away", "3,474 km across"], "two answers both up, newest first")
+    lens.tick(at: at(Compositor.ttl[.answer]! + 0.1))
+    check(lens.view.cards.map(\.title) == ["384,400 km away"], "the older one drops off on its own clock")
+    lens.show(answer("27 days", live: false, id: 3), at: at(3))
+    lens.show(answer("1969", live: false, id: 4), at: at(4))
+    check(lens.view.cards.map(\.title) == ["1969", "27 days"], "a third answer pushes out the oldest")
+}
+
+// An answer goes up at once and holds while live.
 do {
     var lens = Compositor()
     lens.show(definition, at: at(0))
     lens.show(answer("\u{2026}", live: true), at: at(0.5))
-    check(lens.view.card?.kind == .answer, "answer preempts a definition immediately")
+    check(lens.view.card?.kind == .answer && lens.view.cards.count == 2, "answer goes on top of a definition")
     lens.show(other, at: at(1))
-    check(lens.view.card?.kind == .answer, "definition does not bump an answer")
+    check(lens.view.cards.map(\.kind) == [.answer, .definition] && lens.view.cards[1] == definition,
+          "a definition doesn't push out one that just went up")
     lens.tick(at: at(60))
-    check(lens.view.card?.kind == .answer, "a live answer never times out")
+    check(lens.view.cards.map(\.kind) == [.answer], "a live answer never times out")
     lens.show(answer("3,474 km across", live: false), at: at(61))
     check(lens.view.card?.title == "3,474 km across", "answer updates in place")
     lens.tick(at: at(61 + Compositor.ttl[.answer]! + 0.1))
-    check(lens.view.card == nil, "finished answer times out; the queued definition is too old to show")
+    check(lens.view.cards.isEmpty, "finished answer times out; the queued definition is too old to show")
 }
 
-// Background waits its turn, and only for so long.
+// A third card waits for the oldest to have had its time up, and only for so long.
 do {
     var lens = Compositor()
     lens.show(answer("1969", live: false), at: at(0))
     lens.show(definition, at: at(1))
-    check(lens.view.card?.kind == .answer, "definition queues behind an answer")
-    lens.remove(id: 9, kind: .answer, at: at(2))
-    check(lens.view.card == definition, "queued definition shows when the answer goes")
-    lens.show(other, at: at(3))
-    check(lens.view.card == definition, "a second definition waits for the first's minimum dwell")
-    lens.tick(at: at(2 + Compositor.minDwell + 0.1))
-    check(lens.view.card == other, "then takes over")
-    lens.show(third, at: at(10))
-    check(lens.view.card == third, "a third shows once the dwell has passed")
+    lens.show(other, at: at(2))
+    check(lens.view.cards == [definition, answer("1969", live: false)], "full: the next definition queues")
+    lens.tick(at: at(Compositor.answerDwell + 0.1))
+    check(lens.view.cards == [other, definition], "then takes the finished answer's place")
+    lens.remove(id: 1, kind: .definition, at: at(6))
+    check(lens.view.cards == [other], "removing a card leaves the rest")
     var stale = Compositor()
-    stale.show(answer("x", live: true), at: at(0))
+    stale.show(answer("x", live: true, id: 7), at: at(0))
+    stale.show(answer("y", live: true), at: at(0))
     stale.show(definition, at: at(0))
     stale.remove(id: 9, kind: .answer, at: at(Compositor.maxWait[.definition]! + 1))
-    check(stale.view.card == nil, "a definition that waited too long is dropped")
+    check(stale.view.cards.map(\.title) == ["x"], "a definition that waited too long is dropped")
+    var twice = Compositor()
+    twice.show(definition, at: at(0))
+    twice.show(Card(kind: .definition, title: "ColBERT", detail: "again", id: 5), at: at(1))
+    check(twice.view.cards.count == 1, "the same term twice shows once")
 }
 
 // Nothing new goes up while the wearer talks, except an answer.
@@ -72,7 +88,7 @@ do {
     lens.hold(true, at: at(0))
     lens.show(definition, at: at(0.5))
     lens.pin("What made you pick CAR T?", at: at(0.6))
-    check(lens.view.card == nil && lens.view.followup == nil, "held while the wearer talks")
+    check(lens.view.cards.isEmpty && lens.view.followup == nil, "held while the wearer talks")
     lens.show(answer("2,225 nautical miles", live: false), at: at(1))
     check(lens.view.card?.kind == .answer, "an answer still goes up")
     var late = Compositor()
@@ -85,18 +101,7 @@ do {
     stale.hold(true, at: at(0))
     stale.show(definition, at: at(0))
     stale.hold(false, at: at(Compositor.maxWait[.definition]! + 1))
-    check(stale.view.card == nil, "dropped if they talked too long")
-}
-
-// A finished answer gets read, then yields to what was just said.
-do {
-    var lens = Compositor()
-    lens.show(answer("1969", live: false), at: at(0))
-    lens.show(definition, at: at(1))
-    lens.tick(at: at(Compositor.answerDwell - 0.1))
-    check(lens.view.card?.kind == .answer, "a finished answer holds for its dwell")
-    lens.tick(at: at(Compositor.answerDwell + 0.1))
-    check(lens.view.card == definition, "then a waiting definition takes over")
+    check(stale.view.cards.isEmpty, "dropped if they talked too long")
 }
 
 // The question gate on things people actually say.

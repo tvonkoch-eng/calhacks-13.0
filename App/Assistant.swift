@@ -153,6 +153,10 @@ import Observation
         var config = Aid.Config.fromBundle(wearer: wearer)
         config.explicitOnly = Tuning.bool("aidExplicitOnly", true)
         if !Tuning.bool("aidCoach", true) { config.coach = nil }
+        // Off since the 2026-10-24 test: the lines to say were bad. The coach keeps defining terms
+        // and catching questions the fast lane missed.
+        config.suggestions = Tuning.bool("aidSuggest", false)
+        config.answerMine = Tuning.bool("aidAnswerMine", true)
         return Aid(config: config)
     }
 
