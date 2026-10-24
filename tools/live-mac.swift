@@ -111,11 +111,21 @@ func drawLens(_ view: LensView) {
         if !listener.listening { out(Style.warn + listener.status + Style.reset); exit(1) }
         Task {
             var said = ""
+            var loudest: Float = 0
+            let started = Date()
+            var warned = false
             while true {
                 try? await Task.sleep(for: .milliseconds(200))
+                loudest = max(loudest, listener.level)
                 if listener.status != said {
                     said = listener.status
                     out("\(stamp())  \(Style.dim)\(said == "Listening" ? "connected — go ahead" : said)\(Style.reset)")
+                }
+                // A mic without permission delivers digital silence, which looks like nobody talking.
+                if file == nil, !warned, Date().timeIntervalSince(started) > 5, loudest == 0 {
+                    warned = true
+                    out("\(stamp())  \(Style.warn)no sound is reaching the tool: allow your terminal in System Settings → "
+                        + "Privacy & Security → Microphone, then rerun\(Style.reset)")
                 }
             }
         }
