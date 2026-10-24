@@ -15,7 +15,7 @@ for test in QuestionGate Speculation; do
 done
 mkdir -p "$out/Aid"
 cp Tests/AidTests.swift "$out/Aid/main.swift"
-swiftc -O "$out/Aid/main.swift" App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift -o "$out/Aid/run"
+swiftc -O "$out/Aid/main.swift" App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift App/Tools.swift -o "$out/Aid/run"
 printf 'Aid: '
 "$out/Aid/run"
 rm -rf "$out"

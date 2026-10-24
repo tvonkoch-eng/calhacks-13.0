@@ -274,6 +274,18 @@ enum LLM {
 
     /// Returns the first choice's message content.
     static func complete(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval) async throws -> String {
+        let reply = try await chat(endpoint, key: key, body: body, timeout: timeout)
+        guard let content = reply.content else { throw Failure.unreadable("no content") }
+        return content
+    }
+
+    struct Reply {
+        var content: String?
+        var calls: [(name: String, arguments: String)]
+    }
+
+    /// The first choice's message: its text and any tool calls.
+    static func chat(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval) async throws -> Reply {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
@@ -294,10 +306,13 @@ enum LLM {
             throw Failure.http(code, String((message ?? String(decoding: data, as: UTF8.self)).prefix(160)))
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
+              let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any] else {
             throw Failure.unreadable(String(decoding: data.prefix(120), as: UTF8.self))
         }
-        return content
+        let calls = ((message["tool_calls"] as? [[String: Any]]) ?? []).compactMap { call -> (String, String)? in
+            guard let function = call["function"] as? [String: Any], let name = function["name"] as? String else { return nil }
+            return (name, function["arguments"] as? String ?? "{}")
+        }
+        return Reply(content: message["content"] as? String, calls: calls)
     }
 }

@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Observation
 
@@ -251,6 +252,8 @@ enum Talk {
         var coach: Model?
         /// Used while `answers` or `coach` is rate-limited, or past `perMinute`.
         var backup: Model?
+        /// Look-ups and actions on this device (places, weather, reminders, calendar).
+        var toolbox: (any Toolbox)?
         /// The primary model's per-minute request cap, if the host has a small one (Cerebras
         /// gpt-oss-120b on the free tier: 5). Past it, lanes go straight to the backup instead of
         /// spending a round trip on a 429.
@@ -301,7 +304,9 @@ enum Talk {
         // A sentence closed inside the turn: to the answer lane that is an endpoint. Diarized turns
         // run until the speaker changes, so "Do you know X? Anyway, …" must not wait for "anyway".
         if closed.count > closedInTurn {
-            for sentence in closed[closedInTurn...] { answerHeard(sentence, endpointed: true, mine: mine) }
+            for sentence in closed[closedInTurn...] where !command(sentence, mine: mine) {
+                answerHeard(sentence, endpointed: true, mine: mine)
+            }
             let newest = closed[closedInTurn...].joined(separator: " ")
             closedInTurn = closed.count
             // Coach each real sentence of theirs as it lands, so a definition is up while they're
@@ -321,9 +326,11 @@ enum Talk {
         let mine = roles.isWearer(speaker)
         let (closed, open) = Talk.sentences(text)
         if closed.count > closedInTurn {
-            for sentence in closed[closedInTurn...] { answerHeard(sentence, endpointed: true, mine: mine) }
+            for sentence in closed[closedInTurn...] where !command(sentence, mine: mine) {
+                answerHeard(sentence, endpointed: true, mine: mine)
+            }
         }
-        if !open.isEmpty { answerHeard(open, endpointed: true, mine: mine) }
+        if !open.isEmpty, !command(open, mine: mine) { answerHeard(open, endpointed: true, mine: mine) }
         partial = ""
         closedInTurn = 0
         compositor.hold(false, at: Date())
@@ -416,12 +423,19 @@ enum Talk {
     /// "encouraging Toby to look away from the person actually answering").
     private func answerHeard(_ text: String, endpointed: Bool, mine: Bool) {
         guard config.answers != nil else { return }
-        if mine, roles.known {
+        // Where, weather, my calendar: worth answering whoever asked, and only a tool can.
+        let toolish = config.toolbox != nil && Tools.wants(text)
+        if mine, roles.known, !toolish {
             if endpointed { commit(nil) }
             return
         }
         guard let candidate = QuestionGate.candidate(in: text) else {
             if endpointed { commit(nil) }
+            return
+        }
+        if toolish {
+            // Never speculatively: "how far is the nearest" would search before "Target" is said.
+            if endpointed { toolRound(candidate.text, command: false) }
             return
         }
         if endpointed {
@@ -590,6 +604,87 @@ enum Talk {
     }
 
     private func words(_ s: String) -> Int { s.split(separator: " ").count }
+
+    // MARK: - Tools: things only the device knows or can do
+
+    @ObservationIgnored private var lastCommand = ""
+
+    /// "Lens, …" from the wearer (from anyone, while we don't know who that is) goes straight to
+    /// the tools. True when `sentence` was a command, handled or deliberately dropped.
+    private func command(_ sentence: String, mine: Bool) -> Bool {
+        guard config.toolbox != nil, let request = Tools.command(in: sentence) else { return false }
+        guard mine || !roles.known else { return true }   // the other person saying "lens" isn't asking us
+        guard Talk.normalized(request) != Talk.normalized(lastCommand) else { return true }
+        lastCommand = request
+        toolRound(request, command: true)
+        return true
+    }
+
+    /// One request that may need a tool: the model answers, skips, or names a tool; the device
+    /// runs it; the result goes up as an answer card as it is, no second model call. A command
+    /// shows what it's doing if the tool takes a moment; an overheard question just shows the result.
+    private func toolRound(_ request: String, command: Bool) {
+        guard let toolbox = config.toolbox, let primary = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
+        nextCard += 1
+        let card = nextCard, echo = Self.echo(request), started = Date()
+        if let instant = Answerer.local(request) {
+            compositor.show(Card(kind: .answer, title: instant, detail: echo, id: card, icon: "clock"), at: started)
+            log(.answer, instant, detail: "\(request) · local")
+            publish()
+            return
+        }
+        let context = transcript(last: 4), backup = config.backup
+        // Each request runs on its own card: their question must not cancel the wearer's command.
+        Task { [weak self] in
+            var used = primary
+            do {
+                var decision: Tools.Decision
+                do {
+                    decision = try await Tools.decide(request, context: context, toolbox: toolbox, provider: primary.provider,
+                                                      key: primary.key, model: primary.model)
+                } catch LLM.Failure.rateLimited(let wait) {
+                    guard let backup, backup != primary else { throw LLM.Failure.rateLimited(retryAfter: wait) }
+                    self?.answersBlockedUntil = Date().addingTimeInterval(60)
+                    used = backup
+                    decision = try await Tools.decide(request, context: context, toolbox: toolbox, provider: backup.provider,
+                                                      key: backup.key, model: backup.model)
+                }
+                guard !Task.isCancelled, let self else { return }
+                switch decision {
+                case .skip:
+                    if command { self.put(Card(kind: .answer, title: "Not sure", detail: echo, id: card)) }
+                    return
+                case .answer(let text):
+                    self.put(Card(kind: .answer, title: text, detail: echo, id: card))
+                    self.log(.answer, text, detail: "\(request) · \(self.ms(since: started)) ms · \(used.model)")
+                case .call(let name, let arguments):
+                    let ack = command ? Task { [weak self] in
+                        try? await Task.sleep(for: .milliseconds(300))
+                        guard !Task.isCancelled else { return }
+                        self?.put(Card(kind: .answer, title: toolbox.working(name, arguments: arguments) + "\u{2026}",
+                                       detail: echo, live: true, id: card))
+                    } : nil
+                    let result = try await toolbox.run(name, arguments: arguments)
+                    ack?.cancel()
+                    guard !Task.isCancelled else { return }
+                    self.put(Card(kind: .answer, title: result.title, detail: result.detail, id: card, icon: result.icon))
+                    self.log(.answer, result.title, detail: "\(request) · \(name) · \(self.ms(since: started)) ms · \(used.model)")
+                }
+                self.timings["tool", default: []].append(self.ms(since: started))
+            } catch {
+                guard !Task.isCancelled else { return }
+                if command { self?.put(Card(kind: .answer, title: "Couldn't do that", detail: echo, id: card, icon: "exclamationCircle")) }
+                self?.log(.status, "Tool failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func put(_ card: Card) {
+        compositor.show(card, at: Date())
+        publish()
+    }
+
+    private func ms(since date: Date) -> Int { Int(Date().timeIntervalSince(date) * 1000) }
 
     // MARK: - Coach: the slow lane
 
@@ -902,12 +997,18 @@ extension Aid.Config {
             break
         }
         let backupProvider = Provider(rawValue: value("BackupProvider")?.lowercased() ?? "") ?? .openai
+        // "37.7880,-122.4075": pretend to be there instead of asking Core Location (testing, or a
+        // Mac command-line tool that can't get a fix).
+        let test = (ProcessInfo.processInfo.environment["TEST_LOCATION"] ?? value("TestLocation"))?
+            .split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        let pinned = test.flatMap { $0.count == 2 ? CLLocation(latitude: $0[0], longitude: $0[1]) : nil }
         return Aid.Config(
             wearer: wearer,
             background: value("WearerBackground") ?? "",
             answers: answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) },
             coach: coachKey.map { Aid.Model(provider: coachProvider, key: $0, model: value("CoachModel") ?? coachProvider.model) },
             backup: value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) },
+            toolbox: value("Tools")?.lowercased() == "off" ? nil : DeviceTools(pinned: pinned),
             perMinute: value("AnswerPerMinute").flatMap { Int($0) },
             researcher: researcher)
     }

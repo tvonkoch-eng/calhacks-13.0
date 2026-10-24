@@ -170,6 +170,36 @@ do {
     check(s4.closed == ["How large is the moon?"], "a trailing question mark closes")
 }
 
+// Tools: the wake word, what counts as a tool question, and how results read.
+do {
+    check(Tools.command(in: "Lens, how far is the nearest Target?") == "how far is the nearest Target?", "wake word")
+    check(Tools.command(in: "hey lens what's the weather like") == "what's the weather like", "hey lens")
+    check(Tools.command(in: "The lens on these is great") == nil, "talking about lenses is not a command")
+    check(Tools.command(in: "Lens.") == nil, "the wake word alone asks nothing")
+    check(Tools.command(in: "Lens, weather?") == "weather?", "a one-word command")
+    check(Tools.wants("how far is the nearest Target"), "places")
+    check(Tools.wants("is it going to rain later"), "weather")
+    check(Tools.wants("remind me to email Maya at six"), "reminders")
+    check(Tools.wants("what's my next meeting"), "calendar")
+    check(!Tools.wants("who wrote Dune"), "a plain question needs no tool")
+    check(!Tools.wants("what's the training time of GPT-2"), "\"training\" is not \"rain\"")
+    check(Tools.distance(503, us: true) == "0.3 mi", "miles: \(Tools.distance(503, us: true))")
+    check(Tools.distance(120, us: true) == "400 ft", "feet: \(Tools.distance(120, us: true))")
+    check(Tools.distance(503, us: false) == "500 m" && Tools.distance(1530, us: false) == "1.5 km", "metric")
+    check(Tools.travel(503) == "~6 min walk", "walk: \(Tools.travel(503))")
+    check(Tools.travel(8000) == "~16 min drive", "drive: \(Tools.travel(8000))")
+    let six = Tools.date("2026-10-24T18:00")
+    check(six.map { Calendar.current.component(.hour, from: $0) } == 18, "local ISO time")
+    check(Tools.date("2026-10-24T18:00:00Z") != nil && Tools.date("tomorrow") == nil, "zoned ISO; nonsense is nil")
+}
+
+// A refusal never reaches the lens; an answer that merely starts with I does.
+do {
+    check(Answerer.refuses("I don't have real-time Caltrain schedule information"), "refusal")
+    check(Answerer.refuses("Sorry, I can't check that"), "apology")
+    check(!Answerer.refuses("Isaac Newton") && !Answerer.refuses("IND: Investigational New Drug"), "facts starting with I")
+}
+
 // The coach's JSON, as models actually send it.
 do {
     let one = Coach.parse(#"{"define": {"term": "LoRA", "meaning": "cheap fine-tuning"}, "followup": null, "them": null, "facts": null, "research": null, "wearer": null}"#)

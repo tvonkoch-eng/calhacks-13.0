@@ -88,8 +88,16 @@ struct Answerer {
     Reply with exactly SKIP, and nothing else, if the question is personal or social (about the \
     people talking, their feelings, plans, opinions or preferences, or anything the conversation \
     shows is theirs: their company, project, school, family), rhetorical, a request to do \
-    something, or too fragmentary to guess at. Never guess about the people talking.
+    something, too fragmentary to guess at, or needs live information you don't have (schedules, \
+    prices, scores, today's news). Never guess about the people talking.
     """
+
+    /// "I don't have real-time…", "Sorry, …": a refusal on the lens is worse than nothing, so it is
+    /// treated as a SKIP. Facts never start in the first person.
+    static func refuses(_ text: String) -> Bool {
+        let t = text.trimmed.uppercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        return ["I ", "I'", "SORRY", "AS AN AI", "UNFORTUNATELY"].contains { t.hasPrefix($0) }
+    }
 
     /// Instant, no network. Covers the questions that are embarrassing to be slow on.
     static func local(_ question: String) -> String? {
@@ -180,11 +188,11 @@ struct Answerer {
                         // models stream "SKIP" as "SK" + "IP", so hold back anything that could still
                         // turn into it.
                         let head = answer.trimmed.uppercased()
-                        if head.hasPrefix("SKIP") {
+                        if head.hasPrefix("SKIP") || Answerer.refuses(head) {
                             continuation.finish()
                             return
                         }
-                        if "SKIP".hasPrefix(head) { continue }
+                        if "SKIP".hasPrefix(head) || head == "I" || head == "AS" { continue }
                         continuation.yield(answer.trimmed)
                     }
                     continuation.finish()
