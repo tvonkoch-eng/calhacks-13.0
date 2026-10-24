@@ -72,6 +72,25 @@ building.**
   without it; only launch fails.
 - The signing profile is a free personal team: it **expires 7 days** after the build.
 
+## GitHub: one publisher, not two
+
+`tvonkoch-eng/calhacks-13.0` is a **PUBLIC** repo and the humans work there. Two different
+scripts can push to it, so the policy is:
+
+- **`tools/qm-publish.sh` is the only thing that publishes.** It scrubs `App/people.json`
+  before pushing to `main`. Do not add a second publisher.
+- **`tools/qm-sync-github.sh` is the detector.** Run it as
+  `QM_SYNC_NO_PUSH=1 tools/qm-sync-github.sh` to get a divergence report and to mirror
+  `github/main` onto the hub as the `github-main` branch. It refuses to publish personal data
+  by default, which is correct — leave it that way.
+- Before assuming GitHub is in sync, run the detector. The two histories had **no common
+  ancestor at all** until 2026-10-24, and 11 files of Toby's work (`LensLab/`, `Tests/`,
+  `tools/speed.sh`) lived only on GitHub for a day before being recovered onto the hub.
+
+**Never commit researched personal detail about a real person to this repo.** `people.json`
+personal/source fields are already in the public history from an earlier wip commit; scrubbing
+the tip does not remove them from history.
+
 ## Demo protection
 
 `touch ~/calhacks/.demo-freeze` makes every deploy refuse, loudly. Do this before the human
