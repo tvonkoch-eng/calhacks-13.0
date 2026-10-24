@@ -9,6 +9,8 @@ struct Line: Identifiable, Equatable {
     var speaker: String?
     var text: String
     var at: Date
+    /// "Lens, …": said to the glasses, not to the other person, so the coach never sees it.
+    var command = false
 }
 
 /// One question we heard and what we did about it.
@@ -354,7 +356,7 @@ enum Talk {
             }
         }
         nextLine += 1
-        lines.append(Line(id: nextLine, speaker: speaker, text: text, at: Date()))
+        lines.append(Line(id: nextLine, speaker: speaker, text: text, at: Date(), command: Tools.command(in: text) != nil))
         log(.line, text, detail: level.map { String(format: "%.0f dB", $0) } ?? "", speaker: speaker)
 
         // Whoever just said the pinned follow-up is the wearer, and it has been used. Never the
@@ -633,7 +635,10 @@ enum Talk {
             publish()
             return
         }
-        let context = transcript(last: 4), backup = config.backup
+        toolbox.prefetch(request)   // the obvious search starts while the model decides
+        // "her company", "that place": the model resolves them from the conversation and what we know.
+        let context = (them.summary.isEmpty ? "" : "About them: \(them.summary)\n") + transcript(last: 4)
+        let backup = config.backup
         // Each request runs on its own card: their question must not cancel the wearer's command.
         Task { [weak self] in
             var used = primary
@@ -892,21 +897,22 @@ enum Talk {
         log(.lookup, query, detail: "looking up with \(researcher.name)")
         let context = transcript(last: 6)
         let started = Date()
-        let condenser = model(config.coach, blockedUntil: coachBlockedUntil, reserve: 3)
+        let condenser = config.backup ?? config.coach
         researchTask = Task { [weak self] in
             do {
-                var finding = try await researcher.research(query, context: context)
-                if finding.split(separator: " ").count > 22, let condenser {
-                    finding = try await Coach.condense(finding, query: query, provider: condenser.provider,
-                                                       key: condenser.key, model: condenser.model)
+                let finding = try await researcher.research(query, context: context)
+                var card = ToolResult(title: String(finding.prefix(60)), detail: "", icon: "starCircleTriangleAi")
+                if let condenser {
+                    card = try await Tools.card(from: finding, about: query, provider: condenser.provider,
+                                                key: condenser.key, model: condenser.model)
                 }
                 guard let self else { return }
                 self.nextCard += 1
-                let title = query.split(separator: " ").prefix(5).joined(separator: " ")
-                self.compositor.show(Card(kind: .research, title: title, detail: finding, id: self.nextCard), at: Date())
+                self.compositor.show(Card(kind: .research, title: card.title, detail: card.detail, id: self.nextCard,
+                                          icon: card.icon), at: Date())
                 let ms = Int(Date().timeIntervalSince(started) * 1000)
                 self.timings["research", default: []].append(ms)
-                self.log(.research, finding, detail: "\(query) · \(ms) ms")
+                self.log(.research, card.title, detail: "\(card.detail) · \(query) · \(ms) ms")
                 self.publish()
             } catch {
                 self?.log(.status, "Research failed: \(error.localizedDescription)")
@@ -939,7 +945,7 @@ enum Talk {
     // MARK: - Transcript
 
     private func transcriptLines(last n: Int) -> [String] {
-        lines.suffix(n).map { "\(roles.tag($0.speaker)): \($0.text.count > 400 ? String($0.text.prefix(400)) + "…" : $0.text)" }
+        lines.filter { !$0.command }.suffix(n).map { "\(roles.tag($0.speaker)): \($0.text.count > 400 ? String($0.text.prefix(400)) + "…" : $0.text)" }
     }
 
     private func transcript(last n: Int) -> String {
@@ -985,18 +991,29 @@ extension Aid.Config {
         let coachProvider = Provider(rawValue: value("CoachProvider")?.lowercased() ?? "") ?? answerProvider
         let coachKey = value("CoachAPIKey") ?? (coachProvider == answerProvider ? answerKey : nil)
 
-        var researcher: (any Researcher)?
+        // Research: the configured one first, OpenAI's web search behind it when there's a key, so
+        // a slow or failing agent never leaves the wearer with nothing.
+        var chain: [any Researcher] = []
+        let openai = value("OpenAIAPIKey")
         switch value("ResearchProvider")?.lowercased() {
         case "groq":
-            if let key = value("ResearchAPIKey") ?? (answerProvider == .groq ? answerKey : nil) { researcher = WebResearcher.groq(key: key) }
+            if let key = value("ResearchAPIKey") ?? (answerProvider == .groq ? answerKey : nil) { chain.append(WebResearcher.groq(key: key)) }
         case "openai":
-            if let key = value("ResearchAPIKey") ?? value("BackupAPIKey") { researcher = WebResearcher.openai(key: key) }
+            if let key = value("ResearchAPIKey") ?? openai { chain.append(WebResearcher.openai(key: key)) }
         case "asi1", "fetch", "fetchai":
-            if let key = value("ResearchAPIKey") { researcher = WebResearcher.asi1(key: key, model: value("ResearchModel") ?? "asi1-mini") }
+            if let key = value("ResearchAPIKey") {
+                chain.append(WebResearcher.asi1(key: key, model: value("ResearchModel") ?? "asi1-fast-agentic"))
+            }
         default:
             break
         }
+        if !chain.isEmpty, let openai, !(chain.first?.name.hasPrefix("OpenAI") ?? false) { chain.append(WebResearcher.openai(key: openai)) }
+        let researcher: (any Researcher)? = chain.isEmpty ? nil : (chain.count == 1 ? chain[0] : FallbackResearcher(chain: chain))
         let backupProvider = Provider(rawValue: value("BackupProvider")?.lowercased() ?? "") ?? .openai
+        let backup = value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) }
+        let answers = answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) }
+        // Cutting a finding down to a card wants a fast model with calls to spare: the backup.
+        let condenser = (backup ?? answers).map { (provider: $0.provider, key: $0.key, model: $0.model) }
         // "37.7880,-122.4075": pretend to be there instead of asking Core Location (testing, or a
         // Mac command-line tool that can't get a fix).
         let test = (ProcessInfo.processInfo.environment["TEST_LOCATION"] ?? value("TestLocation"))?
@@ -1005,10 +1022,11 @@ extension Aid.Config {
         return Aid.Config(
             wearer: wearer,
             background: value("WearerBackground") ?? "",
-            answers: answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) },
+            answers: answers,
             coach: coachKey.map { Aid.Model(provider: coachProvider, key: $0, model: value("CoachModel") ?? coachProvider.model) },
-            backup: value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) },
-            toolbox: value("Tools")?.lowercased() == "off" ? nil : DeviceTools(pinned: pinned),
+            backup: backup,
+            toolbox: value("Tools")?.lowercased() == "off" ? nil
+                : DeviceTools(pinned: pinned, researcher: researcher, condenser: condenser),
             perMinute: value("AnswerPerMinute").flatMap { Int($0) },
             researcher: researcher)
     }

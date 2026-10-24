@@ -184,7 +184,7 @@ protocol Researcher: Sendable {
 ///   is a tenth of Groq's free daily budget).
 /// - `openai`: gpt-5-search-api (~7 s, ~17k tokens; found the current GENIUS Act rulemaking).
 /// - `asi1`: Fetch.ai's ASI:One (api.asi1.ai), whose `web_search` flag does the same.
-/// Search models ignore length limits, so the aid condenses long findings (`Coach.condense`).
+/// Search models ignore length limits, so findings are cut down to a card (`Tools.card`).
 struct WebResearcher: Researcher {
     let name: String
     let endpoint: URL
@@ -192,6 +192,9 @@ struct WebResearcher: Researcher {
     let model: String
     /// Provider-specific request fields, as JSON text so the struct stays Sendable.
     let extra: String
+    /// Fetch.ai's agentic models need a session per task (`x-session-id`).
+    var sessions = false
+    var timeout: TimeInterval = 25
 
     static func groq(key: String) -> WebResearcher {
         WebResearcher(name: "Groq web search", endpoint: Provider.groq.endpoint, key: key,
@@ -204,9 +207,12 @@ struct WebResearcher: Researcher {
                       model: "gpt-5-search-api", extra: #"{"web_search_options":{}}"#)
     }
 
-    static func asi1(key: String, model: String = "asi1-mini") -> WebResearcher {
-        WebResearcher(name: "Fetch.ai ASI:One", endpoint: URL(string: "https://api.asi1.ai/v1/chat/completions")!,
-                      key: key, model: model, extra: #"{"web_search":true}"#)
+    /// Agentic models search Agentverse for agents that can do the task and coordinate them, with
+    /// web search on top. asi1-fast-agentic is the quick one; asi1-agentic and
+    /// asi1-extended-agentic think longer.
+    static func asi1(key: String, model: String = "asi1-fast-agentic") -> WebResearcher {
+        WebResearcher(name: "Fetch.ai ASI:One (\(model))", endpoint: URL(string: "https://api.asi1.ai/v1/chat/completions")!,
+                      key: key, model: model, extra: #"{"web_search":true}"#, sessions: model.contains("agentic"), timeout: 20)
     }
 
     func research(_ query: String, context: String) async throws -> String {
@@ -224,7 +230,8 @@ struct WebResearcher: Researcher {
         if let fields = try? JSONSerialization.jsonObject(with: Data(extra.utf8)) as? [String: Any] {
             body.merge(fields) { _, new in new }
         }
-        let text = try await LLM.complete(endpoint, key: key, body: body, timeout: 25)
+        let headers = sessions ? ["x-session-id": UUID().uuidString] : [:]
+        let text = try await LLM.complete(endpoint, key: key, body: body, timeout: timeout, headers: headers)
         // Strip search citations (【1†L11-L13】) and markdown emphasis.
         let plain = text.replacingOccurrences(of: #"【[^】]*】"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: "**", with: "")
@@ -234,24 +241,18 @@ struct WebResearcher: Researcher {
     }
 }
 
-extension Coach {
-    /// A research finding cut to one glanceable line. Search models write paragraphs with links.
-    static func condense(_ finding: String, query: String, provider: Provider, key: String, model: String) async throws -> String {
-        let body: [String: Any] = [
-            "model": model,
-            "temperature": 0,
-            "max_tokens": 60,
-            "messages": [
-                ["role": "system", "content": """
-                    Condense research notes for someone glancing at smart glasses mid-conversation. \
-                    Reply with the single most useful fact for the topic, at most 18 words, plain \
-                    text: no links, no citations, no preamble.
-                    """],
-                ["role": "user", "content": "Topic: \(query)\n\nNotes:\n\(finding.prefix(4000))"],
-            ],
-        ]
-        return try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+/// Each in turn: an agent marketplace can be slow or down in the middle of a demo.
+struct FallbackResearcher: Researcher {
+    let chain: [any Researcher]
+
+    var name: String { chain.first?.name ?? "research" }
+
+    func research(_ query: String, context: String) async throws -> String {
+        var failure: Error = LLM.Failure.unreadable("no researcher")
+        for researcher in chain {
+            do { return try await researcher.research(query, context: context) } catch { failure = error }
+        }
+        throw failure
     }
 }
 
@@ -273,8 +274,9 @@ enum LLM {
     }
 
     /// Returns the first choice's message content.
-    static func complete(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval) async throws -> String {
-        let reply = try await chat(endpoint, key: key, body: body, timeout: timeout)
+    static func complete(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval,
+                         headers: [String: String] = [:]) async throws -> String {
+        let reply = try await chat(endpoint, key: key, body: body, timeout: timeout, headers: headers)
         guard let content = reply.content else { throw Failure.unreadable("no content") }
         return content
     }
@@ -285,8 +287,10 @@ enum LLM {
     }
 
     /// The first choice's message: its text and any tool calls.
-    static func chat(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval) async throws -> Reply {
+    static func chat(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval,
+                     headers: [String: String] = [:]) async throws -> Reply {
         var request = URLRequest(url: endpoint)
+        for (field, value) in headers { request.setValue(value, forHTTPHeaderField: field) }
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")

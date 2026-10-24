@@ -89,7 +89,8 @@ struct Answerer {
     people talking, their feelings, plans, opinions or preferences, or anything the conversation \
     shows is theirs: their company, project, school, family), rhetorical, a request to do \
     something, too fragmentary to guess at, or needs live information you don't have (schedules, \
-    prices, scores, today's news). Never guess about the people talking.
+    prices, scores, today's news). You do know the current date and time (below): use them for \
+    time zones, ages and countdowns. Never guess about the people talking.
     """
 
     /// "I don't have real-time…", "Sorry, …": a refusal on the lens is worse than nothing, so it is
@@ -102,7 +103,8 @@ struct Answerer {
     /// Instant, no network. Covers the questions that are embarrassing to be slow on.
     static func local(_ question: String) -> String? {
         let q = question.lowercased()
-        if q.contains("what time"), q.contains("it") {
+        // "what time is it in Tokyo" is not the local time: that goes to a model that knows the zone.
+        if q.contains("what time"), q.contains("it"), !q.contains(" in "), !q.contains(" there") {
             return Date().formatted(date: .omitted, time: .shortened)
         }
         if q.contains("what") , q.contains("date") || q.contains("day is") {
@@ -160,7 +162,10 @@ struct Answerer {
                         "stream": true,
                         "temperature": 0,
                         "messages": [
-                            ["role": "system", "content": prompt],
+                            // Without the date, "how many days until Thanksgiving" is a guess.
+                            ["role": "system", "content": prompt + "\nIt is "
+                                + Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
+                                + " " + (TimeZone.current.abbreviation() ?? TimeZone.current.identifier) + "."],
                             ["role": "user", "content": context.isEmpty
                                 ? question : "Conversation so far:\n\(context)\n\nQuestion: \(question)"],
                         ],

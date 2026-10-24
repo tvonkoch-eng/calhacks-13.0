@@ -19,6 +19,17 @@ protocol Toolbox: Sendable {
     /// What to show while `name` runs, if it's slow: "Finding Target nearby".
     func working(_ name: String, arguments: String) -> String
     func run(_ name: String, arguments: String) async throws -> ToolResult
+    /// Start the obvious tool before the model has decided ("nearest Target" → search now), so
+    /// the decision and the work overlap. A guess the model doesn't confirm is simply dropped.
+    func prefetch(_ request: String)
+    /// Roughly where the user is ("near 333 Post St, San Francisco, CA"), so a research task can
+    /// say "near here" in words a web search understands.
+    func whereabouts() async -> String?
+}
+
+extension Toolbox {
+    func prefetch(_ request: String) {}
+    func whereabouts() async -> String? { nil }
 }
 
 enum Tools {
@@ -71,13 +82,14 @@ enum Tools {
     static func decide(_ request: String, context: String, toolbox: any Toolbox,
                        provider: Provider, key: String, model: String) async throws -> Decision {
         let now = Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
+        let place = await toolbox.whereabouts().map { " They are \($0)." } ?? ""
         let user = (context.isEmpty ? "" : "Conversation so far:\n\(context)\n\n") + "Request: \(request)"
         var body: [String: Any] = [
             "model": model,
             "temperature": 0,
             "tool_choice": "auto",
             "messages": [
-                ["role": "system", "content": prompt + "\nIt is \(now), \(TimeZone.current.identifier)."],
+                ["role": "system", "content": prompt + "\nIt is \(now), \(TimeZone.current.identifier).\(place)"],
                 ["role": "user", "content": user],
             ],
         ]
@@ -110,9 +122,62 @@ enum Tools {
     }
 
     /// An honest estimate without a routing call: walking pace up to ~30 min, then city driving.
+    /// Streets run about 1.3× the straight line, so that's built in.
     static func travel(_ meters: Double) -> String {
-        let walk = meters / 80   // ~4.8 km/h
-        return walk <= 30 ? "~\(max(1, Int(walk.rounded()))) min walk" : "~\(max(1, Int((meters / 500).rounded()))) min drive"
+        let route = meters * 1.3
+        let walk = route / 80   // ~4.8 km/h
+        return walk <= 30 ? "~\(max(1, Int(walk.rounded()))) min walk" : "~\(max(1, Int((route / 500).rounded()))) min drive"
+    }
+
+    /// "how far is the nearest Target?" → "Target". Only the plain shapes; anything else waits for
+    /// the model, which is the authority on what was asked.
+    static func placeQuery(in request: String) -> String? {
+        let patterns = [
+            #"(?:nearest|closest) ([a-z0-9' &.-]+?)(?:\?|$| near| around| from| to | is | that| here)"#,
+            #"is there (?:a|an|any) ([a-z0-9' &.-]+?) (?:near|around|close|nearby)"#,
+            #"where(?:'s| is) (?:a |an |the )?([a-z0-9' &.-]+?) (?:near|around|nearby|close)"#,
+        ]
+        let text = request.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(match.range(at: 1), in: text) else { continue }
+            var query = text[range].trimmingCharacters(in: .whitespaces)
+            for article in ["a ", "an ", "the ", "good "] where query.hasPrefix(article) { query.removeFirst(article.count) }
+            if !query.isEmpty { return query }
+        }
+        return nil
+    }
+
+    static func wantsWeather(_ request: String) -> Bool {
+        let q = " " + request.lowercased() + " "
+        return [" weather", " rain", "umbrella", "temperature", "how cold", "how hot", "how warm", "forecast"].contains { q.contains($0) }
+    }
+
+    /// A long finding (search models write paragraphs with links) as one glanceable card.
+    static func card(from finding: String, about task: String, provider: Provider, key: String, model: String) async throws -> ToolResult {
+        var body: [String: Any] = [
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                ["role": "system", "content": """
+                    Turn research notes into one card for smart glasses. Reply with JSON only: \
+                    {"title": "the answer itself, at most 6 words", "detail": "the single most useful \
+                    supporting fact, at most 14 words"}. No links, no citations, no preamble.
+                    """],
+                ["role": "user", "content": "Task: \(task)\n\nNotes:\n\(finding.prefix(4000))"],
+            ],
+        ]
+        if model.contains("gpt-oss") { body.merge(["max_tokens": 400, "reasoning_effort": "low"]) { _, new in new } }
+        else if provider == .cerebras, model.contains("qwen") { body.merge(["max_tokens": 120, "reasoning_effort": "none"]) { _, new in new } }
+        else { body["max_tokens"] = 120 }
+        let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 8)
+        if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,
+           let json = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any],
+           let title = json["title"] as? String, !title.isEmpty {
+            return ToolResult(title: title, detail: json["detail"] as? String ?? "", icon: "starCircleTriangleAi")
+        }
+        return ToolResult(title: String(text.prefix(80)), detail: "", icon: "starCircleTriangleAi")
     }
 
     /// "2026-10-24T18:00" (what the model is asked for), with or without seconds or a zone.
@@ -138,16 +203,35 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
     private let locator: Locator
     private let store = EKEventStore()
     private let us = Locale.current.measurementSystem == .us
+    private let researcher: (any Researcher)?
+    /// Turns a research finding into a card; a fast model.
+    private let condenser: (provider: Provider, key: String, model: String)?
+    private let early = Prefetch()
 
-    init(pinned: CLLocation? = nil) {
+    init(pinned: CLLocation? = nil, researcher: (any Researcher)? = nil,
+         condenser: (provider: Provider, key: String, model: String)? = nil) {
         locator = Locator(pinned: pinned)
-        Task { [locator] in _ = await locator.current() }   // the first question shouldn't wait for a fix
+        self.researcher = researcher
+        self.condenser = condenser
+        Task { [locator] in _ = await locator.describe() }   // the first question shouldn't wait for a fix
+        // The research tool is only offered when there's a researcher behind it.
+        var tools = (try? JSONSerialization.jsonObject(with: Data(Self.device.utf8)) as? [Any]) ?? []
+        if researcher != nil, let research = try? JSONSerialization.jsonObject(with: Data(Self.research.utf8)) { tools.append(research) }
+        definitions = (try? JSONSerialization.data(withJSONObject: tools)).map { String(decoding: $0, as: UTF8.self) } ?? Self.device
     }
 
-    let definitions = """
+    let definitions: String
+
+    private static let research = """
+      {"type": "function", "function": {"name": "research",
+        "description": "Anything that needs the web or other AI agents: current events, a company, product or person's public work, recommendations with conditions (open late, quiet, highly rated, vegetarian), or a multi-step task. Takes several seconds.",
+        "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "The full task, with 'her company' or 'that place' resolved from the conversation and 'near here' replaced by where they are"}}, "required": ["task"]}}}
+    """
+
+    private static let device = """
     [
       {"type": "function", "function": {"name": "nearby",
-        "description": "The nearest place matching a query (a store, brand, kind of place or landmark) and how far it is from the user.",
+        "description": "The nearest place matching a plain query (a store, brand, kind of place or landmark) and how far it is. It cannot check opening hours, reviews or atmosphere.",
         "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "What to look for: Target, coffee, pharmacy, Moscone Center"}}, "required": ["query"]}}},
       {"type": "function", "function": {"name": "weather",
         "description": "The weather now and over the next few hours where the user is.",
@@ -161,21 +245,40 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
     ]
     """
 
+    func whereabouts() async -> String? {
+        await locator.describe()
+    }
+
+    func prefetch(_ request: String) {
+        if let query = Tools.placeQuery(in: request) {
+            Task { await early.start(key: "nearby:" + query) { try await self.nearby(query) } }
+        } else if Tools.wantsWeather(request) {
+            Task { await early.start(key: "weather") { try await self.weather() } }
+        }
+    }
+
     func working(_ name: String, arguments: String) -> String {
         switch name {
-        case "nearby": "Finding \(Self.arguments(arguments)["query"] as? String ?? "it") nearby"
-        case "weather": "Checking the weather"
-        case "remind": "Setting a reminder"
-        case "next_event": "Checking your calendar"
-        default: "Working on it"
+        case "research": return researcher?.name.contains("ASI") == true ? "Asking Fetch.ai agents" : "Looking it up"
+        case "nearby": return "Finding \(Self.arguments(arguments)["query"] as? String ?? "it") nearby"
+        case "weather": return "Checking the weather"
+        case "remind": return "Setting a reminder"
+        case "next_event": return "Checking your calendar"
+        default: return "Working on it"
         }
     }
 
     func run(_ name: String, arguments: String) async throws -> ToolResult {
         let args = Self.arguments(arguments)
         switch name {
-        case "nearby": return try await nearby(args["query"] as? String ?? "")
-        case "weather": return try await weather()
+        case "nearby":
+            let query = args["query"] as? String ?? ""
+            if let early = await early.take(key: "nearby:" + query.lowercased()) { return try await early.value }
+            return try await nearby(query)
+        case "weather":
+            if let early = await early.take(key: "weather") { return try await early.value }
+            return try await weather()
+        case "research": return try await research(args["task"] as? String ?? "")
         case "remind": return try await remind(args["text"] as? String ?? "", at: (args["at"] as? String).flatMap(Tools.date))
         case "next_event": return try await nextEvent()
         default: return ToolResult(title: "Can't do that yet", detail: name, icon: "exclamationCircle")
@@ -246,6 +349,8 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
             .init(name: "longitude", value: String(here.coordinate.longitude)),
             .init(name: "current", value: "temperature_2m,weather_code,is_day"),
             .init(name: "hourly", value: "precipitation_probability"),
+            .init(name: "daily", value: "temperature_2m_max"),
+            .init(name: "forecast_days", value: "1"),
             .init(name: "forecast_hours", value: "6"),
             .init(name: "temperature_unit", value: us ? "fahrenheit" : "celsius"),
             .init(name: "timezone", value: "auto"),
@@ -267,7 +372,9 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
         }
         let day = (current["is_day"] as? NSNumber)?.intValue != 0
         let (condition, icon) = Self.describe(code, day: day)
-        return ToolResult(title: "\(Int(temperature.rounded()))°\(us ? "F" : "C"), \(condition)", detail: rain, icon: icon)
+        let high = ((json["daily"] as? [String: Any])?["temperature_2m_max"] as? [NSNumber])?.first.map { "high \(Int($0.doubleValue.rounded()))°" }
+        return ToolResult(title: "\(Int(temperature.rounded()))°\(us ? "F" : "C"), \(condition)",
+                          detail: [high, rain].compactMap { $0 }.joined(separator: " · "), icon: icon)
     }
 
     /// "18:00" → "6 PM" in the US.
@@ -329,6 +436,33 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
     }
 }
 
+extension DeviceTools {
+    /// The deep lane as a tool: the researcher (Fetch.ai ASI:One, OpenAI web search…) does the
+    /// work, a fast model cuts the finding down to a card.
+    fileprivate func research(_ task: String) async throws -> ToolResult {
+        guard let researcher, !task.isEmpty else { return ToolResult(title: "Research is off", detail: "", icon: "exclamationCircle") }
+        let finding = try await researcher.research(task, context: "")
+        guard let condenser else { return ToolResult(title: String(finding.prefix(60)), detail: "", icon: "starCircleTriangleAi") }
+        return try await Tools.card(from: finding, about: task, provider: condenser.provider, key: condenser.key, model: condenser.model)
+    }
+}
+
+/// Tool work started before the model decided: kept for 20 s, used at most once.
+actor Prefetch {
+    private var tasks: [String: (task: Task<ToolResult, Error>, started: Date)] = [:]
+
+    func start(key: String, _ work: @escaping @Sendable () async throws -> ToolResult) {
+        tasks = tasks.filter { -$0.value.started.timeIntervalSinceNow < 20 }
+        guard tasks[key] == nil else { return }
+        tasks[key] = (Task { try await work() }, Date())
+    }
+
+    func take(key: String) -> Task<ToolResult, Error>? {
+        guard let entry = tasks.removeValue(forKey: key), -entry.started.timeIntervalSinceNow < 20 else { return nil }
+        return entry.task
+    }
+}
+
 /// Where the device is: the pinned location if there is one (no permission asked), else a fix
 /// cached for two minutes, waiting at most 1.5 s for a fresh one.
 actor Locator {
@@ -352,6 +486,31 @@ actor Locator {
             return fresh
         }
         return last
+    }
+
+    private var described: (text: String, at: Date)?
+
+    /// "near 333 Post St, San Francisco, CA", cached for ten minutes.
+    func describe() async -> String? {
+        if let described, -described.at.timeIntervalSinceNow < 600 { return described.text }
+        guard let here = await current() else { return nil }
+        var parts: [String] = []
+        if #available(iOS 26, macOS 26, *) {
+            if let request = MKReverseGeocodingRequest(location: here),
+               let item = try? await Task { @MainActor in try await request.mapItems }.value.first {
+                parts = [item.address?.shortAddress, item.addressRepresentations?.cityWithContext].compactMap { $0 }
+            }
+        } else if let mark = try? await CLGeocoder().reverseGeocodeLocation(here).first {
+            parts = [mark.thoroughfare.map { [mark.subThoroughfare, $0].compactMap { $0 }.joined(separator: " ") },
+                     mark.locality, mark.administrativeArea].compactMap { $0 }
+        }
+        guard !parts.isEmpty else { return nil }
+        // shortAddress often already ends with the city; don't say it twice.
+        var unique: [String] = []
+        for part in parts where !unique.contains(where: { $0.contains(part) || part.contains($0) }) { unique.append(part) }
+        let text = "near " + unique.joined(separator: ", ")
+        described = (text, Date())
+        return text
     }
 
     private func fix(within seconds: Double) async -> CLLocation? {
