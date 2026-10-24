@@ -62,22 +62,36 @@ enum LensCards {
     /// person stays at the bottom edge whether or not the aid has anything up. The person reads
     /// bigger than the old strip (name as heading, role as body), since it's always there.
     static func split(_ view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false,
-                      avatar: (String) -> UIImage?) -> FlexBox {
+                      photoPending: Bool = false, avatar: (String) -> UIImage?) -> FlexBox {
         let shot = Self.shot(split: view, person: person, group: group, meSpeaking: meSpeaking)
         let hasAid = shot.answer != nil || !shot.working.isEmpty || shot.followup != nil
+        // Same large photo as the identity card: a third of the row, written after the card with
+        // its column held empty (`photoPending`), so the name lands first.
+        let photo = photoPending ? nil : person.flatMap { avatar($0.id) }
         return FlexBox(direction: .column, spacing: 14) {
             if hasAid { aidBox(shot) }
             FlexBox(direction: .column) {}.flexGrow(1)
             if group.count >= 2 {
                 groupRow(group, meSpeaking: meSpeaking, avatar: avatar).padding(20).background(.card)
             } else if let person {
-                FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
-                    if let photo = avatar(person.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                FlexBox(direction: .row, spacing: 16, crossAlignment: .start) {
+                    if photoPending || photo != nil {
+                        FlexBox(direction: .column) {
+                            if let photo {
+                                Image(image: photo, sizePreset: .fill, cornerRadius: .medium)
+                            } else {
+                                Text(" ", style: .meta)
+                            }
+                        }
+                        .flexGrow(1)
+                    }
                     FlexBox(direction: .column, spacing: 3) {
                         Text(person.name, style: .heading)
                         Text(person.headline, style: .body).flexShrink(1)
                         if let context = shot.context { Text(context, style: .meta, color: .secondary).flexShrink(1) }
-                    }.flexShrink(1)
+                    }
+                    .flexGrow(2)
+                    .flexShrink(1)
                 }
                 .padding(20)
                 .background(.card)

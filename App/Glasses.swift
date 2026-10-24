@@ -2127,7 +2127,9 @@ enum Identification {
             let members = inView.count >= 2 ? inView : []
             let partner = members.isEmpty ? person : nil
             lensShot = LensCards.shot(split: aidLens, person: partner, group: members, meSpeaking: meSpeaking)
-            return LensCards.split(aidLens, person: partner, group: members, meSpeaking: meSpeaking, avatar: avatar)
+            lensShot?.photoPending = photoPending && partner != nil
+            return LensCards.split(aidLens, person: partner, group: members, meSpeaking: meSpeaking,
+                                   photoPending: photoPending, avatar: avatar)
         }
     }
 
