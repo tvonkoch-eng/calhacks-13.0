@@ -33,6 +33,8 @@ import Observation
         let wearer = (Bundle.main.object(forInfoDictionaryKey: "WearerName") as? String)
             .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 } ?? "Toby"
         aid = Self.makeAid(wearer: wearer)
+        listener.mic = Listener.Mic(rawValue: UserDefaults.standard.string(forKey: "micSource") ?? "") ?? .glasses
+        listener.onLog = { SpeedLog.record($0) }
         listener.onPartial = { [weak self] text in self?.aid.heard(partial: text) }
         listener.onLine = { [weak self] text, speaker, level in self?.aid.heard(line: text, speaker: speaker, level: level) }
         aid.onLens = { [weak self] view in self?.glasses?.showAid(view) }
@@ -69,6 +71,22 @@ import Observation
         listener.stop()
         glasses?.aidArmed = false
         glasses?.showAid(LensView())
+    }
+
+    /// Glasses mic (default) or the phone's. Remembered across launches; switches live.
+    var mic: Listener.Mic {
+        get { listener.mic }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "micSource")
+            listener.use(newValue)
+        }
+    }
+
+    /// What it heard last, for the phone: the turn in progress, else the last finished line.
+    var heard: (tag: String, text: String)? {
+        if !aid.partial.isEmpty { return ("…", aid.partial) }
+        guard let line = aid.lines.last else { return nil }
+        return (aid.tag(line.speaker), line.text)
     }
 
     /// The wearer says the last line was theirs: fixes who's who when loudness guessed wrong.

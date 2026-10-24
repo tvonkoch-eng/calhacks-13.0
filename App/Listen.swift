@@ -30,6 +30,22 @@ import Observation
     @ObservationIgnored var onFileEnd: (() -> Void)?
     /// When the file's first audio went out: time zero of the recording, for lining up traces.
     @ObservationIgnored private(set) var fileStarted: Date?
+    /// Which microphone to use (iOS). `glasses` asks iOS for the Bluetooth headset input (the
+    /// glasses' mic array) and falls back to the phone only when the glasses mic isn't there.
+    enum Mic: String { case glasses, phone }
+    @ObservationIgnored var mic: Mic = .glasses
+    /// The input actually in use, e.g. "Ray-Ban Meta (Bluetooth)" or "iPhone Microphone".
+    var input = ""
+    /// Diagnostics for the host's log (the app's speed.jsonl): audio restarts, route, socket.
+    @ObservationIgnored var onLog: (([String: Any]) -> Void)?
+    #if os(iOS)
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var micWatch: Task<Void, Never>?
+    @ObservationIgnored private var restarting = false
+    /// Our own restart changes the route and the engine's configuration, which posts the very
+    /// notifications that trigger a restart. Ignore those for a moment, or it loops.
+    @ObservationIgnored private var lastRestart = Date.distantPast
+    #endif
 
     static let model = "muse-voice-transcribe-1.0"
     static let mode = "DIARIZATION"
@@ -73,29 +89,11 @@ import Observation
                 status = "Mic permission denied"
                 return
             }
-            #if os(iOS)
-            let session = AVAudioSession.sharedInstance()
-            // .mixWithOthers so the glasses' own audio session never takes the mic away from us.
-            try session.setCategory(.playAndRecord, mode: .measurement,
-                                    options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-            #endif
-
-            let input = engine.inputNode
-            let format = input.outputFormat(forBus: 0)
-            try uplink.prepare(from: format)
-            input.removeTap(onBus: 0)
-            // Realtime audio thread: hand the buffer to the uplink (it converts and sends off this
-            // thread) and send only a level reading to the main actor.
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, uplink = self.uplink] buffer, _ in
-                uplink.push(buffer)
-                let db = Uplink.decibels(buffer)
-                Task { @MainActor in self?.level = max(0, min(1, (db + 60) / 60)) }
-            }
-            engine.prepare()
-            try engine.start()
-
+            try startAudio()
             listening = true
+            #if os(iOS)
+            watchAudio()
+            #endif
             connect()
         } catch {
             status = "Audio failed: \(error.localizedDescription)"
@@ -103,7 +101,119 @@ import Observation
         }
     }
 
+    /// Session, route and tap, from scratch. Called on start and whenever iOS changed the audio
+    /// under us; the tap's format follows the route (the glasses' Bluetooth mic is 16 kHz).
+    private func startAudio() throws {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        // .mixWithOthers so the glasses' own audio session never takes the mic away from us;
+        // .allowBluetooth (hands-free profile) is what exposes the glasses' mic as an input.
+        try session.setCategory(.playAndRecord, mode: .measurement,
+                                options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        let headset = session.availableInputs?.first { $0.portType == .bluetoothHFP }
+        let builtIn = session.availableInputs?.first { $0.portType == .builtInMic }
+        try? session.setPreferredInput(mic == .glasses ? (headset ?? builtIn) : builtIn)
+        let current = session.currentRoute.inputs.first
+        input = current.map { $0.portType == .bluetoothHFP ? "\($0.portName) (Bluetooth)" : $0.portName } ?? "No microphone"
+        if mic == .glasses, headset == nil { input += " · glasses mic not available" }
+        #endif
+
+        if engine.isRunning { engine.stop() }
+        let node = engine.inputNode
+        node.removeTap(onBus: 0)
+        let format = node.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw NSError(domain: "Listener", code: 2, userInfo: [NSLocalizedDescriptionKey: "No microphone input"])
+        }
+        try uplink.prepare(from: format)
+        // Realtime audio thread: hand the buffer to the uplink (it converts and sends off this
+        // thread) and send only a level reading to the main actor.
+        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, uplink = self.uplink] buffer, _ in
+            uplink.push(buffer)
+            let db = Uplink.decibels(buffer)
+            Task { @MainActor in self?.level = max(0, min(1, (db + 60) / 60)) }
+        }
+        engine.prepare()
+        try engine.start()
+        onLog?(["event": "micStart", "input": input, "rate": Int(format.sampleRate)])
+    }
+
+    #if os(iOS)
+    /// iOS stops the engine without telling the tap: an interruption, a route change (the glasses
+    /// connecting over Bluetooth, a reconnect), a configuration change, a media-services reset. The
+    /// uplink then padded silence forever, so Muse stayed connected and heard nothing: "listening"
+    /// and deaf. Every one of those now restarts the audio, and a watchdog catches anything else
+    /// (no mic buffer for 2 s).
+    private func watchAudio() {
+        let center = NotificationCenter.default
+        observers.forEach(center.removeObserver)
+        let session = AVAudioSession.sharedInstance()
+        let names: [(Notification.Name, AnyObject?)] = [
+            (.AVAudioEngineConfigurationChange, engine),
+            (AVAudioSession.interruptionNotification, session),
+            (AVAudioSession.routeChangeNotification, session),
+            (AVAudioSession.mediaServicesWereResetNotification, session),
+        ]
+        observers = names.map { name, object in
+            center.addObserver(forName: name, object: object, queue: .main) { [weak self] note in
+                let began = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue
+                let reason = note.name.rawValue
+                MainActor.assumeIsolated {
+                    guard let self, self.listening, self.file == nil else { return }
+                    if began {
+                        self.status = "Mic interrupted"
+                        self.onLog?(["event": "micInterrupted"])
+                        return
+                    }
+                    // Our own restart posts these too; a real change still gets caught by the
+                    // stall watchdog if it lands inside the window.
+                    guard Date().timeIntervalSince(self.lastRestart) > 1.5 || self.engine.isRunning == false else { return }
+                    self.restartAudio(reason: reason)
+                }
+            }
+        }
+        micWatch?.cancel()
+        micWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, self.listening, self.file == nil else { continue }
+                if self.uplink.secondsSinceInput > 2 { self.restartAudio(reason: "micStalled") }
+            }
+        }
+    }
+
+    private func restartAudio(reason: String) {
+        guard !restarting else { return }
+        restarting = true
+        lastRestart = Date()
+        defer { restarting = false }
+        let before = input
+        do {
+            try startAudio()
+            if socket != nil, status.hasPrefix("Mic") { status = "Listening" }
+            onLog?(["event": "micRestart", "reason": reason, "from": before, "to": input])
+        } catch {
+            status = "Mic failed: \(error.localizedDescription)"
+            onLog?(["event": "micRestartFailed", "reason": reason, "error": error.localizedDescription])
+        }
+    }
+
+    /// Switch microphones while listening.
+    func use(_ mic: Mic) {
+        guard mic != self.mic else { return }
+        self.mic = mic
+        if listening, file == nil { restartAudio(reason: "micChosen") }
+    }
+    #endif
+
     func stop() {
+        #if os(iOS)
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        micWatch?.cancel()
+        micWatch = nil
+        #endif
         connection += 1
         player?.cancel()
         player = nil
@@ -205,6 +315,7 @@ import Observation
             // Handshake accepted: only now start streaming, or the server sees audio before config.
             uplink.use(socket)
             status = "Listening"
+            onLog?(["event": "museConnected", "input": input]) 
         case "speechStart":
             turnStart = audioMs
         case "speaker":
@@ -222,6 +333,7 @@ import Observation
             if !text.isEmpty { onLine?(text, speaker, level) }
         case "error":
             status = "Transcription error: \(event["message"] as? String ?? "unknown")"
+            onLog?(["event": "museError", "message": event["message"] as? String ?? "unknown"])
         default:
             break   // speechEnd / audioProgress, and anything new
         }
@@ -236,6 +348,7 @@ import Observation
             transcript = ""
         }
         status = "Reconnecting (\(reason))"
+        onLog?(["event": "museDropped", "reason": reason])
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard let self, self.listening, connection == self.connection else { return }
@@ -282,6 +395,7 @@ private final class Uplink: @unchecked Sendable {
             throw NSError(domain: "Listener", code: 1, userInfo: [NSLocalizedDescriptionKey: "Can't convert audio to 24 kHz PCM"])
         }
         queue.sync { self.converter = converter; pending.removeAll() }
+        lock.lock(); lastInput = Date(); lock.unlock()
     }
 
     func use(_ next: URLSessionWebSocketTask?) {
@@ -323,7 +437,15 @@ private final class Uplink: @unchecked Sendable {
         }
     }
 
+    /// Wall-clock of the last mic buffer, for the stall watchdog. Silence padding doesn't count.
+    private var lastInput = Date()
+    var secondsSinceInput: TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(lastInput)
+    }
+
     func push(_ buffer: AVAudioPCMBuffer) {
+        lock.lock(); lastInput = Date(); lock.unlock()
         // The tap reuses its buffer once we return, so copy before crossing threads.
         guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else { return }
         copy.frameLength = buffer.frameLength

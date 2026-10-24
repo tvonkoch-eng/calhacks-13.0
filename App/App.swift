@@ -25,6 +25,8 @@ struct CalHacksApp: App {
                     glasses.store = store
                     assistant.glasses = glasses
                     assistant.store = store
+                    // Listening is on from launch; the mic pill turns it off.
+                    Task { await assistant.arm() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
                     // when a push lands; Store re-reads the roster on the same notification.
                     NotificationCenter.default.addObserver(forName: Tuning.changed, object: nil, queue: .main) { _ in
@@ -143,6 +145,7 @@ struct HomeView: View {
                         notice
                             .padding(.horizontal, 20)
                             .padding(.bottom, 10)
+                        if assistant.armed { HeardLine().padding(.horizontal, 20).padding(.bottom, 10) }
                         if assistant.armed, !assistant.aid.lens.isEmpty {
                             AidStrip(view: assistant.aid.lens)
                                 .padding(.horizontal, 16)
@@ -214,6 +217,18 @@ struct HomeView: View {
                     glasses.watching.toggle()
                 } label: {
                     Label("Auto-recognize", systemImage: glasses.watching ? "checkmark" : "eye.slash")
+                }
+                Section("Microphone") {
+                    Button {
+                        assistant.mic = .glasses
+                    } label: {
+                        Label("Glasses", systemImage: assistant.mic == .glasses ? "checkmark" : "eyeglasses")
+                    }
+                    Button {
+                        assistant.mic = .phone
+                    } label: {
+                        Label("iPhone", systemImage: assistant.mic == .phone ? "checkmark" : "iphone")
+                    }
                 }
                 #if DEBUG
                 Section("Run on") {
@@ -322,6 +337,31 @@ struct HomeView: View {
 }
 
 /// The question just heard and the answer that went to the lens.
+/// Proof of life for the mic: which microphone, how loud, and the last thing it heard.
+struct HeardLine: View {
+    @Environment(Assistant.self) private var assistant
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "waveform").font(.caption).foregroundStyle(.red)
+                    .opacity(0.35 + 0.65 * Double(assistant.level))
+                Text(assistant.listener.input.isEmpty ? assistant.status : assistant.listener.input)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if assistant.listener.status != "Listening" {
+                    Text("· \(assistant.listener.status)").font(.caption).foregroundStyle(.orange).lineLimit(1)
+                }
+            }
+            if let heard = assistant.heard {
+                (Text(heard.tag + "  ").font(.caption2.weight(.bold)).foregroundColor(.secondary)
+                 + Text(heard.text).font(.subheadline))
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// What the conversation aid has on the lens right now, on the phone.
 struct AidStrip: View {
     let view: LensView

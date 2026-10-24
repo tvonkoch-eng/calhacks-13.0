@@ -864,7 +864,10 @@ enum Identification {
                 guard quiet > limit else { continue }
                 SpeedLog.record(["event": "frameStall", "quietMs": (quiet * 1000).rounded(),
                                  "flowing": flowing, "stream": self.streamState])
-                if self.cameraRestartTried {
+                // On real glasses a camera restart "succeeds" and the new stream dies on its first
+                // frame (Critical error, 17:48:09), while a session restart is back streaming in
+                // ~2 s. So real glasses go straight to the session; only the simulator tries the camera.
+                if self.cameraRestartTried || !self.mocking {
                     self.scheduleRecovery(reason: "frameStall")
                 } else {
                     self.cameraRestartTried = true
@@ -1074,8 +1077,13 @@ enum Identification {
         for track in live where track.looks > 0 {
             // A clear look at a strong match is enough on its own; anything weaker has to build up
             // evidence over a couple of frames first.
-            guard let match = store.confidentMatch(track.probe),
-                  track.weight >= (match.score >= strongScore ? 0.5 : minEvidence) else { continue }
+            // A face followed over several looks has earned the normal bar (minScore/minGap, the
+            // same one a press uses); a single look still needs the strict one. The strict bar
+            // was only ever cleared by someone looking straight into the glasses, so a person
+            // talking to you at an angle never got named.
+            let evidenced = track.weight >= minEvidence
+            guard let match = evidenced ? store.match(track.probe) : store.confidentMatch(track.probe),
+                  evidenced || match.score >= strongScore else { continue }
             let current = track.updated == frameTime
             if current { seenNow.append((match.person.id, track.attention)) }
             guard current, track.attention >= focus * focusShare,
