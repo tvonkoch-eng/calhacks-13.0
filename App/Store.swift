@@ -102,21 +102,40 @@ struct Match {
         }
     }
 
-    /// Bundled App/References/<id>/*.jpg are match examples, loaded once per person (flag in UserDefaults).
+    /// Bundled App/References/<id>_NN.jpg are match examples. We remember the exact filenames that
+    /// have been embedded, not just "done": the old one-shot Bool meant photos added to an existing
+    /// install were silently ignored forever, which is the failure you hit the moment you try to
+    /// improve someone's recognition by giving them more pictures.
     private func loadReferences(_ id: String) {
         let key = "refsLoaded.\(id)"
-        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let defaults = UserDefaults.standard
         // Xcode flattens bundled files, so references are named <id>_NN.jpg.
         let urls = (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
             .filter { $0.lastPathComponent.hasPrefix("\(id)_") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard !urls.isEmpty else { return }
-        for url in urls {
+
+        var loaded: Set<String>
+        if let names = defaults.stringArray(forKey: key) {
+            loaded = Set(names)
+        } else {
+            // Upgrading from the Bool flag: it does not say which files it covered, so re-embed the
+            // whole set once rather than leave this person with a half-loaded gallery.
+            if defaults.bool(forKey: key) { gallery[id] = nil }
+            loaded = []
+        }
+
+        let fresh = urls.filter { !loaded.contains($0.lastPathComponent) }
+        guard !fresh.isEmpty else { return }
+        for url in fresh {
             guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
                   let face = FaceEngine.faces(in: image).first else { continue }
             gallery[id, default: []].append(face.embedding)
         }
         save()
-        UserDefaults.standard.set(true, forKey: key)
+        // Record every bundled name, including any Vision could not read, so a photo that will
+        // never yield a face is not re-decoded on every single launch.
+        defaults.set(urls.map(\.lastPathComponent), forKey: key)
     }
 
     /// Headshot from a bundled App/Faces/<id>.jpg|png becomes the avatar only; match examples come from the photo library.
