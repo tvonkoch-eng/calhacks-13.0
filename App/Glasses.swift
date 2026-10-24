@@ -374,7 +374,10 @@ enum Identification {
 
     /// Glasses capture button / action button → identify. Needs Inputs enabled in Wearables Developer Center.
     private func attachInputs(_ session: DeviceSession) {
-        guard let inputs = try? session.addInputs(configuration: InputsConfiguration(consumeBack: false)) else { return }
+        // Physical buttons only. Including .neuralBand / .captouch here makes Inputs swallow the band's
+        // pinch (haptic, but the lens button never gets the click).
+        let configuration = InputsConfiguration(sources: [.captureButton, .actionButton], consumeBack: false)
+        guard let inputs = try? session.addInputs(configuration: configuration) else { return }
         let events = inputs.events
         inputTask = Task { [weak self] in
             for await event in events {
@@ -455,6 +458,7 @@ enum Identification {
     private func hud() -> FlexBox {
         LensCards.hud(
             result: result,
+            avatar: { [store] in store?.avatars[$0] },
             identifying: identifying,
             confirming: confirming,
             connected: store?.connectedCount ?? 0,

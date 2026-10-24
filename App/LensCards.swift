@@ -16,51 +16,92 @@ enum LensCards {
         .background(.card)
     }
 
-    /// The whole identity experience on the lens: who you're looking at (if anyone), and one
-    /// row along the bottom with the people-met counter on the left and Identify on the right.
-    /// No card behind it, so it floats; Identify is the only control and always has focus,
-    /// so a pinch presses it.
+    /// The identity experience on the lens. Idle: just the bottom row, floating. With someone
+    /// identified: a card with their photo, name, role and background, over the same bottom row.
+    /// The bottom row is the people-met counter on the left and Identify on the right; Identify is
+    /// the only control and always has focus, so a pinch presses it.
     static func hud(
         result: Identification,
+        avatar: (String) -> UIImage?,
         identifying: Bool,
         confirming: Bool,
         connected: Int,
         identify: @escaping @Sendable () -> Void
     ) -> FlexBox {
         let label = identifying ? "Identifying" : confirming ? "Are you sure?" : "Identify"
-        let icon: IconName = confirming ? .checkmark : .eye
-        let badge = counterBadge(connected)
-        let (title, subtitle) = headline(for: result, identifying: identifying)
+        let bottom = bottomRow(label: label, icon: confirming ? .checkmark : .eye, connected: connected, identify: identify)
 
-        return FlexBox(direction: .column, spacing: 18) {
-            if let title {
+        switch result {
+        case .known(let match, _):
+            let person = match.person
+            let photo = avatar(person.id)
+            let details = Array(person.details.prefix(3))
+            return FlexBox(direction: .column, spacing: 16) {
+                FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
+                    if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                    FlexBox(direction: .column, spacing: 2) {
+                        Text(person.name, style: .heading)
+                        Text(person.role, style: .meta, color: .secondary)
+                    }
+                }
+                FlexBox(direction: .column, spacing: 10) {
+                    for detail in details {
+                        FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                            Icon(name: icon(detail.kind), style: .outline)
+                            Text(detail.text, style: .body).flexShrink(1)
+                        }
+                    }
+                }
+                bottom
+            }
+            .padding(22)
+            .background(.card)
+
+        case .noFace where !identifying, .unknown where !identifying:
+            let (title, subtitle) = message(for: result)
+            return FlexBox(direction: .column, spacing: 16) {
                 FlexBox(direction: .column, spacing: 4) {
                     Text(title, style: .heading)
-                    if let subtitle { Text(subtitle, style: .meta, color: .secondary) }
+                    Text(subtitle, style: .meta, color: .secondary)
                 }
+                bottom
             }
-            FlexBox(direction: .row, spacing: 8, crossAlignment: .center) {
-                FlexBox(direction: .row, spacing: 6, crossAlignment: .center) {
-                    Icon(name: .person, style: .outline)
-                    if let badge { Image(image: badge, sizePreset: .icon) }
-                }
-                .flexGrow(1)
-                ButtonGroup(alignment: .end) {
-                    Button(label: label, style: .primary, iconName: icon, onClick: identify)
-                        .actionRole(.primary)
-                }
-            }
+            .padding(22)
+            .background(.card)
+
+        default:
+            return FlexBox(direction: .column) { bottom }.padding(20)
         }
-        .padding(20)
     }
 
-    private static func headline(for result: Identification, identifying: Bool) -> (String?, String?) {
-        // While identifying, the current person stays up; a stale "No one in view" does not.
-        switch result {
-        case .known(let match, _): return (match.person.name, match.person.role)
-        case .noFace where !identifying: return ("No one in view", "Face them and try again")
-        case .unknown where !identifying: return ("No one saved yet", "Add people in the app")
-        default: return (nil, nil)
+    private static func bottomRow(label: String, icon: IconName, connected: Int,
+                                  identify: @escaping @Sendable () -> Void) -> FlexBox {
+        let badge = counterBadge(connected)
+        return FlexBox(direction: .row, spacing: 8, crossAlignment: .center) {
+            FlexBox(direction: .row, spacing: 6, crossAlignment: .center) {
+                Icon(name: .person, style: .outline)
+                if let badge { Image(image: badge, sizePreset: .icon) }
+            }
+            .flexGrow(1)
+            ButtonGroup(alignment: .end) {
+                Button(label: label, style: .primary, iconName: icon, onClick: identify)
+                    .actionRole(.primary)
+            }
+        }
+    }
+
+    private static func message(for result: Identification) -> (String, String) {
+        if case .unknown = result { return ("No one saved yet", "Add people in the app") }
+        return ("No one in view", "Face them and try again")
+    }
+
+    /// No plain briefcase exists in the lens icon set (crossBriefcase is a first-aid kit).
+    private static func icon(_ kind: Person.Kind) -> IconName {
+        switch kind {
+        case .school: .graduationCap
+        case .work: .lightBulb
+        case .from: .house
+        case .interests: .heart
         }
     }
 
