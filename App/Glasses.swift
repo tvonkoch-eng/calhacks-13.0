@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import CoreImage
 import MWDATCamera
@@ -365,6 +366,23 @@ enum Identification {
     /// else. Same person ~0.4+, anyone else ~0.1, so a blurred look of the same face rarely trips it.
     /// `differentBelow`.
     @ObservationIgnored private var differentBelow: Float { Tuning.float("differentBelow", 0.25) }
+    /// The card also comes down when you turn away from its person: they haven't been seen for
+    /// `turnAfter` and the view has changed by `turnDiff` (mean grey-level change on a 16x28 copy,
+    /// 0-255) since they last were. Measured Oct 24: steady looks stay at or under ~34, head turns
+    /// run 44-74. Without this the card sat on Avi for 2.7 s of motion blur while you turned.
+    @ObservationIgnored private var turnAfter: TimeInterval { TimeInterval(Tuning.float("turnAfter", 0.3)) }
+    @ObservationIgnored private var turnDiff: Float { Tuning.float("turnDiff", 40) }
+    @ObservationIgnored private var viewNow: [Float]?
+    @ObservationIgnored private var cardView: [Float]?
+    @ObservationIgnored private var cardSeenAt = Date.distantPast
+    /// A name also goes up once the same person has been the clear top match of a track for
+    /// `streakLooks` scans in a row (score >= streakScore, ahead by >= streakGap), before the full
+    /// confident bar. Mirabelle was top from her first look and clear by 0.4 s, but her score took
+    /// 2.9 s to reach 0.38. `streakLooks: 0` turns it off.
+    @ObservationIgnored private var streakLooks: Int { Tuning.int("streakLooks", 6) }
+    @ObservationIgnored private var streakScore: Float { Tuning.float("streakScore", 0.22) }
+    @ObservationIgnored private var streakGap: Float { Tuning.float("streakGap", 0.12) }
+    @ObservationIgnored private var streaks: [Int: (person: String, count: Int)] = [:]
     /// The best match for the face in view right now, confident or not, for the live readout.
     var likeness: Likeness?
     struct Likeness: Equatable {
@@ -1023,6 +1041,8 @@ enum Identification {
         pov = nil
         autoBusy = false
         tracker.reset()
+        streaks.removeAll()
+        cardView = nil
         announced.removeAll()
         photoVerdict.removeAll(); photoMatch.removeAll(); photoHit.removeAll(); photoTries.removeAll()
         resumePhoto(nil)
@@ -1270,6 +1290,7 @@ enum Identification {
             autoBusy = false
             return
         }
+        viewNow = small.flatMap(Self.viewSignature)
         await autoScan(ci)
     }
 
@@ -1369,6 +1390,8 @@ enum Identification {
 
     private func startReplay(_ run: FrameRun) {
         tracker.reset()
+        streaks.removeAll()
+        cardView = nil
         announced.removeAll()
         dissent = nil
         sighted.removeAll()
@@ -1515,9 +1538,9 @@ enum Identification {
 
     /// Takes the card down because a different face is now the main one. Not awaited: clearing
     /// must not hold up the scan that may name the new face a frame later.
-    private func clearCard(for main: FaceTracker.Track, now: Date) {
+    private func clearCard(for main: FaceTracker.Track?, now: Date, reason: String) {
         guard let card = onCard else { return }
-        var log: [String: Any] = ["event": "autoClear", "person": card, "trackLooks": main.looks]
+        var log: [String: Any] = ["event": "autoClear", "person": card, "reason": reason, "trackLooks": main?.looks ?? 0]
         if replaying { log["replayMs"] = Int(now.timeIntervalSince(replayBase) * 1000) }
         SpeedLog.record(log)
         result = .ready
@@ -1527,6 +1550,41 @@ enum Identification {
         } else {
             renderLens()
         }
+    }
+
+    private func clearIfTurnedAway(_ now: Date) {
+        guard followFace, !identifying, onCard != nil, now.timeIntervalSince(max(cardSeenAt, resultAt)) >= turnAfter,
+              let view = viewNow, let then = cardView, view.count == then.count else { return }
+        var diff: Float = 0
+        vDSP_meamgv(zip(view, then).map { $0 - $1 }, 1, &diff, vDSP_Length(view.count))
+        guard diff >= turnDiff else { return }
+        clearCard(for: nil, now: now, reason: "turnedAway")
+    }
+
+    /// A 16x28 grey copy of a frame: enough to tell a steady look from a head turn.
+    static func viewSignature(_ image: UIImage) -> [Float]? {
+        guard let cg = image.cgImage else { return nil }
+        let w = 16, h = 28
+        var bytes = [UInt8](repeating: 0, count: w * h)
+        let drawn: Bool = bytes.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        return drawn ? bytes.map(Float.init) : nil
+    }
+
+    /// The streak path to a name: the same clear top match, scan after scan.
+    private func streakMatch(_ track: FaceTracker.Track, store: Store) -> Match? {
+        guard streakLooks > 0, track.updated == clockNow, track.looks > 0 else { return nil }
+        let ranked = store.ranked(track.probe)
+        guard let top = ranked.first else { return nil }
+        let gap = top.score - (ranked.dropFirst().first?.score ?? 0)
+        guard top.score >= streakScore, gap >= streakGap else { streaks[track.id] = nil; return nil }
+        let count = streaks[track.id].map { $0.person == top.person.id ? $0.count + 1 : 1 } ?? 1
+        streaks[track.id] = (top.person.id, count)
+        return count >= streakLooks ? top : nil
     }
 
     /// True when the main face is clearly not the card's person: it isn't the track that was
@@ -1589,6 +1647,7 @@ enum Identification {
         guard !live.isEmpty else {
             if facing != nil { facing = nil }
             if likeness != nil { likeness = nil }
+            clearIfTurnedAway(frameTime)
             return
         }
 
@@ -1610,14 +1669,22 @@ enum Identification {
         let cardTrack = onCard.flatMap { card in inView.first { announced[$0.id] == card } }
         var main = inView.max { facePx($0) < facePx($1) }
         if let cardTrack, let biggest = main, facePx(cardTrack) * mainFaceSlack >= facePx(biggest) { main = cardTrack }
+        // The card's person is in view if their announced track is, or any face in view looks
+        // like them: a lens write pauses scanning ~0.85 s, and a face that moved meanwhile comes
+        // back as a new track.
+        let cardInView = cardTrack != nil || onCard.map { card in
+            inView.contains { $0.looks > 0 && store.ranked($0.probe).first.map { $0.person.id == card && $0.score >= streakScore } == true }
+        } == true
+        if cardInView { cardSeenAt = frameTime; cardView = viewNow }
         // A different face in front of you: the old card comes down now, before the new face
-        // is even named. Nobody in view leaves it up.
+        // is even named. Nobody in view leaves it up — unless you have turned away (below).
         if followFace, !identifying, let card = onCard, let main, facePx(main) >= minAnnouncePx,
            isDifferentFace(main, from: card, store: store) {
-            clearCard(for: main, now: frameTime)
+            clearCard(for: main, now: frameTime, reason: "differentFace")
         }
+        clearIfTurnedAway(frameTime)
         for track in live where track.weight >= minEvidence {
-            guard let match = store.confidentMatch(track.probe) else { continue }
+            guard let match = store.confidentMatch(track.probe) ?? streakMatch(track, store: store) else { continue }
             if track.updated == frameTime { seenNow.append((match.person.id, match.score)) }
             // Toby's floor: a stream match on a face this small once named someone who wasn't there.
             guard facePx(track) >= minAnnouncePx else { continue }
@@ -1662,6 +1729,8 @@ enum Identification {
             dissent = nil
         }
         announced[chosen.track.id] = chosen.match.person.id
+        cardSeenAt = frameTime
+        cardView = viewNow
         result = .known(chosen.match, chosen.track.best)
         recordSeen()
         let ranked = store.ranked(chosen.track.probe)
