@@ -64,19 +64,6 @@ enum Identification {
     @ObservationIgnored private var sharpSamples: [Float] = []
     @ObservationIgnored private var lastStats = Date.distantPast
     @ObservationIgnored private var povWatch: Task<Void, Never>?
-    /// What the link delivered over the last second, for the stream lab: the request is not the result.
-    var delivered: Delivered?
-    struct Delivered { let size: String; let fps: Double }
-    @ObservationIgnored private var secFrom = Date()
-    @ObservationIgnored private var secFrames = 0
-    /// When on, every frame is written to `Documents/frames` (see `FrameRecorder`), a new run per camera.
-    var recordFrames = false {
-        didSet {
-            guard recordFrames != oldValue else { return }
-            if recordFrames, camera != nil { FrameRecorder.shared.start(label: streamLabel) }
-            if !recordFrames { FrameRecorder.shared.stop() }
-        }
-    }
 
     @ObservationIgnored var store: Store?
     /// The last automatic "seen" mark, so correcting a wrong match restores the wrong person's time.
@@ -112,34 +99,25 @@ enum Identification {
     /// score 0.79 on half-size crops. Both knobs are UserDefaults so they move with no rebuild:
     /// `streamFps` (2/7/15/24/30) and `streamRes` ("low"/"medium"/"high").
     ///
-    /// Now high at 15. A sweep of every setting on a real pair (Oct 24) found it the fastest rate
-    /// that kept full 720x1280 throughout; high at 30 fell to 504x896 within ~10 s, and per-frame
-    /// sharpness falls as the rate rises. Face scans cost the same at every size.
+    /// Default is now medium at 2 fps (Toby's call, for battery). That is 0.9 Mpx/s against the
+    /// 1.6 Mpx/s of low at 7, so the radio carries less while each face is ~1.4x bigger, which is
+    /// what detection and alignment were short of: at low a face was found in only 30-70% of frames.
     /// What the currently-attached camera was actually built with, so a pushed change to
     /// `streamRes`/`streamFps` can notice it needs a new camera. The SDK fixes resolution and
     /// frame rate at addCamera time; changing the defaults alone does nothing until then.
     @ObservationIgnored private var liveStreamSettings: String?
-    private var streamSettings: String { "\(streamFps)/\(streamRes)" }
-    var streamRes: String { UserDefaults.standard.string(forKey: "streamRes") ?? "high" }
-    var streamFps: Int { Tuning.int("streamFps", 15) }
-    /// Names a recorded run. A simulated pair ignores the knobs (see `streamConfig`), so say so.
-    private var streamLabel: String {
-        #if DEBUG
-        if mocking { return "sim-medium-24" }
-        #endif
-        return "\(streamRes)-\(streamFps)"
-    }
+    private var streamSettings: String { "\(Tuning.int("streamFps", 2))/\(UserDefaults.standard.string(forKey: "streamRes") ?? "medium")" }
 
     private var streamConfig: StreamConfiguration {
         #if DEBUG
         // A simulated pair is a local AVCaptureSession with no radio at all.
         if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24) }
         #endif
-        let fps = UInt(streamFps)
-        switch streamRes {
-        case "high": return StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: fps)
-        case "medium": return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
-        default: return StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: fps)
+        let fps = UInt(Tuning.int("streamFps", 2))
+        let resolution: StreamingResolution = switch UserDefaults.standard.string(forKey: "streamRes") ?? "medium" {
+        case "high": .high
+        case "low": .low
+        default: .medium
         }
         // The glasses' mic rides the camera stream (SDK 1.0.1, experimental): 16 kHz mono PCM,
         // no Bluetooth hands-free route, so iOS's audio is never touched.
@@ -234,24 +212,15 @@ enum Identification {
     /// Look at every frame we can. A scan is ~8 ms of detection plus ~6 ms per sharp face, and
     /// frames arrive at 7 fps, so the budget is not the constraint — evidence is. Each extra look
     /// at the same face is another vote in the fused embedding.
-    /// 0.06 s: at 15 fps (67 ms apart) that is every frame. A scan is ~17 ms and `autoBusy`
-    /// keeps them from overlapping, so the phone keeps up; the second look — the one that lets a
-    /// name go up — now comes one frame after the first instead of two.
-    @ObservationIgnored private var autoInterval: TimeInterval { TimeInterval(Tuning.float("autoInterval", 0.06)) }
+    @ObservationIgnored private var autoInterval: TimeInterval { TimeInterval(Tuning.float("autoInterval", 0.12)) }
     /// Faces followed across frames, with their embeddings accumulating. This replaces the old
     /// "two consecutive confident frames, reset on any miss" rule, which discarded every near-miss.
     @ObservationIgnored private let tracker = FaceTracker()
     /// How much accumulated evidence a track needs before it may claim the lens. Weight is the
     /// decayed count of sharp looks, so 1.6 is roughly two good frames or three mediocre ones.
     @ObservationIgnored private var minEvidence: Float { Tuning.float("minEvidence", 1.6) }
-    /// Who each track was announced as, so a held card doesn't re-fire — and so a track whose
-    /// fused face later settles on somebody else can correct the card (see `recheckLooks`).
-    @ObservationIgnored private var announced: [Int: String] = [:]
-    /// Consecutive scans a shown track has matched someone *else*: (track, person, count).
-    @ObservationIgnored private var dissent: (track: Int, person: String, count: Int)?
-    /// Scans in a row a different person must win before a shown name is corrected. 3 is ~200 ms
-    /// at 15 fps: long enough not to flicker between two close scores. `recheckLooks`, 0 = off.
-    @ObservationIgnored private var recheckLooks: Int { Tuning.int("recheckLooks", 3) }
+    /// Tracks that have already had their turn on the lens, so a held card doesn't re-fire.
+    @ObservationIgnored private var announced: Set<Int> = []
     /// When the current card went up, so a stale one stops blocking a new person.
     @ObservationIgnored private var resultAt = Date.distantPast
     /// Don't announce the same person over and over.
@@ -303,14 +272,6 @@ enum Identification {
     private(set) static var ready = false
 
     static func configure() {
-        // The stream lab's pickers stored whatever was tried last (often 30 fps). They are gone,
-        // so drop those values once and let the high/15 defaults apply; a tuning push still wins.
-        let defaults = UserDefaults.standard
-        if !defaults.bool(forKey: "streamDefaultsHigh15") {
-            defaults.removeObject(forKey: "streamRes")
-            defaults.removeObject(forKey: "streamFps")
-            defaults.set(true, forKey: "streamDefaultsHigh15")
-        }
         do {
             try Wearables.configure()
             ready = true
@@ -809,7 +770,6 @@ enum Identification {
         resultAt = .distantPast
         // Dismissing is "show me someone else": let the watch re-offer anyone it is tracking.
         announced.removeAll()
-        dissent = nil
         renderLens()
     }
 
@@ -850,12 +810,16 @@ enum Identification {
         displayReady = false
         session = nil
         connected = false
-        delivered = nil
-        FrameRecorder.shared.stop()
-        pendingSend?.cancel()
-        pendingSend = nil
-        answer = nil
-        result = .ready
+        lensWriter?.cancel()
+        lensWriter = nil
+        queuedView = nil
+        finishWrites(false)
+        if !keepContext {
+            aidLens = LensView()
+            bioTask?.cancel()
+            result = .ready
+            resultAt = .distantPast
+        }
         streamLive = false
         streamState = "none"
         frameWatchdog?.cancel()
@@ -867,8 +831,9 @@ enum Identification {
         autoBusy = false
         tracker.reset()
         announced.removeAll()
-        dissent = nil
-        resultAt = .distantPast
+        photoVerdict.removeAll(); photoMatch.removeAll(); photoHit.removeAll(); photoTries.removeAll()
+        resumePhoto(nil)
+        photoBusy = false
         resumeFrame(nil)
         self.status = status
     }
@@ -922,25 +887,11 @@ enum Identification {
         }
     }
 
-    /// A camera rebuild fixes a wedged stream; it cannot fix a wedged session. When frames stay
-    /// gone after a rebuild, tear the session down and build a new one — that is the reset the SDK
-    /// actually honours, and before this the only way out was killing the app.
-    private func recoverSession(reason: String) {
-        guard !userDisconnected, Date().timeIntervalSince(lastSessionRecovery) > 20 else { return }
-        lastSessionRecovery = Date()
-        restartSession(reason: reason, status: "Reconnecting to your glasses…")
-    }
-
-    private func restartSession(reason: String, status: String) {
-        SpeedLog.record(["event": "sessionRecover", "reason": reason])
-        display?.stop()
-        session?.stop()
-        teardown(status: status)
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1))
-            await self?.connect()
-        }
-    }
+    /// The first frame of a new stream took 6-12 s on Toby's glasses, every time. The old 6 s stall
+    /// limit fired before it arrived and tore down a stream that was about to work.
+    @ObservationIgnored private var firstFrameGrace: TimeInterval { TimeInterval(Tuning.float("firstFrameGrace", 15)) }
+    /// Once frames have flowed (2 fps), this long without one is a stall.
+    @ObservationIgnored private var stallAfter: TimeInterval { TimeInterval(Tuning.float("stallAfter", 6)) }
 
     /// The watch path waits on frames that simply arrive, so a silent stream looks exactly like an
     /// empty room. This notices the silence and repairs it, and it is the only thing that does:
@@ -1038,14 +989,11 @@ enum Identification {
         liveStreamSettings = streamSettings
         frameSizes.removeAll()
         statsFrom = Date()
-        if recordFrames { FrameRecorder.shared.start(label: streamLabel) }
-        let recorder = FrameRecorder.shared
         cameraTokens.append(camera.stream.videoFramePublisher.listen { [weak self] frame in
             // Decode on the publisher's own thread. Hopping to the main actor first and calling
             // makeUIImage() there is what made the POV tile stutter: the decode was spending the
             // UI's frame budget. The main actor only ever receives finished images.
             let image = frame.makeUIImage()
-            if let image, recorder.isRecording { recorder.save(image) }
             let small = image?.fitted(to: 360)
             Task { @MainActor in
                 guard let self else { return }
@@ -1123,14 +1071,7 @@ enum Identification {
         let key = "\(Int(image.size.width * scale))x\(Int(image.size.height * scale))"
         frameSizes[key, default: 0] += 1
         statsFrames += 1
-        secFrames += 1
         let now = Date()
-        let second = now.timeIntervalSince(secFrom)
-        if second >= 1 {
-            delivered = Delivered(size: key, fps: (Double(secFrames) / second * 10).rounded() / 10)
-            secFrames = 0
-            secFrom = now
-        }
         guard now.timeIntervalSince(lastStats) >= 10 else { return }
         lastStats = now
         let seconds = max(now.timeIntervalSince(statsFrom), 0.001)
@@ -1214,31 +1155,40 @@ enum Identification {
         }
 
         // Strongest evidence first; the first track that clears the bar and is allowed on screen wins.
-        // A track that already had its turn keeps being matched: memory no longer fades, so its
-        // fused face only gets better, and if it settles on someone else for `recheckLooks` scans
-        // in a row the card is corrected rather than left wrong for 20 s.
         var chosen: (track: FaceTracker.Track, match: Match)?
-        var correcting = false
-        for track in live where track.weight >= minEvidence {
-            guard let match = store.confidentMatch(track.probe) else { continue }
-            var isCorrection = false
-            if let shownAs = announced[track.id] {
-                guard recheckLooks > 0, shownAs != match.person.id else {
-                    if dissent?.track == track.id { dissent = nil }
-                    continue
-                }
-                let count = dissent.map { $0.track == track.id && $0.person == match.person.id ? $0.count + 1 : 1 } ?? 1
-                dissent = (track.id, match.person.id, count)
-                guard count >= recheckLooks else { continue }
-                isCorrection = true
+        var seenNow: [(id: String, attention: Float)] = []
+        let inFrame = live.filter { $0.updated == frameTime }
+        let focus = inFrame.map(\.attention).max() ?? 0
+        frameWidth = image.extent.width
+        let photos = usePhotos
+        for track in live where track.looks > 0 {
+            let current = track.updated == frameTime
+            let focused = current && track.attention >= focus * focusShare
+            // What the stream alone says. A clear look at a strong match, or several looks fused.
+            let evidenced = track.weight >= minEvidence
+            let lowRes = (evidenced ? store.match(track.probe) : store.confidentMatch(track.probe))
+                .flatMap { evidenced || $0.score >= strongScore ? $0 : nil }
+            // The photo's word beats the stream's: a confirmed match, or "" for nobody on the roster.
+            let verdict = photoVerdict[track.id]
+            let big = facePx(track) >= minAnnouncePx
+            let match: Match? = verdict.map { $0.isEmpty ? nil : photoMatch[track.id] } ?? (big ? lowRes : nil)
+            if current, let match { seenNow.append((match.person.id, track.attention)) }
+            guard focused, !announced.contains(track.id) else { continue }
+            if photos, verdict == nil {
+                // A new face in focus: before naming anyone, get a real look at it. Skipped for
+                // someone already in the conversation (they wouldn't be announced anyway).
+                if lowRes.map({ mayShow($0.person.id) }) ?? (track.looks >= 2) { requestPhoto(track) }
+                continue
             }
-            if let current = chosen, match.score <= current.match.score { continue }
+            guard let match, mayShow(match.person.id) else { continue }
+            if let best = chosen, track.attention <= best.track.attention { continue }
             chosen = (track, match)
-            correcting = isCorrection
         }
-        // A correction is the same face, so it skips the card-hold and re-announce waits, but a
-        // live answer or a press still owns the lens.
-        guard let chosen, correcting ? (answer == nil && !identifying) : mayShow(chosen.match.person.id) else {
+        // Sightings are recorded after the show decision, so this frame can't silence itself.
+        for seen in seenNow { sighted[seen.id] = frameTime }
+        let looking = seenNow.max { $0.attention < $1.attention }?.id
+        if looking != facing { facing = looking }
+        guard let chosen else {
             if scan.timing.gated > 0, scan.timing.faces > 0, Int.random(in: 0..<10) == 0 {
                 SpeedLog.record(["event": "autoBlurred", "faces": scan.timing.faces,
                                  "gated": scan.timing.gated,
@@ -1247,16 +1197,16 @@ enum Identification {
             return
         }
 
-        if correcting {
-            SpeedLog.record(["event": "autoCorrect", "from": announced[chosen.track.id] ?? "",
-                             "to": chosen.match.person.id, "looks": chosen.track.looks])
-            dissent = nil
-        }
-        announced[chosen.track.id] = chosen.match.person.id
-        result = .known(chosen.match, chosen.track.best)
+        announced.insert(chosen.track.id)
+        result = .known(chosen.match, photoHit[chosen.track.id] ?? chosen.track.best)
         recordSeen()
         let ranked = store.ranked(chosen.track.probe)
-        var log: [String: Any] = ["event": correcting ? "autoCorrected" : "autoIdentify", "source": "watch",
+        var log: [String: Any] = ["event": "autoIdentify", "source": "watch",
+                                  "confirmedBy": photoVerdict[chosen.track.id] != nil ? "photo" : "stream",
+                                  "facePx": Int(facePx(chosen.track)),
+                                  "detector": FaceEngine.detectorName,
+                                  "attention": (Double(chosen.track.attention) * 100).rounded() / 100,
+                                  "inFrame": inFrame.count,
                                   "person": chosen.match.person.id,
                                   "score": (Double(chosen.match.score) * 1000).rounded() / 1000,
                                   "looks": chosen.track.looks,

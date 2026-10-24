@@ -133,10 +133,6 @@ struct HomeView: View {
                           cameraNote: glasses.cameraNote, shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
                 #endif
                 header
-                // Live frame size and rate off the glasses, plus recording.
-                StreamControls()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         Text("People")
@@ -277,12 +273,6 @@ struct HomeView: View {
                 .background(Color(.secondarySystemBackground), in: Capsule())
             }
             Spacer()
-            NavigationLink { StreamLabView() } label: {
-                Image(systemName: "camera.aperture")
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(width: 34, height: 34)
-                    .background(Color(.secondarySystemBackground), in: Circle())
-            }
             NavigationLink { ConversationView() } label: {
                 Image(systemName: "text.bubble")
                     .font(.system(size: 15, weight: .medium))

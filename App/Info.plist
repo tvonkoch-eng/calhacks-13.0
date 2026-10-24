@@ -4,8 +4,18 @@
 <dict>
 	<key>AnswerAPIKey</key>
 	<string>$(ANSWER_API_KEY)</string>
+	<key>AnswerModel</key>
+	<string>$(ANSWER_MODEL)</string>
+	<key>AnswerPerMinute</key>
+	<string>$(ANSWER_PER_MINUTE)</string>
 	<key>AnswerProvider</key>
 	<string>$(ANSWER_PROVIDER)</string>
+	<key>BackupAPIKey</key>
+	<string>$(BACKUP_API_KEY)</string>
+	<key>BackupModel</key>
+	<string>$(BACKUP_MODEL)</string>
+	<key>BackupProvider</key>
+	<string>$(BACKUP_PROVIDER)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -37,8 +47,12 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
+	<key>CoachAPIKey</key>
+	<string>$(COACH_API_KEY)</string>
+	<key>CoachModel</key>
+	<string>$(COACH_MODEL)</string>
+	<key>CoachProvider</key>
+	<string>$(COACH_PROVIDER)</string>
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
@@ -58,14 +72,30 @@
 	<array>
 		<string>_bonjour._tcp</string>
 	</array>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Tells you what is next on your calendar.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Recognizes your teammates' faces on device.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Lets your phone find and connect to your glasses over Wi-Fi.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Finds places near you when you ask.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Listens for questions so answers can appear on your glasses.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Transcribes speech on device to spot questions as they are asked.</string>
+	<string>Listens for questions so answers can appear on your glasses. Audio is transcribed by Meta's Muse Voice Transcribe.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Sets reminders when you ask.</string>
+	<key>OpenAIAPIKey</key>
+	<string>$(OPENAI_API_KEY)</string>
+	<key>ResearchAPIKey</key>
+	<string>$(RESEARCH_API_KEY)</string>
+	<key>ResearchModel</key>
+	<string>$(RESEARCH_MODEL)</string>
+	<key>ResearchProvider</key>
+	<string>$(RESEARCH_PROVIDER)</string>
+	<key>TestLocation</key>
+	<string>$(TEST_LOCATION)</string>
+	<key>Tools</key>
+	<string>$(TOOLS)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
@@ -74,8 +104,6 @@
 		<string>bluetooth-peripheral</string>
 		<string>external-accessory</string>
 	</array>
-	<key>UIFileSharingEnabled</key>
-	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedExternalAccessoryProtocols</key>
