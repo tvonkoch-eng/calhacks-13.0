@@ -934,11 +934,8 @@ private struct LensCardBackground: ViewModifier {
 /// at the same size, so `devicectl device copy from` can pull them and the mirror can be trued
 /// against the real thing from a laptop, with nobody squinting at a phone.
 enum LensSnapshot {
-    private static var last = Date.distantPast
-
     @MainActor static func capture(real: UIView?, shot: LensShot?, avatar: @escaping (String) -> UIImage?) {
-        guard Tuning.bool("SnapLens", false), Date().timeIntervalSince(last) > 1 else { return }
-        last = Date()
+        guard Tuning.bool("SnapLens", false) else { return }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         var size = CGSize(width: LensMetrics.canvas, height: LensMetrics.canvas)
         if let real, real.bounds.width > 1 {
@@ -1032,7 +1029,15 @@ struct LensPanel: View {
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 2)
-        .task(id: shot) { LensSnapshot.capture(real: lens, shot: shot, avatar: avatar) }
+        // Debounced rather than rate-limited. A throttle here captured the *first* state after
+        // launch and then silently dropped the real one a few hundred ms later, which looks
+        // exactly like "the new build never shipped". Cancelling on change can't do that: the
+        // last card always wins, and the preview view has had time to lay out.
+        .task(id: shot) {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            LensSnapshot.capture(real: lens, shot: shot, avatar: avatar)
+        }
     }
 
     static let comparing = ProcessInfo.processInfo.environment["MIRROR_COMPARE"] == "1"
