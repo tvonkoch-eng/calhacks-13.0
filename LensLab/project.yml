@@ -1,0 +1,50 @@
+name: LensLab
+options:
+  bundleIdPrefix: com.tobiasvonkoch
+  deploymentTarget:
+    iOS: "17.2"
+packages:
+  MWDAT:
+    url: https://github.com/facebook/meta-wearables-dat-ios
+    from: 1.0.1
+settings:
+  base:
+    DEVELOPMENT_TEAM: VBT92TS7FT
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    PRODUCT_BUNDLE_IDENTIFIER: com.tobiasvonkoch.lenslab
+targets:
+  LensLab:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - path: ../App/Faces
+        buildPhase: resources
+    dependencies:
+      - package: MWDAT
+        product: MWDATCore
+      - package: MWDAT
+        product: MWDATDisplay
+      - package: MWDAT
+        product: MWDATMockDevice
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Lens Lab
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSBluetoothAlwaysUsageDescription: Simulated glasses only.
+        NSLocalNetworkUsageDescription: Simulated glasses only.
+        NSBonjourServices: [_bonjour._tcp]
+        UIBackgroundModes: [processing, bluetooth-central, bluetooth-peripheral, external-accessory]
+        UISupportedExternalAccessoryProtocols: [com.meta.ar.wearable]
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleURLSchemes: [lenslab]
+        MWDAT:
+          AppLinkURLScheme: "lenslab://"
+          MetaAppID: "0"
+          ClientToken: ""
+          TeamID: $(DEVELOPMENT_TEAM)
