@@ -254,6 +254,20 @@ if [ "${GHSYNC:-1}" = "1" ]; then
   fi
 fi
 
+# ---------- 3c. face embedding model (gitignored, licence-restricted) ----------
+# MobileFaceNet/ArcFace weights: non-commercial research use only, so they are NOT in the repo and
+# NOT in the public GitHub mirror. They live on this Mac and are copied into App/ for the build.
+# Absent is not an error — the app falls back to the Vision feature print and says so in its log.
+MODEL_SRC=$CAL/models/MobileFaceNet_w600k.mlmodel
+if [ -f "$MODEL_SRC" ]; then
+  if ! cmp -s "$MODEL_SRC" App/MobileFaceNet_w600k.mlmodel 2>/dev/null; then
+    cp "$MODEL_SRC" App/MobileFaceNet_w600k.mlmodel
+    say "face model: copied into App/ ($(du -h App/MobileFaceNet_w600k.mlmodel | cut -f1))"
+  fi
+else
+  say "face model: NOT PRESENT at $MODEL_SRC — build will fall back to the Vision feature print"
+fi
+
 # ---------- 4. regenerate project only when project.yml moved ----------
 PYHASH=$(layout_fp)
 if [ "$PYHASH" != "$(cat $STATE/project.yml.sha 2>/dev/null)" ] || [ ! -d CalHacks.xcodeproj ]; then

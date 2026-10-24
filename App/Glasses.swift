@@ -418,7 +418,10 @@ enum Identification {
             log["score"] = ranked.first.map { (Double($0.score) * 1000).rounded() / 1000 }
             log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
         }
-        log["outcome"] = pick == nil ? "noFace" : "known"
+        // This used to say "known" whenever a face was found, even when the gate refused to name
+        // anyone — which made the log read as if matching was working while the lens said "not sure".
+        log["outcome"] = pick == nil ? "noFace" : (pick?.match == nil ? "unknown" : "known")
+        log["embedder"] = FaceEngine.embedder.name
         await finish(&log, start: start)
     }
 
@@ -828,6 +831,11 @@ enum Identification {
     /// A pushed `streamRes`/`streamFps` only takes effect on a new camera, so swap one in.
     /// This is what makes resolution a 0.3 s tuning push instead of a build.
     func restreamIfSettingsChanged() {
+        // OFF by default, and it stays that way until the rebuild path is trustworthy: swapping the
+        // camera live on Toby's phone answered with cameraRebuildFailed and cost a session
+        // recovery. `liveRestream: true` opts in; otherwise a resolution change waits for the next
+        // reconnect, which costs nothing.
+        guard Tuning.bool("liveRestream", false) else { return }
         guard connected, let live = liveStreamSettings, live != streamSettings else { return }
         SpeedLog.record(["event": "restream", "from": live, "to": streamSettings])
         rebuildCamera()

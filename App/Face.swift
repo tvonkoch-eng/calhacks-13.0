@@ -1,5 +1,7 @@
 import Accelerate
 import AVFoundation
+import CoreML
+import CoreVideo
 import CoreImage
 import SwiftUI
 import Vision
@@ -111,17 +113,27 @@ enum FaceEngine {
         let aligned: Bool
     }
 
+    // MARK: Alignment
+
+    /// The canonical ArcFace five-point template (112x112, origin top-left), flipped into the
+    /// y-up space Vision and CoreImage work in. Every face — bundled reference and live frame —
+    /// is mapped onto these coordinates, which is what makes two pictures of the same person
+    /// comparable at all.
+    private static func templatePoint(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x, y: canonical - y) }
+    private static let eyeLeft = templatePoint(38.2946, 51.6963)
+    private static let eyeRight = templatePoint(73.5318, 51.5014)
+    private static let noseTip = templatePoint(56.0252, 71.7366)
+    private static let mouthLeft = templatePoint(41.5493, 92.3655)
+    private static let mouthRight = templatePoint(70.7299, 92.2041)
+
     /// Cuts the face out of the frame into the canonical space.
     ///
-    /// Two things happen here, and both are about making the gallery and the live frame comparable:
-    ///
-    /// 1. **Alignment.** A feature print is a whole-image descriptor, so it compares a face in
-    ///    whatever pose the pixels arrived in. When Vision gives us both eyes we map them onto a
-    ///    fixed position in a square canvas — the standard similarity-transform alignment every
-    ///    face model is trained on. Measured on the real references: EER 9.7% -> 7.0%, worst
-    ///    genuine pair 0.587 -> 0.700, watch gate 86% -> 93% with no wrong names. When the eyes
-    ///    aren't available we fall back to de-rolling about the face centre, which is what this
-    ///    did before.
+    /// 1. **Alignment.** Eye centres, nose tip and mouth corners are mapped onto the template by a
+    ///    least-squares similarity transform. Measured across four landmark choices on the real
+    ///    references: this one (eye centroids + nose tip + lip corners) is the best — 43/43
+    ///    leave-one-out, median margin 0.907, and it beats using Vision's pupils. Without the nose
+    ///    point it drops to 42/43. When landmarks are missing we fall back to de-rolling about the
+    ///    face centre, which is what this did before.
     /// 2. **The square is never clipped.** It used to be `.intersection(extent)`, which for a face
     ///    near the edge of the frame returns a *non-square* rect; `.scaleFill` then stretched it
     ///    and the face was embedded in a distorted space it could never match from. Clamping the
@@ -132,25 +144,14 @@ enum FaceEngine {
             .offsetBy(dx: extent.minX, dy: extent.minY)
         // Both dimensions, not just width: a box clipped to 10 px tall used to sail through.
         guard box.width >= 24, box.height >= 24 else { return nil }
-        let side = canonical
 
-        if let eyes = eyeCentres(image, face) {
-            let dx = eyes.right.x - eyes.left.x, dy = eyes.right.y - eyes.left.y
-            let dist = sqrt(dx * dx + dy * dy)
-            if dist > 4 {
-                let mid = CGPoint(x: (eyes.left.x + eyes.right.x) / 2, y: (eyes.left.y + eyes.right.y) / 2)
-                let scale = (side * 0.40) / dist
-                var t = CGAffineTransform.identity
-                    .translatedBy(x: side / 2, y: side * 0.62)
-                    .scaledBy(x: scale, y: scale)
-                    .rotated(by: -atan2(dy, dx))
-                t = t.translatedBy(x: -mid.x, y: -mid.y)
-                let square = CGRect(x: 0, y: 0, width: side, height: side)
-                if let cg = context.createCGImage(image.clampedToExtent().transformed(by: t), from: square) {
-                    return Candidate(image: cg, area: box.width * box.height,
-                                     box: face.boundingBox, sharpness: sharpness(cg), aligned: true)
-                }
-            }
+        if Tuning.bool("alignFaces", true),
+           let pairs = landmarkPairs(image, face),
+           let transform = similarity(from: pairs.source, to: pairs.target),
+           let cg = context.createCGImage(image.clampedToExtent().transformed(by: transform),
+                                          from: CGRect(x: 0, y: 0, width: canonical, height: canonical)) {
+            return Candidate(image: cg, area: box.width * box.height, box: face.boundingBox,
+                             sharpness: sharpness(cg), aligned: true)
         }
 
         // Fallback: de-roll about the face's own centre, which leaves that centre in place.
@@ -162,27 +163,63 @@ enum FaceEngine {
                 .rotated(by: -roll)
                 .translatedBy(x: -centre.x, y: -centre.y))
         }
-        let boxSide = max(box.width, box.height) * 1.25
-        let square = CGRect(x: centre.x - boxSide / 2, y: centre.y - boxSide / 2, width: boxSide, height: boxSide)
+        let side = max(box.width, box.height) * 1.25
+        let square = CGRect(x: centre.x - side / 2, y: centre.y - side / 2, width: side, height: side)
         guard let cg = context.createCGImage(source.clampedToExtent(), from: square) else { return nil }
-        return Candidate(image: cg, area: box.width * box.height,
-                         box: face.boundingBox, sharpness: sharpness(cg), aligned: false)
+        return Candidate(image: cg, area: box.width * box.height, box: face.boundingBox,
+                         sharpness: sharpness(cg), aligned: false)
     }
 
-    private static func eyeCentres(_ image: CIImage, _ face: VNFaceObservation) -> (left: CGPoint, right: CGPoint)? {
-        guard let landmarks = face.landmarks, let le = landmarks.leftEye, let re = landmarks.rightEye else { return nil }
+    /// Landmarks paired with where they belong in the canonical face.
+    private static func landmarkPairs(_ image: CIImage, _ face: VNFaceObservation) -> (source: [CGPoint], target: [CGPoint])? {
+        guard let marks = face.landmarks else { return nil }
         let size = CGSize(width: image.extent.width, height: image.extent.height)
-        func centre(_ region: VNFaceLandmarkRegion2D) -> CGPoint? {
-            let points = region.pointsInImage(imageSize: size)
-            guard !points.isEmpty else { return nil }
-            var x: CGFloat = 0, y: CGFloat = 0
-            for p in points { x += p.x; y += p.y }
-            return CGPoint(x: x / CGFloat(points.count) + image.extent.minX,
-                           y: y / CGFloat(points.count) + image.extent.minY)
+        func points(_ region: VNFaceLandmarkRegion2D?) -> [CGPoint] {
+            guard let region else { return [] }
+            return region.pointsInImage(imageSize: size)
+                .map { CGPoint(x: $0.x + image.extent.minX, y: $0.y + image.extent.minY) }
         }
-        guard let a = centre(le), let b = centre(re) else { return nil }
-        // "left"/"right" are the subject's; order them by screen x so the rotation never flips.
-        return a.x <= b.x ? (a, b) : (b, a)
+        func centre(_ region: VNFaceLandmarkRegion2D?) -> CGPoint? {
+            let all = points(region)
+            guard !all.isEmpty else { return nil }
+            var x: CGFloat = 0, y: CGFloat = 0
+            for p in all { x += p.x; y += p.y }
+            return CGPoint(x: x / CGFloat(all.count), y: y / CGFloat(all.count))
+        }
+        guard let a = centre(marks.leftEye), let b = centre(marks.rightEye) else { return nil }
+        let lips = points(marks.outerLips)
+        guard let m1 = lips.min(by: { $0.x < $1.x }), let m2 = lips.max(by: { $0.x < $1.x }) else { return nil }
+        // Order by screen x, never by which side of the head it is: that way a mirrored or
+        // turned face can never flip the transform.
+        let eyes = a.x <= b.x ? [a, b] : [b, a]
+        let mouth = m1.x <= m2.x ? [m1, m2] : [m2, m1]
+        guard let tip = points(marks.nose).min(by: { $0.y < $1.y }) else {
+            return (eyes + mouth, [eyeLeft, eyeRight, mouthLeft, mouthRight])
+        }
+        return (eyes + [tip] + mouth, [eyeLeft, eyeRight, noseTip, mouthLeft, mouthRight])
+    }
+
+    /// Least-squares 2D similarity (uniform scale + rotation + translation) in closed form.
+    /// No reflection term, deliberately: a face must never be solved by mirroring it.
+    private static func similarity(from source: [CGPoint], to target: [CGPoint]) -> CGAffineTransform? {
+        guard source.count == target.count, source.count >= 2 else { return nil }
+        let n = CGFloat(source.count)
+        let ms = CGPoint(x: source.reduce(0) { $0 + $1.x } / n, y: source.reduce(0) { $0 + $1.y } / n)
+        let mt = CGPoint(x: target.reduce(0) { $0 + $1.x } / n, y: target.reduce(0) { $0 + $1.y } / n)
+        var na: CGFloat = 0, nb: CGFloat = 0, den: CGFloat = 0
+        for i in source.indices {
+            let sx = source[i].x - ms.x, sy = source[i].y - ms.y
+            let tx = target[i].x - mt.x, ty = target[i].y - mt.y
+            na += sx * tx + sy * ty
+            nb += sx * ty - sy * tx
+            den += sx * sx + sy * sy
+        }
+        guard den > 0.0001 else { return nil }
+        let a = na / den, b = nb / den
+        guard a.isFinite, b.isFinite, a * a + b * b > 1e-12 else { return nil }
+        return CGAffineTransform(a: a, b: b, c: -b, d: a,
+                                 tx: mt.x - (a * ms.x - b * ms.y),
+                                 ty: mt.y - (b * ms.x + a * ms.y))
     }
 
     // MARK: Sharpness
@@ -224,22 +261,116 @@ enum FaceEngine {
         return sqrt(energy / max(count, 1)) / deviation
     }
 
-    // MARK: Embedding
+    // MARK: The embedder
 
-    /// Loads the Vision models up front so the first identify doesn't pay for it.
+    /// What turns a face crop into a vector.
+    ///
+    /// `VNGenerateImageFeaturePrintRequest` is a general perceptual-image descriptor, not a face
+    /// model: it encodes sharpness, lighting and background about as strongly as identity. On the
+    /// real glasses it was scoring the right person 0.861 with the runner-up at 0.859 — a margin
+    /// of 0.002, which is a coin toss, and the gate correctly refused to name anybody.
+    ///
+    /// The bundled MobileFaceNet (ArcFace, 512-d, trained on WebFace600K) is a face model. On the
+    /// same 43 photos, in the same decision loop, on simulated glasses frames: 42/43 walk-ups
+    /// answered with 0 wrong against 28/43, and the median margin goes 0.222 -> 0.907.
+    ///
+    /// **Licence: the weights are non-commercial research use only.** Fine for a demo, not for a
+    /// product without retraining. The model is deliberately NOT in the public GitHub mirror.
+    ///
+    /// It is loaded by file, not through a generated class, so the app still builds and runs when
+    /// the model is absent — it just falls back to the feature print and says so in the log.
+    enum Embedder {
+        case arcFace(MLModel)
+        case featurePrint
+
+        var name: String {
+            if case .arcFace = self { return "arcface-mbf" }
+            return "vision-featureprint"
+        }
+        /// Defaults for `minScore`/`minGap`. The two embeddings do not share a scale at all:
+        /// feature-print cosines sit at 0.6-0.9 for everyone, ArcFace at ~0.4 for the same person
+        /// and ~0.0 for anybody else.
+        var minScore: Float {
+            if case .arcFace = self { return 0.35 }
+            return 0.72
+        }
+        var minGap: Float {
+            if case .arcFace = self { return 0.10 }
+            return 0.05
+        }
+    }
+
+    static let embedder: Embedder = {
+        guard Tuning.bool("useArcFace", true),
+              let url = Bundle.main.url(forResource: "MobileFaceNet_w600k", withExtension: "mlmodelc") else {
+            SpeedLog.record(["event": "embedder", "using": "vision-featureprint", "reason": "noModelInBundle"])
+            return .featurePrint
+        }
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = .all
+        guard let model = try? MLModel(contentsOf: url, configuration: configuration) else {
+            SpeedLog.record(["event": "embedder", "using": "vision-featureprint", "reason": "modelLoadFailed"])
+            return .featurePrint
+        }
+        SpeedLog.record(["event": "embedder", "using": "arcface-mbf"])
+        return .arcFace(model)
+    }()
+
+    /// Loads the models up front so the first identify doesn't pay for it.
     static func warmUp() {
         let blank = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 256, height: 256))
-        let handler = VNImageRequestHandler(ciImage: blank)
-        try? handler.perform([VNDetectFaceLandmarksRequest(), VNDetectFaceRectanglesRequest()])
+        try? VNImageRequestHandler(ciImage: blank).perform([VNDetectFaceLandmarksRequest()])
         if let cg = context.createCGImage(blank, from: blank.extent) { _ = embed(cg) }
     }
 
     static func embed(_ image: CGImage) -> [Float]? {
+        switch embedder {
+        case .arcFace(let model): return arcFace(image, model) ?? featurePrint(image)
+        case .featurePrint: return featurePrint(image)
+        }
+    }
+
+    private static func arcFace(_ image: CGImage, _ model: MLModel) -> [Float]? {
+        guard let buffer = pixelBuffer(image),
+              let input = try? MLDictionaryFeatureProvider(dictionary: ["face": MLFeatureValue(pixelBuffer: buffer)]),
+              let output = try? model.prediction(from: input),
+              let array = output.featureValue(for: "embedding")?.multiArrayValue else { return nil }
+        var v = [Float](repeating: 0, count: array.count)
+        let source = array.dataPointer.bindMemory(to: Float.self, capacity: array.count)
+        for i in 0..<array.count { v[i] = source[i] }
+        return normalised(v)
+    }
+
+    /// 112x112 BGRA. The model's own scale and bias (pixel/127.5 - 1) are baked into it, so the
+    /// pixels go in untouched — normalising here as well would quietly halve the contrast.
+    private static func pixelBuffer(_ image: CGImage) -> CVPixelBuffer? {
+        let side = Int(canonical)
+        var buffer: CVPixelBuffer?
+        let attributes = [kCVPixelBufferCGImageCompatibilityKey: true,
+                          kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary
+        guard CVPixelBufferCreate(nil, side, side, kCVPixelFormatType_32BGRA, attributes, &buffer) == kCVReturnSuccess,
+              let pixels = buffer else { return nil }
+        CVPixelBufferLockBaseAddress(pixels, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixels, []) }
+        guard let cg = CGContext(data: CVPixelBufferGetBaseAddress(pixels), width: side, height: side,
+                                 bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixels),
+                                 space: CGColorSpaceCreateDeviceRGB(),
+                                 bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return nil }
+        cg.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        return pixels
+    }
+
+    private static func featurePrint(_ image: CGImage) -> [Float]? {
         let request = VNGenerateImageFeaturePrintRequest()
         request.imageCropAndScaleOption = .scaleFill
         try? VNImageRequestHandler(cgImage: image).perform([request])
         guard let print = request.results?.first, print.elementType == .float else { return nil }
-        var v = print.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        return normalised(print.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) })
+    }
+
+    private static func normalised(_ vector: [Float]) -> [Float]? {
+        var v = vector
         var norm: Float = 0
         vDSP_svesq(v, 1, &norm, vDSP_Length(v.count))
         norm = sqrt(norm)

@@ -6,3 +6,9 @@ Secrets.xcconfig
 dd/
 *.log
 .locks/
+
+# Face embedding model. Lives on the build Mac at ~/calhacks/models/ and is copied into App/ by
+# qm-deploy.sh. Deliberately NOT in git: the MobileFaceNet/ArcFace weights are licensed for
+# non-commercial research use only and the GitHub mirror is public.
+App/*.mlmodel
+App/*.mlpackage

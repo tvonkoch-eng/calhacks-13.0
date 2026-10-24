@@ -61,7 +61,7 @@ struct Match {
     /// Samples saved in an older space are not comparable with new ones, and mixing them flattens
     /// every score — which is exactly the failure this guards against. v3 = eye-aligned canonical
     /// crops; everything enrolled before that was in the roll-corrected-square space.
-    private static let galleryVersion = 3
+    private static let galleryVersion = 4
     private static let versionKey = "galleryVersion"
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -293,8 +293,8 @@ struct Match {
     /// Re-measured on the bundled references in the aligned space. The absolute score alone cannot
     /// separate the tails — the margin over the runner-up does the real work. Both are overridable
     /// from UserDefaults so they can be tuned on a running phone without a rebuild.
-    var minScore: Float { Tuning.float("minScore", 0.72) }
-    var minGap: Float { Tuning.float("minGap", 0.05) }
+    var minScore: Float { Tuning.float("minScore", FaceEngine.embedder.minScore) }
+    var minGap: Float { Tuning.float("minGap", FaceEngine.embedder.minGap) }
     /// How much the top person must also beat the rejection cohort by. 0 disables it; it is only
     /// meaningful once `Cohort/cohort_NN.jpg` strangers are bundled (see `cohort`).
     var minCohortGap: Float { Tuning.float("minCohortGap", 0) }
@@ -304,7 +304,7 @@ struct Match {
     /// Default 1 for now: on the current feature-print embedding, mean-of-top-2 shrinks the
     /// runner-up margin and answers fewer walk-ups (25/43 vs 29/43 in simulation). It becomes the
     /// right default the moment the embedding has margin to spare — push `matchTopK: 2` then.
-    var matchTopK: Int { max(1, Tuning.int("matchTopK", 1)) }
+    var matchTopK: Int { max(1, Tuning.int("matchTopK", 2)) }
 
     /// A deliberate press still means "tell me who that is", but nearest-neighbour on its own will
     /// always name somebody: it was naming people at 0.45 with the runner-up 0.006 behind, which is
