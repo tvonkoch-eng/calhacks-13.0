@@ -134,6 +134,9 @@ struct Match {
         try? JSONEncoder().encode(notes).write(to: notesURL)
     }
 
+    /// People you've met at least once, for the counter on the lens.
+    var connectedCount: Int { contacts.filter { encounters[$0.id]?.isEmpty == false }.count }
+
     /// Met today, for the summary line.
     var metToday: Int { lastSeen.values.filter { Calendar.current.isDateInToday($0) }.count }
     func samples(_ id: String) -> Int { gallery[id]?.count ?? 0 }

@@ -3,6 +3,9 @@ import MWDATCamera
 import MWDATCore
 import MWDATDisplay
 import MWDATInputs
+#if DEBUG
+import MWDATMockDevice
+#endif
 import Observation
 import UIKit
 
@@ -37,6 +40,8 @@ enum Identification {
     var result: Identification = .ready
     /// Takes over the lens while it is set; the identity card comes back when it clears.
     var answer: AnswerCard?
+    /// DEBUG: what simulated Display glasses are showing, when MOCK_GLASSES=1.
+    var mockLens: UIView?
 
     @ObservationIgnored var store: Store?
     /// The last automatic "seen" mark, so correcting a wrong match restores the wrong person's time.
@@ -51,6 +56,10 @@ enum Identification {
     @ObservationIgnored private var frameWaiter: CheckedContinuation<CIImage?, Never>?
     @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces", qos: .userInitiated)
     @ObservationIgnored private var photoBytes = 0
+    /// Pressing Identify on the glasses while someone is on screen asks first, so a stray pinch
+    /// can't wipe the person you're talking to.
+    @ObservationIgnored private var confirming = false
+    @ObservationIgnored private var confirmTask: Task<Void, Never>?
     @ObservationIgnored private var lastSend = Date.distantPast
     @ObservationIgnored private var pendingSend: Task<Void, Never>?
     /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
@@ -86,11 +95,24 @@ enum Identification {
                 return
             }
             // Find the glasses first: asking for permissions with no glasses nearby just throws noDevice.
-            let selector = AutoDeviceSelector(wearables: wearables)
+            let finder = AutoDeviceSelector(wearables: wearables)
             status = "Looking for your glasses"
-            for await id in selector.activeDeviceStream() {
-                if id != nil { break }
+            var found: DeviceIdentifier?
+            for await id in finder.activeDeviceStream() {
+                if let id { found = id; break }
             }
+            guard let found else { return }
+            // Seen is not the same as linked: a session started before the link is up never starts.
+            while let device = wearables.deviceForIdentifier(found),
+                  !(device.linkState == .connected && device.compatibility() == .compatible) {
+                if device.compatibility() == .deviceUpdateRequired {
+                    status = "Update your glasses in the Meta AI app"
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            // Pin the session to the glasses we found; a fresh auto selector can start empty.
+            let selector = SpecificDeviceSelector(device: found)
 
             do throws(PermissionError) {
                 if try await wearables.checkPermissionStatus(.camera) != .granted {
@@ -112,11 +134,10 @@ enum Identification {
                 guard state == .stopped else { return }
                 Task { @MainActor in self?.teardown(status: "Glasses disconnected") }
             })
-            let started = Task {
-                for await state in session.stateStream() where state == .started { return }
-            }
+            // Subscribe before start(): a stream created afterwards can miss the .started transition.
+            let states = session.stateStream()
             try session.start()
-            await started.value
+            for await state in states where state == .started { break }
 
             // The stream is never started except as a one-frame fallback; photos come from camera.photo.
             guard let camera = try session.addCamera(config: StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 15)) else {
@@ -144,7 +165,7 @@ enum Identification {
             camera.photo.start()
             self.camera = camera
 
-            if let id = selector.activeDevice, wearables.deviceForIdentifier(id)?.supportsDisplay() == true {
+            if wearables.deviceForIdentifier(found)?.supportsDisplay() == true {
                 let display = try session.addDisplay()
                 tokens.append(display.statePublisher.listen { [weak self] state in
                     Task { @MainActor in
@@ -277,8 +298,44 @@ enum Identification {
     func preview(_ person: Person) {
         result = .known(Match(person: person, score: 1), nil)
         store?.markSeen(person.id)
+        renderLens()
+    }
+
+    /// MOCK_GLASSES=1: pair simulated Ray-Ban Display glasses (registered, permissions granted)
+    /// and mirror their lens into the app, so the whole flow runs without hardware.
+    func useMockGlasses() {
+        MockDeviceKit.shared.enable()
+        guard let glasses = try? MockDeviceKit.shared.pairGlasses(model: .metaRayBanDisplay) else { return }
+        glasses.powerOn()
+        glasses.don()
+        if let photo = Bundle.main.url(forResource: "avi_02", withExtension: "jpg") {
+            glasses.services.camera.setCapturedImage(fileURL: photo)
+        }
+        mockLens = glasses.services.display.createPreviewView()
     }
     #endif
+
+    /// Identify from the glasses (lens button or capture button). With a person on screen the
+    /// first press turns the button into "Are you sure?"; a second press within 2 s identifies,
+    /// otherwise the person stays.
+    func lensIdentify(source: String) async {
+        if case .known = result, !confirming {
+            confirming = true
+            renderLens()
+            confirmTask?.cancel()
+            let hold: Double = source == "preview" ? 600 : 2   // preview: hold for screenshots
+            confirmTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(hold))
+                guard !Task.isCancelled, let self, self.confirming else { return }
+                self.confirming = false
+                self.renderLens()
+            }
+            return
+        }
+        confirmTask?.cancel()
+        confirming = false
+        await identify(source: source)
+    }
 
     func dismiss() {
         result = .ready
@@ -323,7 +380,7 @@ enum Identification {
             for await event in events {
                 switch event {
                 case .capture(.shortPress, _, _), .button(.action, _, _):
-                    await self?.identify(source: "glasses")
+                    await self?.lensIdentify(source: "glasses")
                 default:
                     break
                 }
@@ -391,14 +448,18 @@ enum Identification {
             send(LensCards.answer(card))
             return
         }
-        let view = identifying ? LensCards.working() : LensCards.card(
-            for: result,
-            avatar: { [store] in store?.avatars[$0] },
-            hasFaces: store?.hasFaces ?? false,
-            identify: { [weak self] in Task { @MainActor in await self?.identify(source: "lens") } },
-            dismiss: { [weak self] in Task { @MainActor in self?.dismiss() } }
+        send(hud())
+    }
+
+    /// The identity HUD as it stands right now.
+    private func hud() -> FlexBox {
+        LensCards.hud(
+            result: result,
+            identifying: identifying,
+            confirming: confirming,
+            connected: store?.connectedCount ?? 0,
+            identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } }
         )
-        send(view)
     }
 
     /// Rate-limited lens write. The first frame of an answer goes out immediately; the stream of
@@ -423,13 +484,7 @@ enum Identification {
     /// lens or a conversation answer currently owns it.
     private func sendLens() async -> Bool {
         guard let display, displayReady, answer == nil else { return false }
-        let view = LensCards.card(
-            for: result,
-            avatar: { [store] in store?.avatars[$0] },
-            hasFaces: store?.hasFaces ?? false,
-            identify: { [weak self] in Task { @MainActor in await self?.identify(source: "lens") } },
-            dismiss: { [weak self] in Task { @MainActor in self?.dismiss() } }
-        )
+        let view = hud()
         pendingSend?.cancel()
         lastSend = Date()
         do { try await display.send(view) } catch { return false }

@@ -4,15 +4,6 @@ import UIKit
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
 /// who they are and three lines of background.
 enum LensCards {
-    static func working() -> FlexBox {
-        FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
-            Icon(name: .eye)
-            Text("Recognizing", style: .heading)
-        }
-        .padding(24)
-        .background(.card)
-    }
-
     /// A conversation answer: the answer big, the question it answers small underneath.
     static func answer(_ card: AnswerCard) -> FlexBox {
         let headline = card.answer.isEmpty ? "\u{2026}" : card.answer
@@ -25,99 +16,68 @@ enum LensCards {
         .background(.card)
     }
 
-    static func card(
-        for result: Identification,
-        avatar: (String) -> UIImage?,
-        hasFaces: Bool,
-        identify: @escaping @Sendable () -> Void,
-        dismiss: @escaping @Sendable () -> Void
+    /// The whole identity experience on the lens: who you're looking at (if anyone), and one
+    /// row along the bottom with the people-met counter on the left and Identify on the right.
+    /// No card behind it, so it floats; Identify is the only control and always has focus,
+    /// so a pinch presses it.
+    static func hud(
+        result: Identification,
+        identifying: Bool,
+        confirming: Bool,
+        connected: Int,
+        identify: @escaping @Sendable () -> Void
     ) -> FlexBox {
-        switch result {
-        case .ready:
-            return FlexBox(direction: .column, spacing: 14) {
-                FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
-                    Icon(name: .smartGlasses)
-                    FlexBox(direction: .column, spacing: 2) {
-                        Text("Ready", style: .heading)
-                        Text("Look at someone, then identify", style: .meta, color: .secondary)
-                    }
-                }
-                Button(label: "Identify", style: .primary, iconName: .eye, onClick: identify)
-            }
-            .padding(24)
-            .background(.card)
+        let label = identifying ? "Identifying" : confirming ? "Are you sure?" : "Identify"
+        let icon: IconName = confirming ? .checkmark : .eye
+        let badge = counterBadge(connected)
+        let (title, subtitle) = headline(for: result, identifying: identifying)
 
-        case .known(let match, _):
-            let person = match.person
-            let photo = avatar(person.id)
-            let details = Array(person.details.prefix(3))
-            return FlexBox(direction: .column, spacing: 16) {
-                FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
-                    if let photo {
-                        Image(image: photo, sizePreset: .icon, cornerRadius: .medium)
-                    } else {
-                        Icon(name: .personCircle)
-                    }
-                    FlexBox(direction: .column, spacing: 2) {
-                        Text(person.name, style: .heading)
-                        Text(person.role, style: .meta, color: .secondary)
-                    }
-                }
-                FlexBox(direction: .column, spacing: 10) {
-                    for detail in details {
-                        FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
-                            Icon(name: icon(detail.kind), style: .outline)
-                            Text(detail.text, style: .body)
-                        }
-                    }
-                }
-                ButtonGroup {
-                    Button(label: "Done", style: .primary, iconName: .checkmark, onClick: dismiss)
-                        .actionRole(.primary)
-                    Button(label: "Again", style: .secondary, iconName: .twoArrowsClockwise, onClick: identify)
-                }
-            }
-            .padding(24)
-            .background(.card)
-
-        case .unknown:
-            return message(icon: .person, title: "No one saved yet", detail: "Add people in the app",
-                           identify: identify, dismiss: dismiss)
-
-        case .noFace:
-            return message(icon: .eye, title: "No one in view", detail: "Look at them and try again",
-                           identify: identify, dismiss: dismiss)
-        }
-    }
-
-    private static func message(
-        icon: IconName, title: String, detail: String,
-        identify: @escaping @Sendable () -> Void, dismiss: @escaping @Sendable () -> Void
-    ) -> FlexBox {
-        FlexBox(direction: .column, spacing: 14) {
-            FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
-                Icon(name: icon)
-                FlexBox(direction: .column, spacing: 2) {
+        return FlexBox(direction: .column, spacing: 18) {
+            if let title {
+                FlexBox(direction: .column, spacing: 4) {
                     Text(title, style: .heading)
-                    Text(detail, style: .meta, color: .secondary)
+                    if let subtitle { Text(subtitle, style: .meta, color: .secondary) }
                 }
             }
-            ButtonGroup {
-                Button(label: "Again", style: .primary, iconName: .twoArrowsClockwise, onClick: identify)
-                    .actionRole(.primary)
-                Button(label: "Done", style: .secondary, iconName: .checkmark, onClick: dismiss)
+            FlexBox(direction: .row, spacing: 8, crossAlignment: .center) {
+                FlexBox(direction: .row, spacing: 6, crossAlignment: .center) {
+                    Icon(name: .person, style: .outline)
+                    if let badge { Image(image: badge, sizePreset: .icon) }
+                }
+                .flexGrow(1)
+                ButtonGroup(alignment: .end) {
+                    Button(label: label, style: .primary, iconName: icon, onClick: identify)
+                        .actionRole(.primary)
+                }
             }
         }
-        .padding(24)
-        .background(.card)
+        .padding(20)
     }
 
-    private static func icon(_ kind: Person.Kind) -> IconName {
-        switch kind {
-        case .school: .graduationCap
-        case .work: .crossBriefcase
-        case .from: .house
-        case .interests: .heart
+    private static func headline(for result: Identification, identifying: Bool) -> (String?, String?) {
+        // While identifying, the current person stays up; a stale "No one in view" does not.
+        switch result {
+        case .known(let match, _): return (match.person.name, match.person.role)
+        case .noFace where !identifying: return ("No one in view", "Face them and try again")
+        case .unknown where !identifying: return ("No one saved yet", "Add people in the app")
+        default: return (nil, nil)
+        }
+    }
+
+    /// A small green tag with the count in it. The lens text has no colors, so the tag is drawn.
+    private static func counterBadge(_ count: Int) -> UIImage? {
+        let size = CGSize(width: 48, height: 48)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            UIColor(red: 0.20, green: 0.78, blue: 0.45, alpha: 1).setFill()
+            UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()
+            let text = "\(count)" as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: count > 9 ? 22 : 28, weight: .bold),
+                .foregroundColor: UIColor.white,
+            ]
+            let textSize = text.size(withAttributes: attributes)
+            text.draw(at: CGPoint(x: (size.width - textSize.width) / 2, y: (size.height - textSize.height) / 2),
+                      withAttributes: attributes)
         }
     }
 }

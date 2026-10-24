@@ -23,6 +23,11 @@ struct CalHacksApp: App {
                     glasses.store = store
                     assistant.glasses = glasses
                     #if DEBUG
+                    let env = ProcessInfo.processInfo.environment
+                    if env["MOCK_GLASSES"] == "1" {
+                        glasses.useMockGlasses()
+                        Task { await glasses.connect() }
+                    }
                     // PREVIEW_SEEN="joaquin:7200,mirabelle:900" = seen that many seconds ago.
                     for entry in (ProcessInfo.processInfo.environment["PREVIEW_SEEN"] ?? "").split(separator: ",") {
                         let parts = entry.split(separator: ":")
@@ -33,6 +38,7 @@ struct CalHacksApp: App {
                     if let id = ProcessInfo.processInfo.environment["PREVIEW_PERSON"],
                        let person = store.people.first(where: { $0.id == id }) {
                         glasses.preview(person)
+                        if env["PREVIEW_CONFIRM"] == "1" { await glasses.lensIdentify(source: "preview") }
                         return
                     }
                     #endif
@@ -88,6 +94,11 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
+                #if DEBUG
+                if let lens = glasses.mockLens {
+                    MockLens(view: lens).aspectRatio(1, contentMode: .fit).frame(maxHeight: 360).background(Color.black)
+                }
+                #endif
                 header
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -677,3 +688,12 @@ struct EnrollView: View {
     }
 }
 
+
+#if DEBUG
+/// The simulated glasses' lens, mirrored into the app (MOCK_GLASSES=1).
+struct MockLens: UIViewRepresentable {
+    let view: UIView
+    func makeUIView(context: Context) -> UIView { view }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
+#endif
