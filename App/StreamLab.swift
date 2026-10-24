@@ -1,41 +1,19 @@
 import ImageIO
 import SwiftUI
 
-/// Pick the stream's resolution and frame rate on the phone, record what actually arrives, and
-/// compare runs. The knobs are the same `streamRes`/`streamFps` that `qmship -t` pushes, so the
-/// last one set — here or by a push — wins.
+/// Record what the glasses camera actually delivers and compare runs. The stream itself is fixed
+/// at high/15 (see `Glasses.streamRes`); a tuning push can still move it.
 struct StreamLabView: View {
     @Environment(Glasses.self) private var glasses
 
-    @State private var res = "low"
-    @State private var fps = 7
     @State private var runs: [FrameRun] = []
-
-    private static let resolutions = [("low", "Low · 360×640"), ("medium", "Medium · 504×896"), ("high", "High · 720×1280")]
-    /// The only rates the SDK accepts.
-    private static let rates = [2, 7, 15, 24, 30]
 
     var body: some View {
         @Bindable var glasses = glasses
         List {
-            Section {
-                Picker("Resolution", selection: $res) {
-                    ForEach(Self.resolutions, id: \.0) { Text($0.1).tag($0.0) }
-                }
-                Picker("Frame rate", selection: $fps) {
-                    ForEach(Self.rates, id: \.self) { Text("\($0) fps").tag($0) }
-                }
-                .pickerStyle(.segmented)
-                Button("Apply") { glasses.setStream(res: res, fps: fps) }
-                    .disabled(res == glasses.streamRes && fps == glasses.streamFps)
-            } header: {
-                Text("Requested")
-            } footer: {
-                Text(applyNote)
-            }
-
-            Section("Delivered") {
+            Section("Streaming") {
                 LabeledContent("Status", value: glasses.status)
+                LabeledContent("Asked for", value: "\(glasses.streamRes) · \(glasses.streamFps) fps")
                 LabeledContent("Frame size", value: glasses.delivered?.size ?? "—")
                 LabeledContent("Frame rate", value: glasses.delivered.map { String(format: "%.1f fps", $0.fps) } ?? "—")
                 if let pov = glasses.pov {
@@ -47,7 +25,7 @@ struct StreamLabView: View {
             Section {
                 Toggle("Record every frame", isOn: $glasses.recordFrames)
             } footer: {
-                Text("Saves full frames to Files → On My iPhone → CalHacks → frames. A new run starts whenever the settings change, up to \(FrameRecorder.cap) frames each.")
+                Text("Saves full frames to Files → On My iPhone → CalHacks → frames, up to \(FrameRecorder.cap) per run.")
             }
 
             Section("Runs") {
@@ -64,11 +42,7 @@ struct StreamLabView: View {
         .navigationTitle("Stream lab")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { runs = FrameRun.all() }
-        .onAppear {
-            res = glasses.streamRes
-            fps = glasses.streamFps
-            runs = FrameRun.all()
-        }
+        .onAppear { runs = FrameRun.all() }
         // A run in progress keeps growing; refresh its row while the toggle is on.
         .task(id: glasses.recordFrames) {
             while glasses.recordFrames, !Task.isCancelled {
@@ -77,11 +51,6 @@ struct StreamLabView: View {
             }
             runs = FrameRun.all()
         }
-    }
-
-    private var applyNote: String {
-        if glasses.mocking { return "Phone sim always streams medium at 24 fps; these apply to real glasses." }
-        return "Applying restarts the glasses session (a few seconds without video). The SDK may still send less when Bluetooth is busy: check Delivered."
     }
 }
 
@@ -99,58 +68,34 @@ private struct RunRow: View {
     }
 }
 
-/// The stream knobs as a strip for the home screen, so they can be flipped mid-test without
-/// leaving the camera view. The full lab (runs, gallery) is one tap away.
+/// What the camera is delivering right now, on the home screen: the request is not the result,
+/// so this shows the measured frame size and rate. Recording and the runs are one tap away.
 struct StreamControls: View {
     @Environment(Glasses.self) private var glasses
 
-    @State private var res = "low"
-    @State private var fps = 7
-
-    private static let resolutions = [("low", "Low"), ("medium", "Med"), ("high", "High")]
-    private static let rates = [2, 7, 15, 24, 30]
-
     var body: some View {
         @Bindable var glasses = glasses
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Picker("Resolution", selection: $res) {
-                    ForEach(Self.resolutions, id: \.0) { Text($0.1).tag($0.0) }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 150)
-                Picker("Frame rate", selection: $fps) {
-                    ForEach(Self.rates, id: \.self) { Text("\($0)").tag($0) }
-                }
-                .pickerStyle(.segmented)
+        HStack(spacing: 10) {
+            Image(systemName: "video")
+                .font(.caption)
+                .foregroundStyle(glasses.delivered == nil ? Color.secondary : Color.green)
+            Text(glasses.delivered.map { "\($0.size) · \(String(format: "%.1f", $0.fps)) fps" } ?? "Not streaming")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Spacer()
+            Toggle(isOn: $glasses.recordFrames) {
+                Label("Rec", systemImage: "record.circle")
             }
-            HStack(spacing: 10) {
-                Button("Apply") { glasses.setStream(res: res, fps: fps) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(res == glasses.streamRes && fps == glasses.streamFps)
-                // What arrived, not what was asked for.
-                Text(glasses.delivered.map { "\($0.size) · \(String(format: "%.1f", $0.fps)) fps" } ?? "no frames")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Toggle(isOn: $glasses.recordFrames) {
-                    Label("Rec", systemImage: "record.circle")
-                }
-                .toggleStyle(.button)
-                .tint(glasses.recordFrames ? .red : .secondary)
-                .controlSize(.small)
-                NavigationLink { StreamLabView() } label: {
-                    Text("Runs").font(.caption.weight(.medium))
-                }
+            .toggleStyle(.button)
+            .tint(glasses.recordFrames ? .red : .secondary)
+            .controlSize(.small)
+            NavigationLink { StreamLabView() } label: {
+                Text("Runs").font(.caption.weight(.medium))
             }
         }
-        .padding(10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-        .onAppear {
-            res = glasses.streamRes
-            fps = glasses.streamFps
-        }
     }
 }
 

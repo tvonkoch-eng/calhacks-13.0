@@ -113,7 +113,7 @@ struct HomeView: View {
                           shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
                 #endif
                 header
-                // Stream knobs on the home screen while the camera is being tuned.
+                // Live frame size and rate off the glasses, plus recording.
                 StreamControls()
                     .padding(.horizontal, 16)
                     .padding(.top, 8)

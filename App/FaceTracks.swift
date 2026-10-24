@@ -47,9 +47,15 @@ final class FaceTracker {
 
     /// A face that hasn't been seen for this long is a new face next time it appears.
     var maxAge: TimeInterval = 1.5
-    /// Per-frame weight decay. 0.75 gives an effective window of ~4 frames: long enough to fuse
-    /// away blur, short enough that turning your head to a new person doesn't drag the old one in.
-    var decay: Float = 0.75
+    /// Per-look weight decay. Was 0.75 (a ~4-look window). Now 1, no fade: while a face stays in
+    /// view every look keeps counting, so the name gets steadier the longer you look. Turning to
+    /// someone else no longer relies on fading — `splitBelow` opens a new track instead.
+    /// Live knob: `trackDecay`.
+    var decay: Float { Tuning.float("trackDecay", 1.0) }
+    /// A look whose cosine to the track's fused face is below this is a different person who
+    /// happened to land in the same box (the wearer turned their head). Same person scores ~0.4+
+    /// with ArcFace, anybody else ~0. Only applied once a track has real evidence. `trackSplit`.
+    var splitBelow: Float { Tuning.float("trackSplit", 0.1) }
     /// Boxes overlapping by at least this are the same face.
     var minOverlap: CGFloat = 0.25
 
@@ -66,17 +72,18 @@ final class FaceTracker {
                 .map { (index: $0, overlap: FaceTracker.overlap(tracks[$0].box, hit.box)) }
                 .max { $0.overlap < $1.overlap }
 
-            if let candidate, candidate.overlap >= minOverlap {
+            if let candidate, candidate.overlap >= minOverlap, !tracks[candidate.index].isStranger(hit, below: splitBelow) {
                 claimed.insert(candidate.index)
                 tracks[candidate.index].absorb(hit, decay: decay, now: now)
             } else if hit.usable || hits.count == 1 {
+                if let candidate, candidate.overlap >= minOverlap { claimed.insert(candidate.index) }
                 // A brand-new track needs somewhere to start. A blurred first look still opens one
                 // so the next frame has something to attach to, it just carries no evidence.
                 claimed.insert(tracks.count)
                 tracks.append(Track(id: nextID, box: hit.box,
-                                    sum: hit.usable ? hit.embedding : [],
+                                    sum: hit.usable ? Self.scaled(hit.embedding, hit.quality) : [],
                                     looks: hit.usable ? 1 : 0,
-                                    weight: hit.usable ? 1 : 0,
+                                    weight: hit.usable ? hit.quality : 0,
                                     best: hit, firstSeen: now, updated: now))
                 nextID += 1
             }
@@ -85,6 +92,12 @@ final class FaceTracker {
     }
 
     func forget(_ id: Int) { tracks.removeAll { $0.id == id } }
+
+    static func scaled(_ v: [Float], _ by: Float) -> [Float] {
+        var s = by, out = v
+        vDSP_vsmul(v, 1, &s, &out, 1, vDSP_Length(v.count))
+        return out
+    }
     func reset() { tracks.removeAll() }
 
     /// Intersection over union of two normalised boxes.
@@ -96,7 +109,24 @@ final class FaceTracker {
     }
 }
 
+extension FaceHit {
+    /// How much one look counts: crisp looks (~0.3+) up to 1.5x, mush down to 0.2x, so a smeared
+    /// frame can't outvote a clean one. `qualityWeight: false` makes every look count 1.
+    var quality: Float {
+        guard Tuning.bool("qualityWeight", true) else { return 1 }
+        return min(max(sharpness / 0.3, 0.2), 1.5)
+    }
+}
+
 private extension FaceTracker.Track {
+    /// True when this look is clearly someone other than the face this track has been following.
+    func isStranger(_ hit: FaceHit, below: Float) -> Bool {
+        guard hit.usable, weight >= 1.5, sum.count == hit.embedding.count else { return false }
+        var cosine: Float = 0
+        vDSP_dotpr(probe, 1, hit.embedding, 1, &cosine, vDSP_Length(sum.count))
+        return cosine < below
+    }
+
     mutating func absorb(_ hit: FaceHit, decay: Float, now: Date) {
         box = hit.box
         updated = now
@@ -105,11 +135,12 @@ private extension FaceTracker.Track {
         if sum.count == hit.embedding.count {
             var d = decay
             vDSP_vsmul(sum, 1, &d, &sum, 1, vDSP_Length(sum.count))
-            vDSP_vadd(sum, 1, hit.embedding, 1, &sum, 1, vDSP_Length(sum.count))
-            weight = weight * decay + 1
+            let look = FaceTracker.scaled(hit.embedding, hit.quality)
+            vDSP_vadd(sum, 1, look, 1, &sum, 1, vDSP_Length(sum.count))
+            weight = weight * decay + hit.quality
         } else {
-            sum = hit.embedding
-            weight = 1
+            sum = FaceTracker.scaled(hit.embedding, hit.quality)
+            weight = hit.quality
         }
         looks += 1
     }
