@@ -84,7 +84,7 @@ import Observation
         aid = Self.makeAid(wearer: wearer)
         speakers = Speakers(wearer: wearer)
         // New key on purpose: the glasses default of the last build shouldn't carry over.
-        listener.mic = Listener.Mic(rawValue: UserDefaults.standard.string(forKey: "mic") ?? "") ?? .phone
+        listener.mic = Listener.storedMic
         listener.onLog = { SpeedLog.record($0) }
         listener.onPartial = { [weak self] text in
             guard let self else { return }

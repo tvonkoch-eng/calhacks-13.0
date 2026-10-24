@@ -57,6 +57,16 @@ import Observation
 
     static let model = "muse-voice-transcribe-1.0"
     static let mode = "DIARIZATION"
+    /// The remembered mic. `MIC=glasses` / `MIC=phone` from Xcode or devicectl wins and is stored,
+    /// so the choice can be made without the phone's menu.
+    static var storedMic: Mic {
+        if let forced = ProcessInfo.processInfo.environment["MIC"].flatMap(Mic.init(rawValue:)) {
+            UserDefaults.standard.set(forced.rawValue, forKey: "mic")
+            return forced
+        }
+        return Mic(rawValue: UserDefaults.standard.string(forKey: "mic") ?? "") ?? .phone
+    }
+
     static let endpoint = URL(string: "wss://api.meta.ai/v1/asr/realtime")!
 
     /// Set `MUSE_API_KEY` in Secrets.xcconfig (see Secrets.example.xcconfig).

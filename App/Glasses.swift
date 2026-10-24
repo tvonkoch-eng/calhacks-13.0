@@ -193,7 +193,7 @@ enum Identification {
 
     /// Ask the stream for the glasses' mic too. Fixed when the camera is added, so a change
     /// restarts the session (~2 s).
-    var streamAudio = UserDefaults.standard.string(forKey: "mic") == "glasses"
+    var streamAudio = Listener.storedMic == .glasses
     /// Where the glasses' audio goes. Called on the SDK's thread.
     @ObservationIgnored let audioSink = AudioSink()
     @ObservationIgnored private var audioFrames = 0
