@@ -99,6 +99,61 @@ private struct RunRow: View {
     }
 }
 
+/// The stream knobs as a strip for the home screen, so they can be flipped mid-test without
+/// leaving the camera view. The full lab (runs, gallery) is one tap away.
+struct StreamControls: View {
+    @Environment(Glasses.self) private var glasses
+
+    @State private var res = "low"
+    @State private var fps = 7
+
+    private static let resolutions = [("low", "Low"), ("medium", "Med"), ("high", "High")]
+    private static let rates = [2, 7, 15, 24, 30]
+
+    var body: some View {
+        @Bindable var glasses = glasses
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Picker("Resolution", selection: $res) {
+                    ForEach(Self.resolutions, id: \.0) { Text($0.1).tag($0.0) }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 150)
+                Picker("Frame rate", selection: $fps) {
+                    ForEach(Self.rates, id: \.self) { Text("\($0)").tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
+            HStack(spacing: 10) {
+                Button("Apply") { glasses.setStream(res: res, fps: fps) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(res == glasses.streamRes && fps == glasses.streamFps)
+                // What arrived, not what was asked for.
+                Text(glasses.delivered.map { "\($0.size) · \(String(format: "%.1f", $0.fps)) fps" } ?? "no frames")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Toggle(isOn: $glasses.recordFrames) {
+                    Label("Rec", systemImage: "record.circle")
+                }
+                .toggleStyle(.button)
+                .tint(glasses.recordFrames ? .red : .secondary)
+                .controlSize(.small)
+                NavigationLink { StreamLabView() } label: {
+                    Text("Runs").font(.caption.weight(.medium))
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        .onAppear {
+            res = glasses.streamRes
+            fps = glasses.streamFps
+        }
+    }
+}
+
 /// Every frame of one run. Sort by sharpness to see the best and worst the link produced.
 struct FrameRunView: View {
     let run: FrameRun

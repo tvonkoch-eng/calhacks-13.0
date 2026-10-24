@@ -113,6 +113,10 @@ struct HomeView: View {
                           shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
                 #endif
                 header
+                // Stream knobs on the home screen while the camera is being tuned.
+                StreamControls()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         Text("People")
