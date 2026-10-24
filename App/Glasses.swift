@@ -6,6 +6,7 @@ import MWDATDisplay
 import MWDATInputs
 #if DEBUG
 import MWDATMockDevice
+import MWDATSpeech
 #endif
 import Observation
 import UIKit
@@ -39,6 +40,41 @@ enum Identification {
     /// The mic is on: the lens leans toward the aid, and a read person card shrinks to one line.
     var aidArmed = false {
         didSet { if aidArmed != oldValue { renderLens() } }
+    }
+    /// Everyone in the conversation (the host decides who: seen in focus, or heard), and whether
+    /// the wearer has the floor. Two or more turn the person strip into a row of names.
+    private(set) var group: [Member] = []
+    private(set) var meSpeaking = false
+
+    func setGroup(_ group: [Member], meSpeaking: Bool) {
+        guard group != self.group || meSpeaking != self.meSpeaking else { return }
+        let before = currentMode()
+        self.group = group
+        self.meSpeaking = meSpeaking
+        // Only a lens that shows the group needs rewriting; the identity card doesn't.
+        let after = currentMode()
+        if aidArmed, before != after || [.aid, .both, .compact].contains(after) { renderLens() }
+    }
+
+    /// Every confident face in a scanned frame (person ids), whether or not it is announced. The
+    /// host builds the conversation's group from these.
+    @ObservationIgnored var onSeen: (([String]) -> Void)?
+
+    // MARK: Own voice
+
+    /// The glasses' on-device transcription (MWDATSpeech) of what their own mics hear. Called on
+    /// the main actor with each partial and final result. The host uses it to tell the wearer's
+    /// lines from everyone else's (App/Speakers.swift); it never feeds the aid's transcript.
+    @ObservationIgnored var onOwnSpeech: ((_ text: String, _ final: Bool) -> Void)?
+    /// "Off", "Starting", "On", or why not, for the phone.
+    private(set) var ownVoice = "Off"
+    @ObservationIgnored private var speech: Speech?
+    @ObservationIgnored private var speechFailures = 0
+    @ObservationIgnored private var speechResults = 0
+    /// Not while the stream carries the glasses' mic: two consumers of one mic is asking for the
+    /// stream to die, and the level gap between glasses and phone does the job then.
+    @ObservationIgnored private var wantsSpeech: Bool {
+        Tuning.bool("glassesSpeech", true) && speechFailures < 3 && (!streamAudio || Tuning.bool("speechWithStreamAudio", false))
     }
     /// Which way the last lens write went, for the speed log and the phone.
     private(set) var lensMode: LensMode = .identity
@@ -144,8 +180,15 @@ enum Identification {
         }
         // The glasses' mic rides the camera stream (SDK 1.0.1, experimental): 16 kHz mono PCM,
         // no Bluetooth hands-free route, so iOS's audio is never touched.
-        let audio: MWDATCamera.AudioCodec? = streamAudio ? .pcm(sampleRate: .rate16000, numberOfChannels: 1) : nil
+        let audio: MWDATCamera.AudioCodec? = streamAudio ? .pcm(sampleRate: audioRate, numberOfChannels: 1) : nil
         return StreamConfiguration(videoCodec: .raw, audioCodec: audio, resolution: resolution, frameRate: fps)
+    }
+
+    /// The glasses' mic sample rate. 16 kHz is all speech needs; if streams with it keep dying,
+    /// 48 kHz gets one try (the SDK's audio path is experimental and untested at each rate here)
+    /// before audio is dropped. Remembered, so a rate that works is used from the start next time.
+    private var audioRate: MWDATCamera.AudioSampleRate {
+        UserDefaults.standard.integer(forKey: "glassesAudioRate") == 48_000 ? .rate48000 : .rate16000
     }
 
     /// Ask the stream for the glasses' mic too. Fixed when the camera is added, so a change
@@ -160,6 +203,25 @@ enum Identification {
     @ObservationIgnored var onStreamAudioLost: ((String) -> Void)?
     /// Streams with audio that died before their first frame, in a row.
     @ObservationIgnored private var audioStreamFailures = 0
+
+    @ObservationIgnored private var audioStatsFrom = Date()
+    @ObservationIgnored private var audioSamples = 0
+    @ObservationIgnored private var audioChunks = 0
+
+    /// Is the glasses' audio really arriving, and at what rate: logged every 10 s while it does.
+    private func noteAudio(samples: Int, rate: Int) {
+        audioFrames += 1
+        audioChunks += 1
+        audioSamples += samples
+        let span = Date().timeIntervalSince(audioStatsFrom)
+        guard span >= 10 else { return }
+        SpeedLog.record(["event": "glassesAudio", "frames": audioChunks, "rate": rate,
+                         "secondsOfAudio": (Double(audioSamples) / Double(max(rate, 1)) * 10).rounded() / 10,
+                         "overSeconds": (span * 10).rounded() / 10])
+        audioChunks = 0
+        audioSamples = 0
+        audioStatsFrom = Date()
+    }
 
     private func disableStreamAudio(reason: String) {
         guard streamAudio else { return }
@@ -393,10 +455,14 @@ enum Identification {
             do throws(PermissionError) {
                 // The glasses' mic on the stream needs its own grant; without it every stream
                 // that asks for audio dies on its first frame (18:09, five times in a row).
-                if streamAudio, try await wearables.checkPermissionStatus(.microphone) != .granted {
+                // The same grant covers the glasses' own transcription (who's talking).
+                if streamAudio || wantsSpeech, try await wearables.checkPermissionStatus(.microphone) != .granted {
                     status = "Allow microphone access in Meta AI"
                     if try await wearables.requestPermission(.microphone) != .granted {
                         disableStreamAudio(reason: "micPermissionDenied")
+                        speechFailures = 3
+                        ownVoice = "Unavailable · no mic access in Meta AI"
+                        SpeedLog.record(["event": "ownVoice", "state": "micPermissionDenied"])
                     }
                 }
                 if try await wearables.checkPermissionStatus(.camera) != .granted {
@@ -474,6 +540,7 @@ enum Identification {
                 self.display = display
             }
             attachInputs(session)
+            attachSpeech(session)
 
             connected = true
             #if DEBUG
@@ -864,6 +931,9 @@ enum Identification {
         inputTask = nil
         tokens = []
         releaseCameraTokens()
+        speech?.stop()
+        speech = nil
+        if ownVoice != "Off", !ownVoice.hasPrefix("Unavailable") { ownVoice = "Off" }
         camera = nil
         display = nil
         displayReady = false
@@ -902,6 +972,67 @@ enum Identification {
     }
 
     /// Glasses capture button / action button → identify. Needs Inputs enabled in Wearables Developer Center.
+    /// The glasses transcribe their own mic on-device. Experimental in the SDK, so every failure is
+    /// logged and three of them turn it off for the run: the camera and lens must never pay for it.
+    private func attachSpeech(_ session: DeviceSession) {
+        guard wantsSpeech else { return }
+        let speech: Speech
+        do {
+            guard let added = try session.addSpeech() else {
+                ownVoice = "Unavailable on these glasses"
+                speechFailures = 3
+                SpeedLog.record(["event": "ownVoice", "state": "unavailable"])
+                return
+            }
+            speech = added
+        } catch {
+            speechFailures += 1
+            ownVoice = "Unavailable · \(error)"
+            SpeedLog.record(["event": "ownVoice", "state": "addFailed", "error": "\(error)"])
+            return
+        }
+        self.speech = speech
+        ownVoice = "Starting"
+        speechResults = 0
+        tokens.append(speech.statePublisher.listen { [weak self] state in
+            Task { @MainActor in
+                guard let self else { return }
+                switch state {
+                case .started: self.ownVoice = "On"
+                case .starting: self.ownVoice = "Starting"
+                case .stopping, .stopped: if self.ownVoice == "On" || self.ownVoice == "Starting" { self.ownVoice = "Off" }
+                }
+                SpeedLog.record(["event": "ownVoice", "state": "\(state)"])
+            }
+        })
+        tokens.append(speech.transcriptionPublisher.listen { [weak self] result in
+            let text = result.text, final = result.isFinal, confidence = result.confidence
+            Task { @MainActor in
+                guard let self else { return }
+                self.speechResults += 1
+                if final || self.speechResults % 20 == 1 {
+                    SpeedLog.record(["event": "ownVoiceText", "text": String(text.prefix(120)), "final": final,
+                                     "confidence": (Double(confidence) * 100).rounded() / 100])
+                }
+                self.onOwnSpeech?(text, final)
+            }
+        })
+        tokens.append(speech.errorPublisher.listen { [weak self] error in
+            Task { @MainActor in
+                guard let self else { return }
+                self.speechFailures += 1
+                self.ownVoice = "Error · \(error)"
+                SpeedLog.record(["event": "ownVoice", "state": "error", "error": "\(error)", "failures": self.speechFailures])
+                // One retry after a beat; past three failures it stays off until relaunch.
+                guard self.wantsSpeech, self.speech === speech else { return }
+                try? await Task.sleep(for: .seconds(3))
+                guard self.speech === speech, speech.state == .stopped else { return }
+                speech.start()
+            }
+        })
+        speech.start()
+    }
+
     private func attachInputs(_ session: DeviceSession) {
         // Physical buttons only. Including .neuralBand / .captouch here makes Inputs swallow the band's
         // pinch (haptic, but the lens button never gets the click).
@@ -996,7 +1127,16 @@ enum Identification {
                 let diedYoung = dead && self.lastFrameAt.timeIntervalSince(self.streamStartedAt) < 5
                 if self.streamAudio, diedYoung {
                     self.audioStreamFailures += 1
-                    if self.audioStreamFailures >= 2 { self.disableStreamAudio(reason: "streamDiesWithAudio") }
+                    if self.audioStreamFailures >= 2 {
+                        if self.audioRate == .rate16000 {
+                            UserDefaults.standard.set(48_000, forKey: "glassesAudioRate")
+                            self.audioStreamFailures = 0
+                            SpeedLog.record(["event": "streamAudioRate", "to": 48_000, "reason": "streamDiesWithAudio"])
+                        } else {
+                            UserDefaults.standard.removeObject(forKey: "glassesAudioRate")
+                            self.disableStreamAudio(reason: "streamDiesWithAudio")
+                        }
+                    }
                 } else if flowing, !dead {
                     self.audioStreamFailures = 0
                 }
@@ -1097,7 +1237,8 @@ enum Identification {
             let sink = audioSink
             cameraTokens.append(camera.stream.audioFramePublisher.listen { [weak self] frame in
                 sink.handler?(frame.pcmBuffer)
-                Task { @MainActor in self?.audioFrames += 1 }
+                let samples = Int(frame.pcmBuffer.frameLength), rate = Int(frame.pcmBuffer.format.sampleRate)
+                Task { @MainActor in self?.noteAudio(samples: samples, rate: rate) }
             })
         }
         cameraTokens.append(camera.stream.photoDataPublisher.listen { [weak self] photo in
@@ -1284,6 +1425,7 @@ enum Identification {
         // still owns the lens. Decided before sightings are recorded, so this frame can't silence itself.
         let allowed = chosen.map { correcting ? !identifying : mayShow($0.match.person.id) } ?? false
         for seen in seenNow { sighted[seen.id] = frameTime }
+        onSeen?(seenNow.map(\.id))
         // Who the wearer is facing, for the aid: the clearest match in view right now.
         let looking = seenNow.max { $0.score < $1.score }?.id
         if looking != facing { facing = looking }
@@ -1497,8 +1639,10 @@ enum Identification {
     /// both, and this builds that card and its mirror.
     private func currentMode() -> LensMode {
         let person = knownPerson
-        let around = person.map { facing == $0.id || present.contains($0.id) } ?? false
-        return LensPolicy.mode(identifying: identifying, confirming: confirming, known: person != nil, around: around,
+        // A group of two or more is "who you're talking to" whether or not anyone's card is up.
+        let grouped = group.count >= 2
+        let around = grouped || (person.map { facing == $0.id || present.contains($0.id) } ?? false)
+        return LensPolicy.mode(identifying: identifying, confirming: confirming, known: person != nil || grouped, around: around,
                                sinceIdentified: Date().timeIntervalSince(resultAt), bioHolds: bioHolds,
                                aidArmed: aidArmed, aidEmpty: aidLens.isEmpty)
     }
@@ -1513,10 +1657,16 @@ enum Identification {
         case .identity:
             return hud()
         case .aid, .both:
-            let partner = mode == .both ? person : nil
-            lensShot = LensCards.shot(aid: aidLens, person: partner)
-            return LensCards.aid(aidLens, person: partner, avatar: avatar)
+            let grouped = mode == .both && group.count >= 2
+            let partner = mode == .both && !grouped ? person : nil
+            let members = grouped ? group : []
+            lensShot = LensCards.shot(aid: aidLens, person: partner, group: members, meSpeaking: meSpeaking)
+            return LensCards.aid(aidLens, person: partner, group: members, meSpeaking: meSpeaking, avatar: avatar)
         case .compact:
+            if group.count >= 2 {
+                lensShot = LensCards.shot(compact: group, meSpeaking: meSpeaking)
+                return LensCards.compact(group: group, meSpeaking: meSpeaking, avatar: avatar)
+            }
             guard let person else { return hud() }
             lensShot = LensCards.shot(compact: person, identifying: identifying, connected: connected)
             return LensCards.compact(person, avatar: avatar, identifying: identifying, connected: connected,

@@ -286,6 +286,8 @@ enum Talk {
     @ObservationIgnored var onLens: ((LensView) -> Void)?
     /// Fires on every new event; the Mac tool prints it.
     @ObservationIgnored var onEvent: ((Event) -> Void)?
+    /// Whether the wearer is the one talking right now, if the host can tell (nil: it can't).
+    @ObservationIgnored var liveWearer: (() -> Bool?)?
 
     @ObservationIgnored let config: Config
 
@@ -389,6 +391,12 @@ enum Talk {
     func lastLineWasMe() {
         guard let speaker = lines.last(where: { $0.speaker != nil })?.speaker else { return }
         markWearer(speaker)
+    }
+
+    /// The host already knows which label is the wearer (it resolves speakers itself): lock it
+    /// quietly, so loudness and introductions here don't second-guess it.
+    func assume(wearer label: String) {
+        roles.lock(label)
     }
 
     func markWearer(_ label: String) {
@@ -997,12 +1005,16 @@ enum Talk {
 
     /// Diarized turns alternate, so the turn in progress is most likely the other speaker's.
     private func predictedTag() -> String {
+        if let live = liveWearer?() { return live ? "ME" : "THEM" }
         guard let previous = lines.last?.speaker else { return "?" }
         if roles.known { return previous == roles.wearer ? "THEM" : "ME" }
         return previous == "A" ? "B" : "A"
     }
 
     private func predictedWearer() -> Bool {
+        // The host can hear the wearer directly (the glasses' own mic); alternation is only a guess,
+        // and a wrong one with three people: after Avi, Mira's question isn't the wearer's.
+        if let live = liveWearer?() { return live }
         guard roles.known, let previous = lines.last?.speaker else { return false }
         return previous != roles.wearer
     }
