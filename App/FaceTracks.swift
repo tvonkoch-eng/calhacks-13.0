@@ -56,7 +56,8 @@ final class FaceTracker {
     /// A look whose cosine to the track's fused face is below this is a different person who
     /// happened to land in the same box (the wearer turned their head). Same person scores ~0.4+
     /// with ArcFace, anybody else ~0. Only applied once a track has real evidence. `trackSplit`.
-    var splitBelow: Float { Tuning.float("trackSplit", 0.1) }
+    /// Was 0.1, which let Avi's track absorb Joaquin's face in the Oct 24 replay.
+    var splitBelow: Float { Tuning.float("trackSplit", 0.2) }
     /// Boxes overlapping by at least this are the same face.
     /// Lowered from 0.25 for 2 fps: a head moves further in the 0.5 s between frames.
     var minOverlap: CGFloat = 0.15
@@ -74,7 +75,8 @@ final class FaceTracker {
                 .map { (index: $0, overlap: FaceTracker.overlap(tracks[$0].box, hit.box)) }
                 .max { $0.overlap < $1.overlap }
 
-            if let candidate, candidate.overlap >= minOverlap, !tracks[candidate.index].isStranger(hit, below: splitBelow) {
+            if let candidate, candidate.overlap >= minOverlap, !tracks[candidate.index].isStranger(hit, below: splitBelow),
+               !tracks[candidate.index].jumped(to: hit.box) {
                 claimed.insert(candidate.index)
                 tracks[candidate.index].absorb(hit, decay: decay, now: now)
             } else if hit.usable || hits.count == 1 {
@@ -122,6 +124,14 @@ extension FaceHit {
 }
 
 private extension FaceTracker.Track {
+    /// A face doesn't change size by 1.6x or move more than its own width between two frames; when
+    /// a box does, it is a different face that landed in the overlap window.
+    func jumped(to next: CGRect) -> Bool {
+        let ratio = (next.width * next.height) / max(box.width * box.height, 1e-6)
+        let shift = hypot(next.midX - box.midX, next.midY - box.midY)
+        return ratio > 1.6 || ratio < 1 / 1.6 || shift > max(box.width, next.width)
+    }
+
     /// True when this look is clearly someone other than the face this track has been following.
     func isStranger(_ hit: FaceHit, below: Float) -> Bool {
         guard hit.usable, weight >= 1.5, sum.count == hit.embedding.count else { return false }
