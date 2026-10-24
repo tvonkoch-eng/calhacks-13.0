@@ -2,7 +2,7 @@ import MWDATDisplay
 import UIKit
 
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
-/// who they are, three lines of background, one thing to say.
+/// who they are and three lines of background.
 enum LensCards {
     static func working() -> FlexBox {
         FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
@@ -57,12 +57,6 @@ enum LensCards {
                             Icon(name: icon(detail.kind), style: .outline)
                             Text(detail.text, style: .body)
                         }
-                    }
-                }
-                if let opener = person.opener {
-                    FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
-                        Icon(name: .speechBubble)
-                        Text(opener, style: .body)
                     }
                 }
                 ButtonGroup {

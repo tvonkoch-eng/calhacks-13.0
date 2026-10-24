@@ -10,16 +10,37 @@ struct FaceHit {
     let area: CGFloat
 }
 
+/// Where the time went in one scan (milliseconds).
+struct FaceTiming {
+    var detectMs = 0.0
+    var embedMs = 0.0
+    var faces = 0
+}
+
 enum FaceEngine {
     private static let context = CIContext()
 
     /// Detects faces (largest first) and embeds each one with a Vision feature print.
-    static func faces(in image: CIImage) -> [FaceHit] {
+    static func faces(in image: CIImage, limit: Int = .max) -> [FaceHit] {
+        scan(image, limit: limit).hits
+    }
+
+    /// Detection runs on every face; only the `limit` largest get embedded (embedding is the slow part).
+    static func scan(_ image: CIImage, limit: Int = .max) -> (hits: [FaceHit], timing: FaceTiming) {
+        var timing = FaceTiming()
+        var start = CFAbsoluteTimeGetCurrent()
         let detect = VNDetectFaceRectanglesRequest()
         try? VNImageRequestHandler(ciImage: image).perform([detect])
+        timing.detectMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+
         let extent = image.extent
-        let hits: [FaceHit] = (detect.results ?? []).compactMap { face in
-            let box = VNImageRectForNormalizedRect(face.boundingBox, Int(extent.width), Int(extent.height))
+        let boxes = (detect.results ?? [])
+            .map { VNImageRectForNormalizedRect($0.boundingBox, Int(extent.width), Int(extent.height)) }
+            .sorted { $0.width * $0.height > $1.width * $1.height }
+        timing.faces = boxes.count
+
+        start = CFAbsoluteTimeGetCurrent()
+        let hits: [FaceHit] = boxes.prefix(limit).compactMap { box in
             let side = max(box.width, box.height) * 1.25
             let square = CGRect(x: box.midX - side / 2, y: box.midY - side / 2, width: side, height: side)
                 .offsetBy(dx: extent.minX, dy: extent.minY)
@@ -29,7 +50,15 @@ enum FaceEngine {
                   let embedding = embed(crop) else { return nil }
             return FaceHit(embedding: embedding, crop: crop, area: box.width * box.height)
         }
-        return hits.sorted { $0.area > $1.area }
+        timing.embedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        return (hits, timing)
+    }
+
+    /// Loads the Vision models up front so the first identify doesn't pay for it.
+    static func warmUp() {
+        let blank = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 128, height: 128))
+        try? VNImageRequestHandler(ciImage: blank).perform([VNDetectFaceRectanglesRequest()])
+        if let cg = context.createCGImage(blank, from: blank.extent) { _ = embed(cg) }
     }
 
     private static func embed(_ image: CGImage) -> [Float]? {

@@ -13,7 +13,6 @@ struct Person: Codable, Identifiable, Hashable {
     var work: String?
     var from: String?
     var interests: String?
-    var opener: String?
     var isMe: Bool?
 
     /// Background lines in display order.
@@ -128,7 +127,7 @@ struct Match {
     /// The team is tiny and everyone is known, so the closest person always wins.
     func match(_ embedding: [Float]) -> Match? { ranked(embedding).first }
 
-    private func ranked(_ embedding: [Float]) -> [Match] {
+    func ranked(_ embedding: [Float]) -> [Match] {
         people.compactMap { person -> Match? in
             guard let samples = gallery[person.id], !samples.isEmpty else { return nil }
             let best = samples.map { zip($0, embedding).reduce(0) { $0 + $1.0 * $1.1 } }.max() ?? 0

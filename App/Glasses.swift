@@ -20,7 +20,6 @@ enum Identification {
     var connected = false
     var connecting = false
     var identifying = false
-    var snapshot: UIImage?
     var result: Identification = .ready
 
     @ObservationIgnored var store: Store?
@@ -34,7 +33,8 @@ enum Identification {
     @ObservationIgnored private var inputTask: Task<Void, Never>?
     @ObservationIgnored private var photoWaiter: CheckedContinuation<CIImage?, Never>?
     @ObservationIgnored private var frameWaiter: CheckedContinuation<CIImage?, Never>?
-    @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces")
+    @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces", qos: .userInitiated)
+    @ObservationIgnored private var photoBytes = 0
 
     static func configure() {
         do { try Wearables.configure() } catch { print("Wearables.configure failed: \(error)") }
@@ -98,7 +98,11 @@ enum Identification {
             }
             tokens.append(camera.photo.photoDataPublisher.listen { [weak self] capture in
                 let image = CIImage(data: capture.imageData, options: [.applyOrientationProperty: true])
-                Task { @MainActor in self?.resumePhoto(image) }
+                let bytes = capture.imageData.count
+                Task { @MainActor in
+                    self?.photoBytes = bytes
+                    self?.resumePhoto(image)
+                }
             })
             tokens.append(camera.photo.errorPublisher.listen { [weak self] error in
                 Task { @MainActor in
@@ -139,26 +143,71 @@ enum Identification {
         teardown(status: "Not connected")
     }
 
-    func identify() async {
+    /// `source` is only for the speed log: phone, lens, or glasses (capture/action button).
+    func identify(source: String = "phone") async {
         guard connected, !identifying, let store else { return }
+        let start = CFAbsoluteTimeGetCurrent()
         identifying = true
-        renderLens()
-        defer {
-            identifying = false
-            renderLens()
-        }
+        var log: [String: Any] = ["source": source, "resolution": photoResolution.rawValue, "quality": photoQuality.rawValue]
+        defer { identifying = false }
 
-        var image = await capturePhoto()
-        if image == nil { image = await grabFrame() }
+        async let capturing = capturePhoto()
+        renderLens()
+        var image = await capturing
+        log["captureMs"] = ms(since: start)
+        log["path"] = "photo"
+        log["bytes"] = photoBytes
+        if image == nil {
+            let fallback = CFAbsoluteTimeGetCurrent()
+            image = await grabFrame()
+            log["path"] = "frame"
+            log["fallbackMs"] = ms(since: fallback)
+        }
         guard let image else {
             result = .noFace
-            status = "Couldn't get a photo from the glasses"
+            log["outcome"] = "noImage"
+            await finish(&log, start: start)
             return
         }
-        snapshot = UIImage(ciImage: image).rendered()
-        let faces = await detect(image)
-        result = faces.first.map(classify) ?? .noFace
+        log["width"] = Int(image.extent.width)
+        log["height"] = Int(image.extent.height)
+
+        let scan = await scanLargest(image)
+        log["detectMs"] = (scan.timing.detectMs * 10).rounded() / 10
+        log["embedMs"] = (scan.timing.embedMs * 10).rounded() / 10
+        log["faces"] = scan.timing.faces
+
+        let matchStart = CFAbsoluteTimeGetCurrent()
+        result = scan.hit.map(classify) ?? .noFace
         recordSeen()
+        log["matchMs"] = ms(since: matchStart)
+        if let hit = scan.hit {
+            let ranked = store.ranked(hit.embedding)
+            log["person"] = ranked.first?.person.id
+            log["score"] = ranked.first.map { (Double($0.score) * 1000).rounded() / 1000 }
+            log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
+        }
+        log["outcome"] = scan.hit == nil ? "noFace" : "known"
+        await finish(&log, start: start)
+    }
+
+    /// Time to answer = when the phone shows the result; the lens send is timed separately.
+    private func finish(_ log: inout [String: Any], start: CFAbsoluteTime) async {
+        log["toResultMs"] = ms(since: start)
+        identifying = false
+        let lensStart = CFAbsoluteTimeGetCurrent()
+        if await sendLens() { log["lensMs"] = ms(since: lensStart) }
+        log["totalMs"] = ms(since: start)
+        SpeedLog.record(log)
+    }
+
+    /// Photo size is tunable without a rebuild: launch with `-photoResolution small -photoQuality low`.
+    private var photoResolution: PhotoResolution {
+        UserDefaults.standard.string(forKey: "photoResolution").flatMap(PhotoResolution.init(rawValue:)) ?? .medium
+    }
+
+    private var photoQuality: PhotoQuality {
+        UserDefaults.standard.string(forKey: "photoQuality").flatMap(PhotoQuality.init(rawValue:)) ?? .medium
     }
 
     private func recordSeen() {
@@ -219,7 +268,7 @@ enum Identification {
             for await event in events {
                 switch event {
                 case .capture(.shortPress, _, _), .button(.action, _, _):
-                    await self?.identify()
+                    await self?.identify(source: "glasses")
                 default:
                     break
                 }
@@ -233,7 +282,8 @@ enum Identification {
         guard let photo = camera?.photo else { return nil }
         return await withCheckedContinuation { done in
             photoWaiter = done
-            photo.capturePhoto(resolution: .medium, quality: .medium)
+            photoBytes = 0
+            photo.capturePhoto(resolution: photoResolution, quality: photoQuality)
             Task {
                 try? await Task.sleep(for: .seconds(8))
                 resumePhoto(nil)
@@ -268,9 +318,12 @@ enum Identification {
         frameWaiter = nil
     }
 
-    private func detect(_ image: CIImage) async -> [FaceHit] {
+    private func scanLargest(_ image: CIImage) async -> (hit: FaceHit?, timing: FaceTiming) {
         await withCheckedContinuation { done in
-            worker.async { done.resume(returning: FaceEngine.faces(in: image)) }
+            worker.async {
+                let scan = FaceEngine.scan(image, limit: 1)
+                done.resume(returning: (scan.hits.first, scan.timing))
+            }
         }
     }
 
@@ -282,10 +335,24 @@ enum Identification {
             for: result,
             avatar: { [store] in store?.avatars[$0] },
             hasFaces: store?.hasFaces ?? false,
-            identify: { [weak self] in Task { @MainActor in await self?.identify() } },
+            identify: { [weak self] in Task { @MainActor in await self?.identify(source: "lens") } },
             dismiss: { [weak self] in Task { @MainActor in self?.dismiss() } }
         )
         Task { try? await display.send(view) }
+    }
+
+    /// Sends the current card and waits for it; false when there's no lens.
+    private func sendLens() async -> Bool {
+        guard let display, displayReady else { return false }
+        let view = LensCards.card(
+            for: result,
+            avatar: { [store] in store?.avatars[$0] },
+            hasFaces: store?.hasFaces ?? false,
+            identify: { [weak self] in Task { @MainActor in await self?.identify(source: "lens") } },
+            dismiss: { [weak self] in Task { @MainActor in self?.dismiss() } }
+        )
+        do { try await display.send(view) } catch { return false }
+        return true
     }
 }
 

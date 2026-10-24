@@ -6,7 +6,10 @@ struct CalHacksApp: App {
     @State private var store = Store()
     @State private var glasses = Glasses()
 
-    init() { Glasses.configure() }
+    init() {
+        Glasses.configure()
+        DispatchQueue.global(qos: .userInitiated).async { FaceEngine.warmUp() }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -156,7 +159,7 @@ struct HomeView: View {
     }
 }
 
-/// The person you're talking to now: photo, who they are, and something to say.
+/// The person you're talking to now: photo and who they are.
 struct CurrentCard: View {
     @Environment(Store.self) private var store
     @Environment(Glasses.self) private var glasses
@@ -165,7 +168,7 @@ struct CurrentCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             NavigationLink(value: person) {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 14) {
                         Avatar(person: person, size: 64)
                         VStack(alignment: .leading, spacing: 3) {
@@ -177,12 +180,6 @@ struct CurrentCard: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 0)
-                    }
-                    if let opener = person.opener {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("SAY HI").font(.caption.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
-                            Text(opener).font(.system(.body, design: .serif))
-                        }
                     }
                 }
                 .multilineTextAlignment(.leading)
@@ -238,7 +235,7 @@ struct ContactRow: View {
     }
 }
 
-/// The identified person: photo, name, background as ruled rows, and an opener.
+/// A person's profile: photo, name, and background as ruled rows.
 struct ProfileView: View {
     @Environment(Store.self) private var store
     let person: Person
@@ -279,19 +276,6 @@ struct ProfileView: View {
                 .padding(.vertical, 14)
             }
             Divider()
-
-            if let opener = person.opener {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("SAY HI")
-                        .font(.caption.weight(.semibold)).tracking(0.8)
-                        .foregroundStyle(.secondary)
-                    Text(opener).font(.system(.title3, design: .serif))
-                }
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .padding(.top, 24)
-            }
 
             if let face {
                 SaveFaceMenu(face: face, label: "Not \(person.name.split(separator: " ").first ?? "them")?")
