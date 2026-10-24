@@ -47,8 +47,7 @@ struct PeopleHome: View {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         VStack(alignment: .leading, spacing: 0) {
                             if query.isEmpty {
-                                recent(now: context.date)
-                                FollowUps(now: context.date, showLive: false).padding(.top, 6)
+                                FollowUps(now: context.date, showLive: false).padding(.top, 18)
                             }
                             contacts(now: context.date)
                         }
@@ -98,31 +97,6 @@ struct PeopleHome: View {
         return today == 0 ? "\(everyone.count) people" : "\(today) talked to today · \(everyone.count) people"
     }
 
-    // MARK: Recent
-
-    private func recent(now: Date) -> some View {
-        let people = everyone.compactMap { person in lastTalked(person).map { (person, $0) } }
-            .sorted { $0.1 > $1.1 }.prefix(12)
-        return Group {
-            if !people.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    SectionLabel("Recently").padding(.horizontal, 20)
-                    ScrollView(.horizontal) {
-                        HStack(alignment: .top, spacing: 14) {
-                            ForEach(Array(people), id: \.0.id) { person, when in
-                                NavigationLink(value: person) { RecentTile(person: person, when: when, now: now) }
-                                    .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                    }
-                    .scrollIndicators(.hidden)
-                }
-                .padding(.top, 26)
-            }
-        }
-    }
-
     // MARK: Contacts
 
     private func contacts(now: Date) -> some View {
@@ -157,8 +131,16 @@ struct PeopleHome: View {
     /// Everyone you know: the roster and the people you kept, not yourself.
     private var everyone: [Person] { store.contacts.filter { $0.isMe != true } }
 
+    /// Most recently seen first; people you haven't seen yet after them, A to Z.
     private var filtered: [Person] {
-        let sorted = everyone.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let sorted = everyone.map { ($0, lastTalked($0)) }.sorted { a, b in
+            switch (a.1, b.1) {
+            case let (x?, y?): return x > y
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return a.0.name.localizedCaseInsensitiveCompare(b.0.name) == .orderedAscending
+            }
+        }.map(\.0)
         guard !query.isEmpty else { return sorted }
         let q = query.lowercased()
         return sorted.filter { person in
@@ -171,23 +153,6 @@ struct PeopleHome: View {
     private func lastTalked(_ person: Person) -> Date? {
         let spoke = crm.conversations(with: person.id).first.map { $0.ended ?? $0.started }
         return [spoke, store.lastSeen[person.id]].compactMap { $0 }.max()
-    }
-}
-
-/// One person in the Recently row: face, first name, when.
-struct RecentTile: View {
-    let person: Person
-    let when: Date
-    let now: Date
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Avatar(person: person, size: 64, corner: 18)
-            Text(person.name.split(separator: " ").first.map(String.init) ?? person.name)
-                .font(.subheadline.weight(.medium)).lineLimit(1)
-            Text(relative(when, now: now)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }
-        .frame(width: 72, alignment: .leading)
     }
 }
 
@@ -220,37 +185,49 @@ struct LiveNotes: View {
         .sheet(isPresented: $expanded) { TranscriptSheet() }
     }
 
+    /// A window onto the conversation: a quiet header, then the lines bottom-aligned in a fixed
+    /// height, so new speech scrolls up from below instead of the card growing. The top edge
+    /// fades older lines out; a name shows only when the speaker changes.
     private var card: some View {
-        let entries = Array(lines.suffix(3))
-        return VStack(alignment: .leading, spacing: 10) {
+        let entries = Array(lines.suffix(5))
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 7) {
                 LiveDot()
-                Text(header).font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
-                Spacer(minLength: 8)
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                Text(header).font(.footnote.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 0)
             }
-            if entries.isEmpty {
-                Text("What's said shows up here.")
-                    .font(.callout).foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, minHeight: 66, alignment: .bottomLeading)
-            } else {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                        let age = entries.count - 1 - index
-                        (Text(entry.who.uppercased() + "  ").font(.caption2.weight(.bold)).foregroundColor(.secondary)
-                         + Text(entry.text).font(age == 0 ? .callout.weight(.medium) : .callout))
-                            .lineLimit(age == 0 ? 3 : 1)
-                            .opacity(age == 0 ? 1 : age == 1 ? 0.5 : 0.25)
+            ZStack(alignment: .bottomLeading) {
+                if entries.isEmpty {
+                    Text("Listening for conversation")
+                        .font(.callout).foregroundStyle(.tertiary)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                            let named = index == 0 || entries[index - 1].who != entry.who
+                            VStack(alignment: .leading, spacing: 1) {
+                                if named, !entry.who.isEmpty {
+                                    Text(entry.who).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                }
+                                Text(entry.text)
+                                    .font(.callout)
+                                    .foregroundStyle(entry.speaking ? .secondary : .primary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
                     }
+                    .animation(.easeOut(duration: 0.25), value: entries.map(\.id))
+                    .animation(.easeOut(duration: 0.15), value: entries.last?.text)
                 }
-                .frame(maxWidth: .infinity, minHeight: 66, alignment: .bottomLeading)
-                .animation(.easeOut(duration: 0.28), value: entries.map(\.id))
             }
+            .frame(maxWidth: .infinity, minHeight: 108, maxHeight: 108, alignment: .bottomLeading)
+            .clipped()
+            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.3)],
+                                 startPoint: .top, endPoint: .bottom))
         }
         .padding(16)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     private var off: some View {
@@ -278,7 +255,7 @@ struct LiveNotes: View {
     private var header: String {
         let faces = crm.live?.faces.map { crm.first($0) } ?? []
         let names = faces.isEmpty ? assistant.members.map(\.name) : faces
-        return names.isEmpty ? "Listening" : "Taking notes · with " + names.prefix(3).joined(separator: ", ")
+        return names.isEmpty ? "Live" : "Live with " + names.prefix(3).joined(separator: ", ")
     }
 
     var lines: [Entry] { preview ?? Self.entries(assistant) }
