@@ -2,4 +2,3 @@
 build/
 DerivedData/
 .DS_Store
-Secrets.xcconfig

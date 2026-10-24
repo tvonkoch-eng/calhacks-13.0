@@ -54,7 +54,7 @@ import Speech
             input.removeTap(onBus: 0)
             // Realtime audio thread: feed the recognizer directly (its append is thread-safe) and
             // send only a level reading to the main actor. The buffer itself must not outlive this.
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, sink] buffer, _ in
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self, sink = self.sink] buffer, _ in
                 sink.append(buffer)
                 let db = Sink.decibels(buffer)
                 Task { @MainActor in self?.measured(db) }
