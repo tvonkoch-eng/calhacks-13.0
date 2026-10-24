@@ -45,6 +45,23 @@ enum Identification {
     /// the wearer has the floor. Two or more turn the person strip into a row of names.
     private(set) var group: [Member] = []
     private(set) var meSpeaking = false
+    /// The lens shows the group row only while two or more of them are in frame: someone seen in
+    /// the last `groupInFrame` seconds. Look away from one and it goes back to the single card.
+    @ObservationIgnored private var groupInFrame: TimeInterval { TimeInterval(Tuning.float("groupInFrame", 1.0)) }
+    @ObservationIgnored private var visibleGroup: [String] = []
+    private var groupInView: [Member] {
+        // No camera (a PREVIEW_GROUP screenshot run): nothing to filter by, show the group as set.
+        guard connected || replaying else { return group }
+        return group.filter { member in sighted[member.id].map { clockNow.timeIntervalSince($0) < groupInFrame } ?? false }
+    }
+
+    /// Rewrites the lens when who is in frame changes the group row (two in view, or back to one).
+    private func refreshGroupView() {
+        let visible = groupInView.map(\.id)
+        guard visible != visibleGroup else { return }
+        visibleGroup = visible
+        if lensMode == .split { renderLens() }
+    }
 
     func setGroup(_ group: [Member], meSpeaking: Bool) {
         guard group != self.group || meSpeaking != self.meSpeaking else { return }
@@ -1640,6 +1657,7 @@ enum Identification {
         guard !live.isEmpty else {
             if facing != nil { facing = nil }
             if likeness != nil { likeness = nil }
+            refreshGroupView()
             return
         }
 
@@ -1695,6 +1713,7 @@ enum Identification {
         let allowed = chosen.map { correcting ? !identifying : mayShow($0.match.person.id) } ?? false
         for seen in seenNow { sighted[seen.id] = frameTime }
         onSeen?(seenNow.map(\.id))
+        refreshGroupView()
         // Who the wearer is facing, for the aid: the clearest match in view right now.
         let looking = seenNow.max { $0.score < $1.score }?.id
         if looking != facing { facing = looking }
@@ -2103,8 +2122,9 @@ enum Identification {
         case .identity:
             return hud()
         case .split:
-            // Two or more people: the group row. One: the person on the card, sticky (cardHolds).
-            let members = group.count >= 2 ? group : []
+            // Two or more people in frame: the group row. Otherwise the person on the card.
+            let inView = groupInView
+            let members = inView.count >= 2 ? inView : []
             let partner = members.isEmpty ? person : nil
             lensShot = LensCards.shot(split: aidLens, person: partner, group: members, meSpeaking: meSpeaking)
             return LensCards.split(aidLens, person: partner, group: members, meSpeaking: meSpeaking, avatar: avatar)
