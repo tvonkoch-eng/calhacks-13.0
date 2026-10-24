@@ -12,6 +12,10 @@ import Foundation
 ///    wearer's; a long line the glasses heard none of is not. Checked per line, so a Muse label
 ///    that lumps two voices together can't drag the wearer's lines with it. If the glasses turn
 ///    out to hear everyone, the signal switches itself off.
+///    With the glasses' mic streaming instead (their transcription then can't run), the same idea
+///    by level: the phone mic keeps running underneath, and the wearer is much louder at the
+///    glasses than at the phone while everyone else is about the same at both. The split between
+///    "loud gap" and "small gap" is learned from the conversation itself, so no mic calibration.
 /// 2. **Said so**: "That was me" on the phone, or "I'm Toby" from a label.
 /// 3. **Introductions**: "I'm Avi" links that label to Avi.
 /// 4. **Where the wearer was looking**: you look at whoever is talking when it isn't you. Each of
@@ -66,6 +70,12 @@ struct Speakers {
     private(set) var ownVoiceAt: Date?
     /// False once the glasses have been shown to hear everyone (then the signal means nothing).
     private(set) var ownVoiceTrusted = true
+    /// Glasses-minus-phone level of recent lines, to learn where the wearer's gap starts.
+    private var gaps: [Float] = []
+    /// Two clusters this far apart (dB) or more: one is the wearer.
+    static let gapSplit: Float = 6
+    /// A line this close to the split is not judged by level.
+    static let gapMargin: Float = 1.5
     /// Per line: did the glasses match it, and under which Muse label.
     private var scored: [(label: String, me: Bool)] = []
 
@@ -125,7 +135,7 @@ struct Speakers {
     // MARK: The decision
 
     /// Who said a finished Muse line spoken from `start` to `end`.
-    mutating func resolve(label: String?, text: String, start: Date, end: Date) -> Verdict {
+    mutating func resolve(label: String?, text: String, start: Date, end: Date, gap: Float? = nil) -> Verdict {
         // 1. Their own word, or an introduction.
         if let label, mine.contains(label) { return Verdict(who: .me, sure: true, why: "you said so") }
         if let label, let name = Talk.introducedName(in: text) {
@@ -155,6 +165,22 @@ struct Speakers {
             if ownVoiceTrusted, isOther { return other(label, start: start, end: end, sure: true, why: "glasses didn't hear you") }
         }
 
+        // 2b. The glasses' mic against the phone's.
+        if let gap {
+            gaps.append(gap)
+            if gaps.count > 40 { gaps.removeFirst() }
+            if let split = gapSplitPoint() {
+                if gap >= split + Self.gapMargin {
+                    if let label { tally(label, me: true) }
+                    return Verdict(who: .me, sure: true, why: String(format: "louder at the glasses (%.0f dB gap)", gap))
+                }
+                if gap <= split - Self.gapMargin {
+                    if let label { tally(label, me: false) }
+                    return other(label, start: start, end: end, sure: true, why: String(format: "not louder at the glasses (%.0f dB)", gap))
+                }
+            }
+        }
+
         // 3. What this label has been so far.
         if let label, ownVoiceTrusted, let tally = meTally[label], tally.me + tally.other >= 1 {
             let share = Float(tally.me) / Float(tally.me + tally.other)
@@ -165,6 +191,27 @@ struct Speakers {
 
         // 4. Default: the other person.
         return other(label, start: start, end: end, sure: false, why: "default")
+    }
+
+    private mutating func tally(_ label: String, me: Bool) {
+        var t = meTally[label] ?? (0, 0)
+        if me { t.me += 1 } else { t.other += 1 }
+        meTally[label] = t
+    }
+
+    /// Where the recent gaps split into two groups at least `gapSplit` apart (wearer above), if
+    /// they do: the midpoint of the widest jump between neighbours, with two lines on each side.
+    func gapSplitPoint() -> Float? {
+        let sorted = gaps.sorted()
+        guard sorted.count >= 4 else { return nil }
+        var best: (jump: Float, at: Float)?
+        for i in 2..<(sorted.count - 1) where i >= 2 && sorted.count - i >= 2 {
+            let low = sorted[..<i], high = sorted[i...]
+            let jump = high.reduce(0, +) / Float(high.count) - low.reduce(0, +) / Float(low.count)
+            if jump > (best?.jump ?? 0) { best = (jump, (sorted[i - 1] + sorted[i]) / 2) }
+        }
+        guard let best, best.jump >= Self.gapSplit else { return nil }
+        return best.at
     }
 
     /// Someone other than the wearer said it: which person.

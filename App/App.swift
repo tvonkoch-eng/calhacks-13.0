@@ -384,7 +384,7 @@ struct HeardLine: View {
                     Text("· \(assistant.listener.status)").font(.caption).foregroundStyle(.orange).lineLimit(1)
                 }
             }
-            if !assistant.members.isEmpty || assistant.ownVoice != "Off" {
+            if !assistant.members.isEmpty || assistant.voiceID != nil {
                 GroupLine()
             }
             if let heard = assistant.heard {
@@ -407,12 +407,13 @@ struct GroupLine: View {
             if assistant.meSpeaking { chip("You", speaking: true) }
             ForEach(assistant.members, id: \.id) { chip($0.name, speaking: $0.speaking) }
             Spacer(minLength: 4)
-            Label(assistant.ownVoice == "On" ? "Voice ID" : assistant.ownVoice,
-                  systemImage: assistant.ownVoice == "On" ? "person.wave.2" : "person.wave.2.fill")
-                .labelStyle(.titleAndIcon)
-                .font(.caption2)
-                .foregroundStyle(assistant.ownVoice == "On" ? Color.green : .secondary)
-                .lineLimit(1)
+            if let voice = assistant.voiceID {
+                Label(voice.label, systemImage: "person.wave.2")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption2)
+                    .foregroundStyle(voice.working ? Color.green : .secondary)
+                    .lineLimit(1)
+            }
         }
     }
 
