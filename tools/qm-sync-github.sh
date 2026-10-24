@@ -97,8 +97,8 @@ note "gh   github/main        = $(g log -1 --format='%h %ad %s' --date=iso-local
 rule "privacy check"
 gh_url="$(g remote get-url github)"
 gh_public=unknown
+slug="$(printf '%s' "$gh_url" | sed -e 's#.*github\.com[:/]##' -e 's#\.git$##')"
 if command -v gh >/dev/null 2>&1; then
-  slug="$(printf '%s' "$gh_url" | sed -e 's#.*github\.com[:/]##' -e 's#\.git$##')"
   vis="$(HOME="${QM_SYNC_GH_HOME:-/root/workspace/.ghlogin-home}" \
          GH_CONFIG_DIR="${QM_SYNC_GH_HOME:-/root/workspace/.ghlogin-home}/.config/gh" \
          gh repo view "$slug" --json visibility -q .visibility 2>/dev/null)"
@@ -144,7 +144,7 @@ elif [ -n "$GHB" ] && [ "$GHB" = "$HUB" ]; then
   note "already up to date ($(git -C "$REPO" rev-parse --short "$HUB"))."
 else
   # Explicit sha:ref refspec. No +, no --force, ever.
-  out="$(g push origin_placeholder_unused 2>/dev/null; g push github "$HUB:refs/heads/$GH_BRANCH" 2>&1)"
+  out="$(g push github "$HUB:refs/heads/$GH_BRANCH" 2>&1)"
   rc=$?
   printf '%s\n' "$out"
   if [ $rc -ne 0 ]; then
