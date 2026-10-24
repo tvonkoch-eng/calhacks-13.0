@@ -767,7 +767,7 @@ struct LensMetrics {
     let meta = tune("mirrorMeta", 21)
     /// `sizePreset: .icon` — the photo and the counter badge are both sent at this size.
     let icon = tune("mirrorIcon", 56)
-    let glyph = tune("mirrorGlyph", 26)
+    let glyph = tune("mirrorGlyph", 28)
     let pad = tune("mirrorPad", 22)
     let radius = tune("mirrorRadius", 27)
     /// The gap the real renderer leaves under the card. Measured off a captured lens frame:
@@ -869,8 +869,10 @@ struct LensMirror: View {
             .modifier(LensCardBackground(radius: m.radius))
 
         case .idle:
-            // Nobody identified: the row floats on glass with no card behind it.
-            VStack { bottomRow }.padding(20)
+            // Nobody identified: the row floats on glass with no card behind it, and sits on the
+            // same floor the card would — on a captured frame its glyphs stop 33 lens units from
+            // the bottom edge, which is the panel inset and nothing else.
+            bottomRow.padding(.horizontal, 20)
         }
     }
 
@@ -896,7 +898,7 @@ struct LensMirror: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 16)
-            .padding(.top, 18)
+            .padding(.top, 26)
             .padding(.bottom, 8)
             .background(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
