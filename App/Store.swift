@@ -221,7 +221,10 @@ struct Match {
     /// holder was kept out of matching, but both phones ship the same people.json, so the flag
     /// made whoever it named unrecognizable on every device at once. Per-device identity, if we
     /// want it later, belongs in UserDefaults — not in a file identical for the whole team.
-    var contacts: [Person] { people }
+    var contacts: [Person] { people + saved }
+    /// People met in conversation whom the wearer chose to keep (`CRM.keep`). They match like the
+    /// roster once they have face photos; people met but not kept are never here, so never matched.
+    var saved: [Person] = [] { didSet { indexDirty = true } }
 
     /// Contacts, most recently seen first; people you haven't met keep their file order.
     var recents: [Person] {
