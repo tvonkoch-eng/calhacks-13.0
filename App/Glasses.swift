@@ -244,6 +244,9 @@ enum Identification {
     #endif
     /// Set by Disconnect so we don't reconnect behind the user's back.
     @ObservationIgnored private var userDisconnected = false
+    /// Bumped by disconnect(): a connect() still waiting for glasses gives up at once, so a rig
+    /// switch isn't swallowed by the 15 s search already running (20:51, "nothing happens").
+    @ObservationIgnored private var connectGeneration = 0
     /// One pending recovery at a time, retried with backoff for as long as it takes. A recovery is
     /// never dropped: the old 20/30 s rate limits returned without doing anything, and that is the
     /// state the app got stuck in ("Waiting for frames" with no camera and nothing scheduled).
@@ -444,13 +447,20 @@ enum Identification {
             // Never wait forever on the glasses: with none in sight this hung on "Looking for your
             // glasses" with nothing in the log (20:37, four times). 15 s, then the recovery ladder.
             let devices = finder.activeDeviceStream()
+            let generation = connectGeneration
             let found: DeviceIdentifier? = await withTaskGroup(of: DeviceIdentifier?.self) { group in
                 group.addTask { for await id in devices { if let id { return id } }; return nil }
-                group.addTask { try? await Task.sleep(for: .seconds(15)); return nil }
+                group.addTask { @MainActor [weak self] in
+                    for _ in 0..<150 where self?.connectGeneration == generation {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    return nil
+                }
                 let first = await group.next() ?? nil
                 group.cancelAll()
                 return first
             }
+            guard connectGeneration == generation else { return }
             guard let found else {
                 // What the SDK does know: an empty list means Meta AI isn't handing us the glasses at
                 // all; a listed pair says which state (link, hinge, worn) kept it from being active.
@@ -677,6 +687,7 @@ enum Identification {
 
     func disconnect() {
         userDisconnected = true
+        connectGeneration += 1
         recoveryTask?.cancel()
         recoveryTask = nil
         recoveryAttempt = 0
@@ -920,6 +931,8 @@ enum Identification {
         if on { await useMockGlasses() } else { await dropMock() }
         // disconnect() set the "user meant it" flag; this switch is a reconnect, not a stop.
         userDisconnected = false
+        // A search that was running when the switch came in is giving up; let it finish first.
+        while connecting { try? await Task.sleep(for: .milliseconds(50)) }
         status = on ? "Starting phone simulator…" : "Looking for your glasses"
         await connect()
     }
