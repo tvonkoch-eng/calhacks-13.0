@@ -25,15 +25,19 @@ EOF
 { echo 'import AVFoundation'; echo 'import Foundation'
   sed -n '/^private final class Uplink/,$p' App/Listen.swift | sed 's/^private final class Uplink/final class Uplink/'; } > "$out/Uplink.swift"
 cp tools/live-mac.swift "$out/main.swift"
+echo "Building the live tool (~30 s)…"
 swiftc -O "$out/main.swift" "$out/Uplink.swift" App/Question.swift App/Answer.swift -o "$out/live" \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$out/Info.plist" 2>&1 | grep -E "error" && exit 1
 
-if [ -n "$(val MOSS_PROJECT_ID)" ]; then
+if curl -s -o /dev/null "http://127.0.0.1:8765/q?text=hi"; then
+  echo "Moss already running on :8765, reusing it."
+elif [ -n "$(val MOSS_PROJECT_ID)" ]; then
   if [ ! -x .venv-moss/bin/python ]; then
     echo "First run: installing Moss into .venv-moss …"
     py=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)
     "$py" -m venv .venv-moss && .venv-moss/bin/pip -q install moss
   fi
+  echo "Starting Moss…"
   MOSS_PROJECT_ID=$(val MOSS_PROJECT_ID) MOSS_PROJECT_KEY=$(val MOSS_PROJECT_KEY) \
     .venv-moss/bin/python tools/moss-sidecar.py App/people.json &
   moss=$!

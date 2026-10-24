@@ -57,7 +57,10 @@ final class VoiceClock: @unchecked Sendable {
     private let lock = NSLock()
     private var floor: Float = -50
     private var last = Date.distantPast
+    private var loudest: Float = -120
     var lastVoice: Date { lock.lock(); defer { lock.unlock() }; return last }
+    /// False when every buffer is digital silence, which is what a mic without permission delivers.
+    var heardAnything: Bool { lock.lock(); defer { lock.unlock() }; return loudest > -100 }
 
     /// Returns whether this buffer is voiced.
     @discardableResult func measure(_ buffer: AVAudioPCMBuffer) -> Bool {
@@ -66,6 +69,7 @@ final class VoiceClock: @unchecked Sendable {
         for i in 0..<Int(buffer.frameLength) { sum += data[i] * data[i] }
         let db = 10 * log10(max(sum / Float(buffer.frameLength), 1e-12))
         lock.lock(); defer { lock.unlock() }
+        loudest = max(loudest, db)
         let voiced = db > floor + 8
         if voiced { last = Date() } else { floor = min(-25, max(-60, floor * 0.98 + db * 0.02)) }
         return voiced
@@ -194,6 +198,7 @@ let answers = MainActor.assumeIsolated { Answers() }
 @MainActor final class MuseLane {
     let uplink = Uplink()
     var partialText = ""
+    var connected = false
 
     func connect() {
         let socket = URLSession.shared.webSocketTask(with: URL(string: "wss://api.meta.ai/v1/asr/realtime")!)
@@ -209,7 +214,10 @@ let answers = MainActor.assumeIsolated { Answers() }
                     guard case .string(let text) = try await socket.receive(),
                           let event = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { continue }
                     switch event["type"] as? String {
-                    case nil: uplink.use(socket)
+                    case nil:
+                        uplink.use(socket)
+                        connected = true
+                        say("MUSE     connected — go ahead and talk")
                     case "transcript":
                         guard let t = (event["transcript"] as? String)?.trimmed, !t.isEmpty, t != partialText else { continue }
                         partialText = t
@@ -450,15 +458,22 @@ enum Whisper {
     try engine.start()
 
     say("Listening \(Int(seconds)) s on the \(Int(format.sampleRate)) Hz mic. Talk normally; Ctrl-C for the summary.")
-    let appleProblem = await apple.start()
-    say("stt      MUSE (drives questions)"
-        + (appleProblem == nil ? " · APPLE" : "") + (groqKey.isEmpty ? "" : " · WHISPER")
+    say("stt      MUSE (drives questions) · APPLE" + (groqKey.isEmpty ? "" : " · WHISPER")
         + (deepgram == nil ? "   (DEEPGRAM off: no DEEPGRAM_API_KEY)" : " · DEEPGRAM"))
-    if let appleProblem { say("APPLE    off: \(appleProblem)") }
     say("answers  moss · " + [groqKey.isEmpty ? nil : "groq \(Provider.groq.model)", "muse \(Provider.muse.model)"].compactMap { $0 }.joined(separator: " · "))
-    if await Moss.lookup("ping") == nil { say("moss     sidecar not reachable — moss answers off") }
+    // Muse first: nothing else may hold it up. Apple's lane waits on a permission prompt that can
+    // sit unanswered (or never appear for a terminal), so it starts on its own.
     muse.connect()
     deepgram?.connect()
+    Task {
+        try? await Task.sleep(for: .seconds(4))
+        if !muse.connected { say("MUSE     still not connected after 4 s — check the network / MUSE_API_KEY") }
+        else if !clock.heardAnything { say("MIC      no sound reaching the tool — allow your terminal in System Settings → Privacy & Security → Microphone, then rerun") }
+    }
+    Task {
+        if let problem = await apple.start() { say("APPLE    off: \(problem)") }
+    }
+    if await Moss.lookup("ping") == nil { say("moss     sidecar not reachable — moss answers off") }
 
     Task {
         try? await Task.sleep(for: .seconds(seconds))
