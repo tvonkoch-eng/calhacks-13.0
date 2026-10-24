@@ -889,7 +889,9 @@ private struct LensCardBackground: ViewModifier {
     func body(content: Content) -> some View {
         content
             .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // The lens panel is a fixed 600 x 600 surface and the root card fills it, with the
+            // content packed from the top — not a little box floating in the middle.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .fill(Color(white: 0.08))
