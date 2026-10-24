@@ -168,13 +168,23 @@ enum Identification {
     /// How long a card owns the lens before the watch may replace it.
     @ObservationIgnored private let cardHolds: TimeInterval = 20
 
+    /// False when the Meta SDK could not start at all — notably in the Simulator, where
+    /// `Wearables.configure()` fails and every later touch of `Wearables.shared` traps. Guarding
+    /// on it keeps the app itself runnable (and screenshottable) with no glasses stack.
+    private(set) static var ready = false
+
     static func configure() {
-        do { try Wearables.configure() } catch { print("Wearables.configure failed: \(error)") }
+        do {
+            try Wearables.configure()
+            ready = true
+        } catch {
+            print("Wearables.configure failed: \(error)")
+        }
     }
 
     /// Meta AI calls back here after registration / permission; carry on connecting.
     func handle(_ url: URL) {
-        guard URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+        guard Self.ready, URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
             .contains(where: { $0.name == "metaWearablesAction" }) == true else { return }
         Task {
             _ = try? await Wearables.shared.handleUrl(url)
@@ -183,10 +193,12 @@ enum Identification {
     }
 
     func connectIfRegistered() async {
+        guard Self.ready else { return }
         if Wearables.shared.registrationState == .registered { await connect() }
     }
 
     func connect() async {
+        guard Self.ready else { status = "Glasses SDK unavailable here"; return }
         guard !connected, !connecting else { return }
         userDisconnected = false
         connecting = true
@@ -446,12 +458,17 @@ enum Identification {
     func preview(_ person: Person) {
         result = .known(Match(person: person, score: 1), nil)
         store?.markSeen(person.id)
+        // No display to write to in a screenshot run, so fill the mirror directly — it is the
+        // same description `hud()` would have built.
+        lensShot = LensCards.shot(result: result, identifying: false, confirming: confirming,
+                                  connected: store?.connectedCount ?? 0)
         renderLens()
     }
 
     /// MOCK_GLASSES=1: pair simulated Ray-Ban Display glasses (registered, permissions granted)
     /// and mirror their lens into the app, so the whole flow runs without hardware.
     func useMockGlasses() async {
+        guard Self.ready else { status = "Glasses SDK unavailable here"; return }
         MockDeviceKit.shared.enable()
         guard let glasses = try? MockDeviceKit.shared.pairGlasses(model: .metaRayBanDisplay) else { return }
         mock = glasses
@@ -930,7 +947,7 @@ enum Identification {
     // MARK: - Lens
 
     private func renderLens() {
-        guard displayReady else { lensShot = nil; return }
+        guard displayReady else { return }
         // A live answer owns the lens. It is the thing the wearer needs in the next half second.
         if let card = answer {
             lensShot = LensCards.shot(answer: card)

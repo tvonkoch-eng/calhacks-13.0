@@ -1,0 +1,130 @@
+#!/bin/bash
+# tools/qmship — sandbox side. One command from "I edited a file" to "it is on the phone".
+#
+#   AGENT=qm-lens DEV=toby tools/qmship -m "lower the watch gate"
+#   AGENT=qm-lens tools/qmship --check                 # typecheck only, no phone
+#   AGENT=qm-lens DEV=toby tools/qmship --tune minGap=0.03 lensHighlights=2
+#   AGENT=qm-lens tools/qmship --status                # what is going on right now
+#   DEV="toby joaquin" tools/qmship --force            # rebuild even if the sha was built
+#
+# What it does, and why in this order:
+#   1. commits whatever you edited (nothing is ever left behind on a dead sandbox)
+#   2. fetch + REBASE onto hub/integration, in the sandbox, BEFORE touching the Mac.
+#      This is the conflict fix: a collision with another agent now surfaces here, in your
+#      own tree, in a second — instead of 40 s later inside qm-deploy.sh while it is holding
+#      the Mac's build lock and a phone is waiting.
+#   3. pushes to the hub
+#   4. ONE multiplexed ssh that builds, installs and launches.
+#
+# Needs: execute.credentials ["tailscale:dfa15f425ebf5238","mac-login-keychain:292a52b4ee4f4884"]
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+REPO=$(cd "$HERE/.." && pwd)
+. "$HERE/qm-mac-ssh.sh"
+AGENT=${AGENT:-unknown}
+MSG=""
+MODE=deploy
+PASS=""
+TUNEARGS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -m) MSG=$2; shift 2;;
+    --check|-c) MODE=check; shift;;
+    --status|-s) MODE=status; shift;;
+    --tune|-t) MODE=tune; shift;;
+    --force|-f) PASS="$PASS FORCE_BUILD=1"; shift;;
+    --sim) MODE=sim; shift;;
+    --no-install) PASS="$PASS NO_INSTALL=1"; shift;;
+    *=*) TUNEARGS="$TUNEARGS $1"; shift;;
+    *) echo "unknown flag: $1"; exit 2;;
+  esac
+done
+[ -n "$TUNEARGS" ] && [ "$MODE" = deploy ] && MODE=tune
+
+say() { printf '%s\n' "$*"; }
+T_START=$(date +%s)
+
+qm_warm   # open/reuse the multiplexed master while we do git work
+
+# ---- status needs no git at all ----
+if [ "$MODE" = status ]; then
+  # Run it straight out of the hub so there is no install step and it is never stale.
+  macssh 'git --git-dir=$HOME/calhacks/calhacks.git show integration:tools/qm-status.sh | bash -s'
+  exit $?
+fi
+
+# ---- tune needs no build, no git, no lock: ~1 s to a running app ----
+if [ "$MODE" = tune ]; then
+  [ -z "${DEV:-}" ] && { say "REFUSED: DEV is required — name the phone."; exit 2; }
+  [ -z "$TUNEARGS" ] && { say "nothing to tune — pass key=value pairs, or 'people'"; exit 2; }
+  macssh "DEV='$DEV' bash ~/calhacks/qm-tune.sh$TUNEARGS"
+  rc=$?
+  say "(${rc}) $(( $(date +%s) - T_START ))s"
+  exit $rc
+fi
+
+# ---- 1. commit whatever is here ----
+cd "$REPO" || exit 1
+if [ -n "$(git status --porcelain)" ]; then
+  git add -A
+  git -c user.email=agent@qm -c user.name="$AGENT" commit -q \
+      -m "${MSG:-$AGENT: wip $(date -u +%FT%TZ)}" || { say "COMMIT_FAILED"; exit 1; }
+  say "committed $(git rev-parse --short HEAD)"
+fi
+
+# ---- 2+3. rebase onto the hub, then publish ----
+# Collisions surface HERE, in this sandbox, not on the Mac. With five sessions pushing, the hub
+# can also move in the gap between our rebase and our push, so retry the whole dance a few times
+# instead of making a human re-run it.
+ATTEMPT=0
+while :; do
+  ATTEMPT=$((ATTEMPT+1))
+  git fetch -q origin || { say "FETCH_FAILED — is the Mac reachable?"; exit 1; }
+  BEHIND=$(git rev-list --count HEAD..origin/integration 2>/dev/null || echo 0)
+  if [ "$BEHIND" != "0" ]; then
+    say "hub moved ($BEHIND commit(s) from other agents) — rebasing"
+    if ! git rebase -q origin/integration; then
+      say ""
+      say "CONFLICT with another agent's work. Nothing is lost — both versions are in git."
+      say "Files:"
+      git diff --name-only --diff-filter=U | sed 's/^/  /'
+      say ""
+      say "Fix them, then:  git add -A && git rebase --continue && $0 ..."
+      say "Or back out:     git rebase --abort"
+      exit 3
+    fi
+  fi
+  git push -q origin HEAD:integration && break
+  if [ $ATTEMPT -ge 4 ]; then
+    say "PUSH_REJECTED four times — the hub is very busy. Re-run."
+    exit 1
+  fi
+  say "push raced another agent — retrying ($ATTEMPT)"
+  sleep 1
+done
+SHA=$(git rev-parse --short HEAD)
+say "pushed $SHA  ($(( $(date +%s) - T_START ))s so far)"
+
+# ---- 4. one round trip to the Mac ----
+if [ "$MODE" = check ]; then
+  macssh "CHECK=1 AGENT='$AGENT' REF=hub/integration bash ~/calhacks/qm-deploy.sh"
+  rc=$?
+elif [ "$MODE" = sim ]; then
+  macssh "SIM=1 AGENT='$AGENT'$PASS bash ~/calhacks/qm-deploy.sh"
+  rc=$?
+else
+  if [ -z "${DEV:-}" ]; then
+    say "REFUSED: DEV is required — name the phone explicitly (toby | joaquin | joaquin14)."
+    exit 2
+  fi
+  if [ -z "${MAC_KEYCHAIN_PASSWORD:-}" ]; then
+    say "No MAC_KEYCHAIN_PASSWORD in the environment — request the credential"
+    say "  mac-login-keychain:292a52b4ee4f4884   (a build cannot be codesigned without it)"
+    exit 2
+  fi
+  printf '%s\n' "$MAC_KEYCHAIN_PASSWORD" | \
+    macssh "DEV='$DEV' AGENT='$AGENT' REF=hub/integration$PASS bash ~/calhacks/qm-deploy.sh"
+  rc=$?
+fi
+say "---- $(( $(date +%s) - T_START ))s total, exit $rc"
+exit $rc

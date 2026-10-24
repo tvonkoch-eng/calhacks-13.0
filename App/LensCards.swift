@@ -8,6 +8,16 @@ import UIKit
 /// renders this and the panel on the phone draws this, both from the same instance captured at
 /// the moment the card was built. The content therefore cannot drift; only the pixels differ.
 struct LensShot: Equatable {
+    /// Which of the lens's four cards this is. The layouts differ, not just the words: the idle
+    /// state is a floating row with no card behind it, and an answer replaces the row entirely.
+    enum Kind: Equatable { case idle, person, message, answer }
+    /// A detail line that carries an icon on the lens (school / work / from / interests).
+    struct Row: Equatable {
+        var icon: String
+        var text: String
+    }
+
+    var kind: Kind = .idle
     /// Set when a live conversation answer owns the lens; the identity fields are then unused.
     var answer: String?
     var echo: String?
@@ -16,11 +26,13 @@ struct LensShot: Equatable {
     /// Person id, so the mirror can look the avatar up the same way the card did.
     var photo: String?
     var primary: [String] = []
-    var details: [String] = []
+    var details: [Row] = []
     var secondary: [String] = []
     var title: String?
     var subtitle: String?
     var button: String = "Identify"
+    /// SF Symbol standing in for the lens icon on the button.
+    var buttonIcon: String = "eye"
     var connected: Int = 0
 }
 
@@ -120,9 +132,11 @@ enum LensCards {
         var shot = LensShot()
         shot.connected = connected
         shot.button = identifying ? "Identifying" : confirming ? "Are you sure?" : "Identify"
+        shot.buttonIcon = confirming ? "checkmark" : "eye"
         switch result {
         case .known(let match, _):
             let person = match.person
+            shot.kind = .person
             shot.name = person.name
             shot.headline = person.headline
             shot.photo = person.id
@@ -132,20 +146,34 @@ enum LensCards {
             primary += highlights.map { "\u{2014} " + $0 }
             shot.primary = primary
             shot.secondary = [person.personal, person.source].compactMap { $0 }.filter { !$0.isEmpty }
-            shot.details = primary.isEmpty ? person.details.prefix(3).map(\.text) : []
+            shot.details = primary.isEmpty
+                ? person.details.prefix(3).map { LensShot.Row(icon: symbol($0.kind), text: $0.text) }
+                : []
         case .noFace where !identifying, .unknown where !identifying:
             let (title, subtitle) = message(for: result)
+            shot.kind = .message
             shot.title = title
             shot.subtitle = subtitle
         default:
-            break
+            shot.kind = .idle
         }
         return shot
     }
 
     /// A conversation answer, as the mirror sees it.
     static func shot(answer card: AnswerCard) -> LensShot {
-        LensShot(answer: card.answer.isEmpty ? "\u{2026}" : card.answer, echo: card.echo)
+        LensShot(kind: .answer, answer: card.answer.isEmpty ? "\u{2026}" : card.answer, echo: card.echo)
+    }
+
+    /// The SF Symbol that stands in for a lens icon on the phone. The lens icon set is Meta's own;
+    /// these are the closest system glyphs, chosen to read the same at a glance.
+    static func symbol(_ kind: Person.Kind) -> String {
+        switch kind {
+        case .school: "graduationcap"
+        case .work: "lightbulb"
+        case .from: "house"
+        case .interests: "heart"
+        }
     }
 
     private static func bottomRow(label: String, icon: IconName, connected: Int,
@@ -189,7 +217,7 @@ enum LensCards {
     }
 
     /// A small green tag with the count in it. The lens text has no colors, so the tag is drawn.
-    private static func counterBadge(_ count: Int) -> UIImage? {
+    static func counterBadge(_ count: Int) -> UIImage? {
         let size = CGSize(width: 48, height: 48)
         return UIGraphicsImageRenderer(size: size).image { _ in
             UIColor(red: 0.20, green: 0.78, blue: 0.45, alpha: 1).setFill()

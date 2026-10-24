@@ -743,72 +743,200 @@ struct MockLens: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
-/// What the real glasses are showing, redrawn on the phone.
+/// What the real glasses are showing, redrawn on the phone at the lens's own scale.
 ///
-/// A real pair gives no readback — the SDK's preview view exists only for a simulated one — so
-/// this is not a screenshot of the lens. It is the same `LensShot` the card was built from,
-/// captured at the moment of the send, laid out the way the lens lays it out. The words, the
-/// order, the photo and the counter are guaranteed to match; the typography is a likeness.
+/// A real pair gives no readback — the SDK's preview view exists only for a simulated one, and the
+/// SDK will not even initialise in the Simulator — so this cannot be a screenshot of the lens.
+/// It is the next best thing: the same `LensShot` the card was built from, captured at the moment
+/// of the send, laid out on a 600 x 600 canvas (the real panel) with the real card's own numbers —
+/// the paddings, spacings, photo size and row order from `LensCards`, not a phone-ish redesign.
+/// The whole canvas is then scaled into the tile, so the tile is a shrunken lens rather than a
+/// small iOS view: proportions, line breaks and emphasis land where they land on glass.
+///
+/// What is guaranteed identical: the words, their order, which line is emphasised, the photo, the
+/// counter badge (literally the same bitmap `LensCards` sends) and the button label. What is a
+/// likeness: the typeface and the exact glyph weights, which are Meta's and live on the device.
+/// Every number below is a UserDefaults knob, so the fit can be trued up against real glasses
+/// with `tools/qm-tune.sh` and no rebuild.
+struct LensMetrics {
+    /// The real panel: 600 x 600, right eye.
+    static let canvas: CGFloat = 600
+
+    let heading = tune("mirrorHeading", 34)
+    let body = tune("mirrorBody", 25)
+    let meta = tune("mirrorMeta", 21)
+    /// `sizePreset: .icon` — the photo and the counter badge are both sent at this size.
+    let icon = tune("mirrorIcon", 56)
+    let glyph = tune("mirrorGlyph", 26)
+    let pad = tune("mirrorPad", 22)
+    let radius = tune("mirrorRadius", 28)
+
+    private static func tune(_ key: String, _ fallback: CGFloat) -> CGFloat {
+        CGFloat(Tuning.float(key, Float(fallback)))
+    }
+}
+
 struct LensMirror: View {
     let shot: LensShot
     let avatar: (String) -> UIImage?
 
+    private let m = LensMetrics()
+    private let secondary = Color(white: 0.58)
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let answer = shot.answer {
-                Text(answer).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                if let echo = shot.echo {
-                    Text(echo).font(.system(size: 9)).foregroundStyle(Color(white: 0.6))
-                }
-            } else if let name = shot.name {
-                HStack(spacing: 6) {
-                    if let id = shot.photo, let image = avatar(id) {
-                        Image(uiImage: image)
-                            .resizable().aspectRatio(contentMode: .fill)
-                            .frame(width: 28, height: 28)
-                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    }
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                        if let headline = shot.headline {
-                            Text(headline).font(.system(size: 9)).foregroundStyle(.white)
-                        }
-                    }
-                }
-                lines(shot.primary, size: 8, shade: 0.85)
-                lines(shot.details, size: 8, shade: 0.85)
-                lines(shot.secondary, size: 8, shade: 0.6)
-            } else if let title = shot.title {
-                Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                if let subtitle = shot.subtitle {
-                    Text(subtitle).font(.system(size: 9)).foregroundStyle(Color(white: 0.6))
-                }
-            }
-            Spacer(minLength: 2)
-            // The lens always carries this row; an answer card is the one thing that replaces it.
-            if shot.answer == nil {
-                HStack(spacing: 4) {
-                    Text("\(shot.connected)")
-                        .font(.system(size: 8, weight: .bold)).foregroundStyle(.black)
-                        .frame(width: 14, height: 14)
-                        .background(Circle().fill(Color(red: 0.20, green: 0.78, blue: 0.45)))
-                    Spacer(minLength: 0)
-                    Text(shot.button)
-                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.black)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Capsule().fill(Color.white))
-                }
-            }
+        // Author everything in lens units, then shrink the finished panel into the tile.
+        GeometryReader { geo in
+            card
+                .frame(width: LensMetrics.canvas, height: LensMetrics.canvas, alignment: .topLeading)
+                .scaleEffect(geo.size.width / LensMetrics.canvas, anchor: .topLeading)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
-        .lineLimit(2)
-        .minimumScaleFactor(0.7)
-        .padding(8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func lines(_ texts: [String], size: CGFloat, shade: Double) -> some View {
-        ForEach(Array(texts.enumerated()), id: \.offset) { _, line in
-            Text(line).font(.system(size: size)).foregroundStyle(Color(white: shade))
+    @ViewBuilder private var card: some View {
+        switch shot.kind {
+        case .answer:
+            VStack(alignment: .leading, spacing: 8) {
+                Text(shot.answer ?? "").font(.system(size: m.heading, weight: .semibold))
+                if let echo = shot.echo {
+                    Text(echo).font(.system(size: m.meta)).foregroundStyle(secondary)
+                }
+            }
+            .padding(24)
+            .modifier(LensCardBackground(radius: m.radius))
+
+        case .person:
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 14) {
+                    if let id = shot.photo, let photo = avatar(id) {
+                        Image(uiImage: photo)
+                            .resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: m.icon, height: m.icon)
+                            .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(shot.name ?? "").font(.system(size: m.heading, weight: .semibold))
+                        // Exactly one line is .body on the lens — what they do now — and the eye
+                        // finds it because nothing else on the card looks like it. Same here.
+                        Text(shot.headline ?? "").font(.system(size: m.body))
+                    }
+                }
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: m.meta))
+                    }
+                    ForEach(Array(shot.details.enumerated()), id: \.offset) { _, row in
+                        HStack(spacing: 10) {
+                            Image(systemName: row.icon).font(.system(size: m.glyph))
+                            Text(row.text).font(.system(size: m.body))
+                        }
+                    }
+                    ForEach(Array(shot.secondary.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
+                    }
+                }
+                bottomRow
+            }
+            .padding(m.pad)
+            .modifier(LensCardBackground(radius: m.radius))
+
+        case .message:
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(shot.title ?? "").font(.system(size: m.heading, weight: .semibold))
+                    if let subtitle = shot.subtitle {
+                        Text(subtitle).font(.system(size: m.meta)).foregroundStyle(secondary)
+                    }
+                }
+                bottomRow
+            }
+            .padding(m.pad)
+            .modifier(LensCardBackground(radius: m.radius))
+
+        case .idle:
+            // Nobody identified: the row floats on glass with no card behind it.
+            VStack { bottomRow }.padding(20)
+        }
+    }
+
+    /// People met on the left, the one control on the right — the row the lens always carries,
+    /// except behind an answer.
+    private var bottomRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "person").font(.system(size: m.glyph))
+                // The same UIImage the lens is sent, not a redraw of it.
+                if let badge = LensCards.counterBadge(shot.connected) {
+                    Image(uiImage: badge).resizable()
+                        .frame(width: m.glyph * 1.3, height: m.glyph * 1.3)
+                }
+            }
+            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                Text(shot.button).font(.system(size: m.body, weight: .semibold))
+                Image(systemName: shot.buttonIcon).font(.system(size: m.glyph, weight: .semibold))
+            }
+            .foregroundStyle(.black)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(.white))
+        }
+    }
+}
+
+/// The lens's `.background(.card)`: a dark rounded panel that hugs its content. On glass it is
+/// translucent; on the phone the tile behind it is black, so flat dark reads the same.
+private struct LensCardBackground: ViewModifier {
+    let radius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(.white)
+            // The lens panel is a fixed 600 x 600 surface and the root card fills it, with the
+            // content packed from the top — not a little box floating in the middle.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Color(white: 0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .strokeBorder(Color(white: 0.20), lineWidth: 1)
+                    )
+            )
+    }
+}
+
+/// Ground truth, pulled off the phone.
+///
+/// While a simulated pair is up, both renderers are alive at once: MockDeviceKit's preview view is
+/// the SDK drawing the very `FlexBox` the glass would get, and `LensMirror` is our redraw of the
+/// same card. With `SnapLens` set (a live knob, no rebuild) this writes both to the app's Documents
+/// at the same size, so `devicectl device copy from` can pull them and the mirror can be trued
+/// against the real thing from a laptop, with nobody squinting at a phone.
+enum LensSnapshot {
+    private static var last = Date.distantPast
+
+    @MainActor static func capture(real: UIView?, shot: LensShot?, avatar: @escaping (String) -> UIImage?) {
+        guard Tuning.bool("SnapLens", false), Date().timeIntervalSince(last) > 1 else { return }
+        last = Date()
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        var size = CGSize(width: LensMetrics.canvas, height: LensMetrics.canvas)
+        if let real, real.bounds.width > 1 {
+            size = real.bounds.size
+            let image = UIGraphicsImageRenderer(bounds: real.bounds).image { _ in
+                real.drawHierarchy(in: real.bounds, afterScreenUpdates: false)
+            }
+            try? image.pngData()?.write(to: docs.appendingPathComponent("lens-real.png"))
+        }
+        guard let shot else { return }
+        // Same pixel size as the real capture, so the two PNGs diff directly.
+        let renderer = ImageRenderer(content:
+            LensMirror(shot: shot, avatar: avatar)
+                .frame(width: size.width, height: size.height)
+                .background(Color.black))
+        renderer.scale = 1
+        if let image = renderer.uiImage {
+            try? image.pngData()?.write(to: docs.appendingPathComponent("lens-mirror.png"))
         }
     }
 }
@@ -884,6 +1012,7 @@ struct LensPanel: View {
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 2)
+        .task(id: shot) { LensSnapshot.capture(real: lens, shot: shot, avatar: avatar) }
     }
 
     static let comparing = ProcessInfo.processInfo.environment["MIRROR_COMPARE"] == "1"
