@@ -1317,8 +1317,7 @@ struct LensPanel: View {
     ///
     /// The camera is the frame's full width, 4:3, centred where the wearer is looking. The lens is
     /// deliberately NOT true to scale: at its real 14° it is a fingernail on a phone and the card
-    /// can't be read. It is drawn large in the lower two-thirds of the panel, under where the
-    /// display sits across, and only the lower part of the 600 px panel is shown — the renderer
+    /// can't be read. It is drawn large, centred in the lower two-thirds of the panel, and only the lower part of the 600 px panel is shown — the renderer
     /// stacks cards on the floor of the panel, so that is where everything is. `lensShown` is the
     /// share of the panel's height shown (0.6 = its bottom 360 px).
     ///
@@ -1340,9 +1339,6 @@ struct LensPanel: View {
             let scale = min((geo.size.height * 2 / 3 - margin) / shown,
                             (geo.size.width - 2 * margin) / LensMetrics.canvas)
             let box = CGSize(width: LensMetrics.canvas * scale, height: shown * scale)
-            // Across, under where the display really is; clamped so it stays on the panel.
-            let x = min(max((optics.center.x - window.minX) * k, box.width / 2 + margin),
-                        geo.size.width - box.width / 2 - margin)
             ZStack(alignment: .topLeading) {
                 ZStack(alignment: .topLeading) {
                     Color.black
@@ -1380,7 +1376,7 @@ struct LensPanel: View {
                     RoundedRectangle(cornerRadius: 8)
                         .strokeBorder(Color.white.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
                 )
-                .position(x: x, y: geo.size.height - margin - box.height / 2)
+                .position(x: geo.size.width / 2, y: geo.size.height - margin - box.height / 2)
             }
         }
         .aspectRatio(window.width / window.height, contentMode: .fit)
