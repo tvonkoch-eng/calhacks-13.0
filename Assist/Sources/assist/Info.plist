@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.tobiasvonkoch.assist</string>
+	<key>CFBundleName</key>
+	<string>assist</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Listens for questions so answers can be shown.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Transcribes speech on device to spot questions.</string>
+</dict>
+</plist>

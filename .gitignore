@@ -1,0 +1,8 @@
+*.xcodeproj
+build/
+DerivedData/
+.DS_Store
+Secrets.xcconfig
+dd/
+*.log
+.locks/
