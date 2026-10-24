@@ -922,12 +922,14 @@ enum Identification {
                 guard quiet > limit else { continue }
                 SpeedLog.record(["event": "frameStall", "quietMs": (quiet * 1000).rounded(),
                                  "flowing": flowing, "stream": self.streamState])
-                // Audio on and the stream died before a single frame, twice: the glasses won't
-                // stream audio. Drop it rather than lose the camera too.
-                if self.streamAudio, !flowing, dead {
+                // Audio on and the stream died within seconds of starting, twice: the glasses won't
+                // stream audio. Drop it rather than lose the camera too. (Not "before any frame":
+                // these streams get one frame out before the critical error, 18:22.)
+                let diedYoung = dead && self.lastFrameAt.timeIntervalSince(self.streamStartedAt) < 5
+                if self.streamAudio, diedYoung {
                     self.audioStreamFailures += 1
                     if self.audioStreamFailures >= 2 { self.disableStreamAudio(reason: "streamDiesWithAudio") }
-                } else if flowing {
+                } else if flowing, !dead {
                     self.audioStreamFailures = 0
                 }
                 // On real glasses a camera restart "succeeds" and the new stream dies on its first

@@ -97,14 +97,11 @@ import Observation
                 status = "Mic permission denied"
                 return
             }
-            if mic == .glasses {
-                // Nothing to start here: buffers arrive through feed(_:). The watchdog brings in
-                // the phone mic if they don't.
-                input = "Glasses mic"
-                uplink.inputStarted()
-            } else {
-                try await startAudio()
-            }
+            // The phone mic always runs, even in glasses mode: its buffers are simply not sent while
+            // the glasses' are arriving. Starting it later as a fallback failed (OSStatus '!int',
+            // can't start recording from the background), so it starts here, in the foreground.
+            try await startAudio()
+            if mic == .glasses { input = "Glasses mic" }
             listening = true
             #if os(iOS)
             watchAudio()
@@ -122,7 +119,6 @@ import Observation
         // Off the main thread: with a Bluetooth input these calls block for seconds while the
         // route renegotiates, and on the main thread that froze the whole app.
         input = try await Task.detached(priority: .userInitiated) { try Self.configureSession(.phone) }.value
-        if mic == .glasses { input += " · glasses audio not arriving" }
         #endif
 
         if engine.isRunning { engine.stop() }
@@ -134,7 +130,7 @@ import Observation
         // Realtime audio thread: hand the buffer to the uplink (it converts and sends off this
         // thread) and send only a level reading to the main actor.
         node.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self, uplink = self.uplink] buffer, _ in
-            uplink.push(buffer)
+            guard uplink.pushPhone(buffer) else { return }
             let db = Uplink.decibels(buffer)
             Task { @MainActor in self?.level = max(0, min(1, (db + 60) / 60)) }
         }
@@ -201,33 +197,22 @@ import Observation
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, self.listening, self.file == nil else { continue }
-                if self.mic == .glasses {
-                    await self.coverForGlasses()
-                } else if self.micDead {
-                    await self.restartAudio(reason: "micStalled")
-                }
+                if self.mic == .glasses { self.noteCover() }
+                if self.micDead { await self.restartAudio(reason: "micStalled") }
             }
         }
     }
 
     private var micDead: Bool { !engine.isRunning || uplink.secondsSinceInput > 2 }
 
-    /// Glasses mode: phone mic on while the glasses' audio is missing, off once it's back.
-    private func coverForGlasses() async {
-        let quiet = uplink.secondsSinceExternal
-        if quiet > 4, !uplink.phoneCovering {
-            uplink.phoneCovering = true
-            onLog?(["event": "micCover", "on": true, "quietS": Int(quiet)])
-            do { try await startAudio() } catch {
-                status = "Mic failed: \(error.localizedDescription)"
-            }
-        } else if quiet < 1, uplink.phoneCovering {
-            uplink.phoneCovering = false
-            if engine.isRunning { engine.stop() }
-            engine.inputNode.removeTap(onBus: 0)
-            input = "Glasses mic"
-            onLog?(["event": "micCover", "on": false])
-        }
+    /// Glasses mode: say which mic is actually being sent. The switch itself is per buffer, in
+    /// the uplink: glasses audio when it's fresh, the phone's when it isn't.
+    private func noteCover() {
+        let covering = uplink.secondsSinceExternal > 1
+        let label = covering ? "iPhone Microphone · glasses audio not arriving" : "Glasses mic"
+        guard label != input else { return }
+        input = label
+        onLog?(["event": "micCover", "on": covering])
     }
 
     /// The glasses' mic, from any thread: the Meta SDK's stream audio callback.
@@ -240,7 +225,7 @@ import Observation
     private func checkSoon(reason: String) {
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
-            guard let self, self.listening, self.mic == .phone || self.uplink.phoneCovering, self.micDead else { return }
+            guard let self, self.listening, self.micDead else { return }
             await self.restartAudio(reason: reason)
         }
     }
@@ -275,18 +260,15 @@ import Observation
         lastRestart = .distantPast
         restartGap = 5
         uplink.glassesMode = mic == .glasses
-        uplink.phoneCovering = false
         guard listening, file == nil else { return }
+        // The phone mic keeps running either way; only which buffers are sent changes.
         if mic == .glasses {
-            // Hand over to the glasses; the watchdog brings the phone back if they're silent.
-            if engine.isRunning { engine.stop() }
-            engine.inputNode.removeTap(onBus: 0)
             input = "Glasses mic"
-            uplink.inputStarted()
             uplink.markExternal()
         } else {
-            Task { await restartAudio(reason: "micChosen") }
+            input = input.hasPrefix("iPhone") || input.hasPrefix("Glasses") ? "iPhone Microphone" : input
         }
+        onLog?(["event": "micChosen", "mic": mic.rawValue])
     }
     #endif
 
@@ -527,17 +509,14 @@ private final class Uplink: @unchecked Sendable {
 
     /// Wall-clock of the last mic buffer, for the stall watchdog. Silence padding doesn't count.
     private var lastInput = Date()
-    /// Glasses mode: buffers come from `pushExternal`; the phone's tap is used only while covering.
+    /// Glasses mode: the glasses' buffers (`pushExternal`) are sent while they keep coming; the
+    /// phone's (`pushPhone`) only once they've been missing for a second. One source at a time,
+    /// or the stream would run faster than real time.
     private var _glassesMode = false
-    private var _phoneCovering = false
-    private var lastExternal = Date()
+    private var lastExternal = Date.distantPast
     var glassesMode: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _glassesMode }
-        set { lock.lock(); _glassesMode = newValue; lastExternal = Date(); lock.unlock() }
-    }
-    var phoneCovering: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return _phoneCovering }
-        set { lock.lock(); _phoneCovering = newValue; lock.unlock() }
+        set { lock.lock(); _glassesMode = newValue; lock.unlock() }
     }
     var secondsSinceExternal: TimeInterval {
         lock.lock(); defer { lock.unlock() }
@@ -545,15 +524,24 @@ private final class Uplink: @unchecked Sendable {
     }
     func markExternal() { lock.lock(); lastExternal = Date(); lock.unlock() }
 
-    /// A buffer from the glasses. Sent unless the phone is covering (one source at a time, or
-    /// the stream would run faster than real time). Returns whether it was used.
+    /// A buffer from the glasses; sent in glasses mode. Returns whether it was used.
     @discardableResult
     func pushExternal(_ buffer: AVAudioPCMBuffer) -> Bool {
         lock.lock()
         lastExternal = Date()
-        let use = _glassesMode && !_phoneCovering
+        let use = _glassesMode
         lock.unlock()
         if use { push(buffer) }
+        return use
+    }
+
+    /// A buffer from the phone's mic; sent unless fresh glasses audio is. Returns whether it was used.
+    @discardableResult
+    func pushPhone(_ buffer: AVAudioPCMBuffer) -> Bool {
+        lock.lock()
+        let use = !_glassesMode || Date().timeIntervalSince(lastExternal) > 1
+        lock.unlock()
+        if use { push(buffer) } else { lock.lock(); lastInput = Date(); lock.unlock() }
         return use
     }
     var secondsSinceInput: TimeInterval {
