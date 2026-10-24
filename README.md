@@ -41,6 +41,37 @@ model judges intent: should this have been answered, was it heard right, was the
 Ctrl-C prints a scorecard (missed questions, wrong answers, answered-when-it-shouldn't, misheard).
 `--judge` and `--ui` also work on `say`, `file` and `suite`.
 
+
+### Transcription: Apple first, Whisper second
+
+Apple's on-device recognizer streams words instantly (that is what lets answers fire before the
+speaker finishes), but in a noisy room it mishears a lot. Each finished sentence is therefore
+re-transcribed from the recorded audio by `whisper-large-v3-turbo` on Groq, prompted with the
+names in `Transcriber.vocabulary`, before the engine commits it (`AssistSpeech/SecondPass.swift`).
+Benchmark (`Assist/bench/`, 30 clips x 3 conditions, `say` voices + hackathon babble):
+
+| | clean | babble 10 dB | babble 5 dB, far |
+|---|---|---|---|
+| Apple SpeechTranscriber | 10.1% WER | 12.8% | 26.0% |
+| + Whisper second pass | 1.4% | 4.5% | 5.6% |
+
+Apple's contextual strings and the dictation model's far-field hint made no measurable difference.
+Whisper adds ~250-400 ms to the end of each sentence; early (mid-sentence) answers are unaffected.
+`--no-whisper` turns it off.
+
+### Side notes
+
+After a sentence that is not a question, `AssistCore/Aside.swift` may put one short note on the
+lens: explain a niche name or term, correct a clearly wrong fact, convert a unit, or supply a word
+the speaker is fishing for. Silent almost always; at most one every 8 s; never about the people;
+never over a fresh answer; never explains names in `Transcriber.vocabulary`. `--no-aside` turns it off.
+
+### Groq free tier
+
+Each model has its own daily request cap (1,000 for chat models, 2,000 for Whisper), so the work
+is spread out: answers on qwen3.8-27b (falls back to gpt-oss-20b on 429), side notes on
+gpt-oss-20b, grading on gpt-oss-120b, transcription on Whisper. The live page shows what is left.
+
 ### The Mac loop
 
 Needs macOS 26 and Swift 6.2+ (Xcode or just the Command Line Tools).

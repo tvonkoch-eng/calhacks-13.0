@@ -43,6 +43,36 @@ for (input, want, strong) in gate {
         check(got == nil, "gate \"\(input)\" should be nil, got \"\(got?.text ?? "")\"")
     }
 }
+check(QuestionGate.candidate(in: "who invented telephone", settled: true)?.confidence == .strong, "3-word wh question with a noun is strong")
+check(QuestionGate.candidate(in: "what do you", settled: true)?.confidence != .strong, "'what do you' is not strong")
+check(QuestionGate.candidate(in: "Like, we're having a conversation, like, how's your run?") == nil, "'we're … how's your run' is personal, not an aux question")
+check(QuestionGate.candidate(in: "We're going to the park later") == nil, "'we're going' is a statement, not 'were going'")
+check(QuestionGate.candidate(in: "I was in Berlin, how far is it from Munich?")?.text == "how far is it from munich", "question after a comma")
+check(QuestionGate.candidate(in: "Oh, so fast I was?", settled: false)?.confidence != .strong, "bare '?' does not fire early")
+check(QuestionGate.candidate(in: "what what's the capital of Peru")?.text == "whats the capital of peru", "restart 'what what's'")
+check(QuestionGate.candidate(in: "Can you hear me?") == nil, "'can you hear me' is personal")
+check(QuestionGate.candidate(in: "Yeah, do you do you know where the Presidio is?")?.text == "where the presidio is", "stuttered lead-in 'do you do you know'")
+check(QuestionGate.candidate(in: "what what is the capital of Peru")?.text == "what is the capital of peru", "restart 'what what is'")
+check(QuestionGate.candidate(in: "do you know do you know who wrote Dune?")?.text == "who wrote dune", "lead-in said twice")
+check(QuestionGate.candidate(in: "How many Who won the World Cup?")?.text == "who won the world cup", "abandoned start 'how many who won'")
+check(QuestionGate.candidate(in: "how do you know who won")?.text != "who won", "'how do you know who won' is not a restart")
+for (t, want) in [("How many...", true), ("And this is all data that I can.", true), ("using?", true),
+                  ("pretty", true), ("and make sure it can pick you up and it'll like...", true),
+                  ("Okay.", false), ("Thanks.", false), ("Thank you.", false), ("Who won the World Cup?", false),
+                  ("I believe at least.", false), ("Can you hear me?", false), ("Wow.", false)] {
+    check(QuestionGate.endsMidThought(t) == want, "endsMidThought(\"\(t)\") should be \(want)")
+}
+check(QuestionGate.candidate(in: "Um, okay, we might need to speak kind of loudly, which maybe is a product", settled: false) == nil, "relative 'which' after a comma is not a question")
+check(QuestionGate.candidate(in: "Um, okay, we might need to speak kind of loudly, which maybe is a product issue.") == nil, "comma sentence closed with a period is a statement")
+check(QuestionGate.candidate(in: "So if I ask you now, when did Calhacks at Berkeley start?")?.text == "when did calhacks at berkeley start", "question after a comma still found")
+for (q, local) in [("what time does it start", false), ("what time is it", true), ("whats the time", true),
+                   ("what time it is", true), ("what date did the berlin wall fall", false),
+                   ("whats the date today", true), ("what day is thanksgiving", false), ("what day is it", true)] {
+    check((Answerer.local(q) != nil) == local, "local tier on \"\(q)\" should be \(local)")
+}
+check(Aside.worthAsking("It was like 30 degrees in Lisbon when we went."), "note: number + place is worth asking")
+check(!Aside.worthAsking("I am so tired, I barely slept last night."), "note: small talk is not worth a request")
+check(!Aside.worthAsking("Okay, cool."), "note: short lines skipped")
 // Word pieces: an unsettled hypothesis is judged without its last word.
 check(QuestionGate.candidate(in: "how tall is the e", settled: false)?.confidence == .weak, "word piece 'the e' must not be strong")
 check(QuestionGate.candidate(in: "how tall is the Eiffel T", settled: false)?.text == "how tall is the eiffel", "'Eiffel T' → judged as 'eiffel'")
@@ -52,20 +82,21 @@ check(QuestionGate.candidate(in: "Who wrote Dune?")?.unfinished == false, "'Who 
 check(QuestionGate.candidate(in: "Do you know what?")?.unfinished == true, "'Do you know what?' is unfinished")
 check(QuestionGate.candidate(in: "Was in Berlin last summer.") == nil, "aux-led sentence closed with a period is a statement")
 check(QuestionGate.candidate(in: "how tall is the eiff", settled: false)?.confidence == .strong, "'eiff' piece is good enough to ask")
-print("gate: \(gate.count + 8) cases")
+print("gate: \(gate.count + 19) cases")
 
 // MARK: Engine
 
 struct Fake: AnswerSource {
     let latency: Double
     func local(_ q: String) -> String? { Answerer.local(q) }
-    func stream(_ q: String, context: String) -> AsyncThrowingStream<AnswerEvent, Error> {
+    func stream(_ q: String, context: String, settled: Bool) -> AsyncThrowingStream<AnswerEvent, Error> {
         let latency = latency
         return AsyncThrowingStream { c in
             Task {
                 try? await Task.sleep(for: .seconds(latency))
-                if q.split(separator: " ").count < 3 { c.yield(.incomplete) }
+                if (q.split(separator: " ").count < 3 || q.contains("target")), !settled { c.yield(.incomplete) }
                 else if q.contains("flight") { c.yield(.personal) }
+                else if q == "who painted them" { c.yield(.personal) }
                 else { c.yield(.text("answer to: \(q)")) }
                 c.finish()
             }
@@ -136,6 +167,29 @@ let runs: [(String, Script, (([Turn]) -> String?))] = [
             return "\(t.map { "\($0.question) \($0.state)" })" }
         return nil
      }),
+    ("WAIT that lands after the sentence closed → asked again as a finished question",
+     [(0.0, "how many miles away is the target", false), (0.03, "How many miles away is the target?", true)],
+     { t in t.count == 1 && t[0].state == .done && t[0].fires == 2 ? nil : "\(t.map { "\($0.question) \($0.state) fires=\($0.fires)" })" }),
+    ("statement cut at a pause, question follows → joined, answered once",
+     [(0.0, "And this is all data that I", false), (0.2, "And this is all data that I can.", true),
+      (0.9, "using", false), (1.0, "using?", true), (1.8, "Uh, Grock", false), (2.2, "Uh, Grock, with a Q.", true),
+      (3.6, "How many", false), (3.8, "How many...", true),
+      (4.5, "who won", false), (4.7, "who won the World Cup", false), (4.9, "who won the World Cup?", true)],
+     { t in
+        let shown = t.filter { $0.state == .done }
+        guard shown.count == 1, shown[0].question == "who won the world cup" else {
+            return "\(t.map { "\($0.question) \($0.state)" })" }
+        return nil
+     }),
+    ("'Who painted them?' then 'Mona Lisa.' → asked again as one question",
+     [(0.0, "Who painted", false), (0.1, "Who painted them", false), (0.2, "Who painted them?", true),
+      (0.9, "Mona", false), (1.0, "Mona Lisa.", true)],
+     { t in t.count == 1 && t[0].state == .done && t[0].question.contains("mona lisa") ? nil : "\(t.map { "\($0.question) \($0.state)" })" }),
+    ("statement held mid-thought, then a question → question still asked",
+     [(0.0, "You don't feel like that", false), (0.1, "You don't feel like that.", true),
+      (0.9, "Who was", false), (1.1, "Who was last year's winner of Cal Hacks", false),
+      (1.3, "Who was last year's winner of Cal Hacks?", true)],
+     { t in t.last?.question.hasPrefix("who was last years winner") == true && t.last?.state == .done ? nil : "\(t.map { "\($0.question) \($0.state)" })" }),
     ("model WAIT on a fragment → re-asked with the full question",
      [(0.0, "Who", false), (0.1, "Who wrote?", false), (0.6, "Who wrote Dune?", true)],
      { t in t.count == 1 && t[0].state == .done && t[0].fires == 2 ? nil : "\(t.map { "\($0.question) \($0.state) fires=\($0.fires)" })" }),

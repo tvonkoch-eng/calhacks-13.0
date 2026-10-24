@@ -100,6 +100,10 @@ public struct Turn: Identifiable, Sendable {
     private var firedText = ""
     private var lastFireAt = -Double.infinity
     private var carry = ""
+    /// How the held sentence joins the next one. A held half-question ("How tall is the") reads
+    /// straight on; a held statement ("You don't feel like that") gets a comma so a question that
+    /// follows it ("Who won last year's Cal Hacks?") is still found as its own clause.
+    private var carryJoin = " "
     /// Recent closed sentences, sent along so "how far is it from Munich" knows what "it" is.
     private var history: [String] = []
     private var lastGate = ""
@@ -125,7 +129,7 @@ public struct Turn: Identifiable, Sendable {
         settleTask?.cancel()
         if !carry.isEmpty {
             carryTask?.cancel()
-            text = carry + " " + text
+            text = carry + carryJoin + text
             if final { carry = "" }
         }
         transcript = text
@@ -178,7 +182,9 @@ public struct Turn: Identifiable, Sendable {
         guard let turn = turnIndex.map({ turns[$0] }), turn.fires < maxFires, text != firedText else { return nil }
         guard now() - lastFireAt > refireInterval else { return nil }
         let grew = words(text) - words(firedText)
-        if turn.state == .incomplete { return grew >= 1 ? "model said WAIT, now +\(grew) words" : nil }
+        // +2, not +1: each WAIT costs a request from a daily cap, and one more word rarely
+        // completes a question ("how many miles" → "how many miles away" was WAIT four times).
+        if turn.state == .incomplete { return grew >= 2 ? "model said WAIT, now +\(grew) words" : nil }
         if text.hasPrefix(firedText) { return grew >= refireGrowth ? "question grew +\(grew) words" : nil }
         if firedText.hasPrefix(text) { return nil }   // recognizer revised backwards; wait
         return "question changed"
@@ -189,10 +195,15 @@ public struct Turn: Identifiable, Sendable {
         lastGate = ""
         let candidate = QuestionGate.candidate(in: text, settled: true)
 
-        // "How tall is the." — a pause mid-question. Hold it and glue on whatever comes next.
-        if let candidate, candidate.unfinished, carry.isEmpty {
+        // "How tall is the." / "How many..." / "all data that I can." — the recognizer closed the
+        // sentence at a pause mid-thought. Hold it and glue on whatever comes next, so a question
+        // is never asked (or missed) in pieces. Bounded so a rambling run still gets committed.
+        let midQuestion = candidate?.unfinished == true
+        let midThought = QuestionGate.endsMidThought(text)
+        if midQuestion || midThought, carry.isEmpty, words(text) < 40 {
             carry = text.trimmingCharacters(in: CharacterSet(charactersIn: ".,!?… ").union(.whitespaces))
-            log(.carry, "\"\(carry)\" ends mid-phrase; waiting \(carryWindow)s for the rest")
+            carryJoin = midQuestion ? " " : ", "
+            log(.carry, "\"\(carry)\" ends mid-\(midQuestion ? "question" : "thought"); waiting \(carryWindow)s for the rest")
             carryTask = Task { [weak self] in
                 guard let self else { return }
                 try? await Task.sleep(for: .seconds(self.carryWindow))
@@ -225,6 +236,17 @@ public struct Turn: Identifiable, Sendable {
                 turns[i].state = .abandoned
                 log(.abandon, "\"\(text)\" is not a question; dropped the early guess \"\(turns[i].question)\"")
                 show(nil)
+            } else if let prev = turns.first, prev.answer.isEmpty,
+                      [.incomplete, .personal, .thinking].contains(prev.state),
+                      now() - prev.lastFiredAt < 2.5, words(text) <= 4,
+                      prev.question.split(separator: " ").count <= 5 {
+                // "Who painted them?" + "Mona Lisa.": the recognizer closed a short question at a
+                // pause (and often misheard the word before it). The question went unanswered and a
+                // short fragment followed right away, so it is the rest of the question.
+                currentTurn = prev.id
+                let joined = prev.question + " " + QuestionGate.plain(text)
+                fire(joined, heard: prev.heard + " " + text, reason: "short follow-up completes the unanswered question", settled: true)
+                turns[0].questionEnd = end
             } else {
                 log(.commit, "not a question")
             }
@@ -232,7 +254,7 @@ public struct Turn: Identifiable, Sendable {
         }
 
         guard let i = turnIndex else {
-            fire(candidate.text, heard: text, reason: "sentence ended (no early fire)")
+            fire(candidate.text, heard: text, reason: "sentence ended (no early fire)", settled: true)
             if let j = turnIndex { turns[j].questionEnd = end }
             return
         }
@@ -241,14 +263,24 @@ public struct Turn: Identifiable, Sendable {
         let grew = words(candidate.text) - words(firedText)
         let state = turns[i].state
         var reason: String?
-        if candidate.text != firedText {
+        if state == .incomplete {
+            reason = "model said WAIT on the partial; asking again now the sentence is complete"
+        } else if candidate.text != firedText {
             switch state {
             case .incomplete: reason = "model said WAIT on the partial"
             case .failed: reason = "partial request failed"
             case .personal: reason = "model said SKIP on the partial; asking with the full sentence"
             default:
                 let added = candidate.text.split(separator: " ").dropFirst(words(firedText))
-                if grew >= refireGrowth {
+                let early = firedText.split(separator: " "), late = candidate.text.split(separator: " ")
+                // Words before the last one changed: Whisper corrected the transcript, so the early
+                // guess answered a different question ("use with fraud" → "use with Groq").
+                var changed = early.dropLast().enumerated().filter { $0.offset >= late.count || late[$0.offset] != $0.element }.count
+                // Only spacing changed ("cal hacks" → "calhacks"): same question.
+                if late.joined().hasPrefix(early.dropLast().joined()) { changed = 0 }
+                if changed >= 1 {
+                    reason = "final transcript differs from the early guess (\(changed) word\(changed == 1 ? "" : "s"))"
+                } else if grew >= refireGrowth {
                     reason = "final question is +\(grew) words longer"
                 } else if added.contains(where: { $0.contains(where: \.isNumber) }) {
                     reason = "final question added a number"
@@ -261,7 +293,7 @@ public struct Turn: Identifiable, Sendable {
             }
         }
         if let reason {
-            fire(candidate.text, heard: text, reason: reason)
+            fire(candidate.text, heard: text, reason: reason, settled: true)
             if let j = turnIndex { turns[j].questionEnd = end }
         } else {
             log(.commit, "keeping answer for \"\(firedText)\" (final: \"\(candidate.text)\")")
@@ -276,7 +308,7 @@ public struct Turn: Identifiable, Sendable {
         return turns.firstIndex { $0.id == currentTurn }
     }
 
-    private func fire(_ question: String, heard: String, reason: String) {
+    private func fire(_ question: String, heard: String, reason: String, settled: Bool = false) {
         answerTask?.cancel()
         clearTask?.cancel()
         generation += 1
@@ -319,7 +351,7 @@ public struct Turn: Identifiable, Sendable {
         let context = history.joined(separator: " ").split(separator: " ").suffix(40).joined(separator: " ")
         answerTask = Task { [weak self, source] in
             do {
-                for try await event in source.stream(question, context: context) {
+                for try await event in source.stream(question, context: context, settled: settled) {
                     guard let self, !Task.isCancelled, generation == self.generation else { return }
                     switch event {
                     case .text(let text):
@@ -339,6 +371,16 @@ public struct Turn: Identifiable, Sendable {
                     case .incomplete:
                         self.update(generation) { $0.state = .incomplete }
                         self.log(.incomplete, "model: WAIT for \"\(question)\" (too cut off)")
+                        // The WAIT landed after the sentence was already closed (the request was
+                        // still in flight at commit, so commit kept it). Nothing else will re-ask,
+                        // so ask again now as a finished question, where WAIT is not allowed.
+                        if !settled, self.currentTurn == nil, let turn = self.turns.first, turn.questionEnd != nil {
+                            self.currentTurn = turn.id
+                            self.fire(turn.question, heard: turn.heard,
+                                      reason: "model said WAIT after the sentence ended", settled: true)
+                            self.currentTurn = nil
+                            return
+                        }
                     }
                     self.render()
                 }
@@ -386,6 +428,21 @@ public struct Turn: Identifiable, Sendable {
         case .personal, .abandoned, .failed:
             show(nil)
         }
+    }
+
+    /// Put a side note on the lens, unless an answer is in progress or was just shown: answers
+    /// to questions always win. Returns whether it went up.
+    @discardableResult
+    public func showAside(_ note: String, topic: String) -> Bool {
+        if let t = turns.first {
+            if t.live { return false }
+            // Give an answer a few seconds to be read; after that a note may replace it.
+            if t.state == .done, now() - t.lastFiredAt < 6 { return false }
+        }
+        log(.aside, "\(note)   · \(topic)")
+        show(AnswerCard(question: "\u{24D8} " + topic, answer: note, thinking: false))
+        scheduleClear()
+        return true
     }
 
     private func show(_ card: AnswerCard?) {

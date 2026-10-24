@@ -29,6 +29,17 @@ import Observation
         let log = EventLog(now: { clock.now() })
         engine = Engine(source: answerer, log: log, now: { clock.now() })
         engine.onChange = { [weak self] in self?.sync() }
+        // Side notes (explain a niche term, fix a wrong fact, convert a unit) after non-questions.
+        let aside = Aside(key: answerer.key)
+        aside.known = Transcriber.vocabulary
+        engine.onSentence = { [weak engine] text, before, turn in
+            guard turn == nil, let engine else { return }
+            Task { @MainActor in
+                guard let note = await aside.consider(text, history: before, now: clock.now()),
+                      engine.showAside(note.note, topic: note.topic) else { return }
+                aside.didShow(note, at: clock.now())
+            }
+        }
     }
 
     var current: Turn? { turns.first }
@@ -43,9 +54,13 @@ import Observation
         let engine = engine, clock = clock
         work = Task { [weak self] in
             do {
-                try await transcriber.run(.microphone, onStart: { clock.zero = Date() }) { text, final, end in
+                // Apple streams words for early answers; Whisper (Groq) re-hears each finished
+                // sentence, which cuts word errors in a noisy room from ~26% to ~6%.
+                let second = SecondPass(key: answerer.key, vocabulary: Transcriber.vocabulary)
+                let handler = second.attach(transcriber) { text, final, end in
                     engine.heard(text, final: final, audioEnd: end)
                 }
+                try await transcriber.run(.microphone, onStart: { clock.zero = Date() }, handler: handler)
             } catch {
                 self?.status = error.localizedDescription
             }

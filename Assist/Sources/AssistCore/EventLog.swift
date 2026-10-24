@@ -5,7 +5,7 @@ import Foundation
 public final class EventLog: @unchecked Sendable {
     public enum Kind: String, Sendable {
         case hear, final, gate, fire, token, answer, personal, incomplete, commit, carry, abandon,
-             lens, judge, error, info
+             lens, judge, error, info, fix, aside
     }
 
     public var now: @Sendable () -> Double
@@ -62,6 +62,8 @@ public final class EventLog: @unchecked Sendable {
         case .token, .answer: "32;1"
         case .lens: "36;1"
         case .judge: "34;1"
+        case .fix: "35"
+        case .aside: "36"
         case .personal, .incomplete, .abandon: "35"
         case .error: "31;1"
         default: "0"

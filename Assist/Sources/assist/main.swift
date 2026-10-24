@@ -17,6 +17,8 @@ assist: the glasses conversation assistant, on the Mac, with a full event log.
   -v        print every partial hypothesis, not just decisions
   --local   no network: only the on-device answers (math, time, date)
   --ui      serve the live page at http://localhost:8765 (--port N to change)
+  --no-whisper  Apple's recognizer only (no second-pass Whisper on finished sentences)
+  --asr speech|dictation|dictationFar   which Apple recognizer
   --judge   grade every sentence with openai/gpt-oss-120b on Groq; scorecard at the end
 
 Logs: each run appends JSON lines to Assist/logs/<timestamp>.jsonl.
@@ -61,7 +63,7 @@ let root: URL = {
 
 struct Offline: AnswerSource {
     func local(_ question: String) -> String? { Answerer.local(question) }
-    func stream(_ question: String, context: String) -> AsyncThrowingStream<AnswerEvent, Error> {
+    func stream(_ question: String, context: String, settled: Bool) -> AsyncThrowingStream<AnswerEvent, Error> {
         AsyncThrowingStream { $0.yield(.text("(offline)")); $0.finish() }
     }
 }
@@ -90,12 +92,29 @@ if server != nil {
 }
 let judge = Judge(key: answerer.key)
 
+let forwarder: Forwarder? = ProcessInfo.processInfo.environment["ASSIST_SHARE"]
+    .flatMap { URL(string: $0) }
+    .map { Forwarder(url: $0, session: "\(runStamp)-\(Host.current().localizedName ?? "mac")") }
+if forwarder != nil { print("sharing this session live with your teammate's collector") }
+
+/// Every event goes to the local page (if any) and the remote collector (if any).
+@Sendable func emit(_ event: [String: Any]) {
+    server?.publish(event)
+    forwarder?.send(event)
+}
+
 /// Every graded sentence of the whole process, for the scorecard.
 struct Graded {
     let sentence: Sentence
     let verdict: Verdict?
     let error: String?
 }
+/// Side notes in flight / shown, by sentence id, so the grader can see them.
+@MainActor final class Asides {
+    static var pending: Set<Int> = []
+    static var notes: [Int: String] = [:]
+}
+
 @MainActor final class Grades {
     static var all: [Graded] = []
     static var pending = 0
@@ -103,7 +122,7 @@ struct Graded {
 
 @MainActor final class PageDisplay: AnswerDisplay {
     func show(_ card: AnswerCard?) {
-        server?.publish(["type": "lens", "card": card.map {
+        emit(["type": "lens", "card": card.map {
             ["headline": $0.headline, "echo": $0.echo, "thinking": $0.thinking] as [String: Any]
         } ?? NSNull()])
     }
@@ -135,20 +154,25 @@ func snapshot(_ t: Turn) -> [String: Any] {
             guard let id, let t = engine.turns.first(where: { $0.id == id }), t.live else { break }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        let sentence = Sentence(text: text, before: before, turn: id.flatMap { id in engine.turns.first { $0.id == id } })
+        for _ in 0..<40 where Asides.pending.contains(sid) { try? await Task.sleep(for: .milliseconds(100)) }
+        var sentence = Sentence(text: text, before: before, turn: id.flatMap { id in engine.turns.first { $0.id == id } })
+        if let note = Asides.notes[sid] { sentence.aside = note }
+        // "Okay." "Wow." with nothing shown: certain 5/5, not worth a request from the daily cap.
+        if id == nil, sentence.aside == nil, text.split(separator: " ").count < 4, !text.contains("?") { return }
+        if ProcessInfo.processInfo.environment["ASSIST_JUDGE_DEBUG"] != nil { log(.info, "judge input: " + sentence.prompt.replacingOccurrences(of: "\n", with: " | ")) }
         do {
             let v = try await judge.grade(sentence)
-            let outcome = v.outcome(shown: sentence.shown)
+            let outcome = sentence.aside != nil && !sentence.shown ? "side note" : v.outcome(shown: sentence.shown)
             Grades.all.append(Graded(sentence: sentence, verdict: v, error: nil))
             log(.judge, "\(v.score)/5 \(outcome)\(v.heard_right ? "" : " (misheard)") · \(v.note)\((v.better_answer ?? "").isEmpty || outcome == "answered" ? "" : " · ideal: \(v.better_answer!)")")
             var verdict: [String: Any] = ["kind": v.kind, "should_answer": v.should_answer, "heard_right": v.heard_right,
                                           "score": v.score, "note": v.note, "better_answer": v.better_answer ?? ""]
             verdict["answer_correct"] = v.answer_correct ?? NSNull()
-            server?.publish(["type": "verdict", "sid": sid, "outcome": outcome, "verdict": verdict, "did": sentence.did])
+            emit(["type": "verdict", "sid": sid, "outcome": outcome, "verdict": verdict, "did": sentence.did])
         } catch {
             Grades.all.append(Graded(sentence: sentence, verdict: nil, error: error.localizedDescription))
             log(.error, "grader failed: \(error.localizedDescription)")
-            server?.publish(["type": "verdict", "sid": sid, "error": error.localizedDescription])
+            emit(["type": "verdict", "sid": sid, "error": error.localizedDescription])
         }
     }
 }
@@ -161,7 +185,7 @@ func scorecard() -> String {
         for (s, v) in ok {
             let shown = s.shown ? s.did.replacingOccurrences(of: "showed ", with: "") : "–"
             out += String(format: "  %d/5    %@ \"%@\" → %@\n", v.score,
-                          v.outcome(shown: s.shown).padding(toLength: 26, withPad: " ", startingAt: 0),
+                          (s.aside != nil && !s.shown ? "side note: \(s.aside!)" : v.outcome(shown: s.shown)).padding(toLength: 26, withPad: " ", startingAt: 0),
                           String(s.text.prefix(60)), shown)
             if v.score < 5 { out += "                                    \(v.note)\n" }
         }
@@ -183,22 +207,40 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
                        verbose: verbose, echo: echo, now: { clock.now() })
     let engine = Engine(source: source, log: log, now: { clock.now() })
     let page = PageDisplay()
-    if let server {
-        log.observer = { t, kind, msg in server.publish(["type": "log", "t": t, "kind": kind.rawValue, "msg": msg]) }
+    if server != nil || forwarder != nil {
+        log.observer = { t, kind, msg in emit(["type": "log", "t": t, "kind": kind.rawValue, "msg": msg]) }
         engine.display = page
         engine.onChange = { [weak engine] in
             guard let engine else { return }
-            server.publish(["type": "transcript", "text": engine.transcript])
-            server.publish(["type": "turns", "turns": engine.turns.prefix(5).map(snapshot)])
+            emit(["type": "transcript", "text": engine.transcript])
+            emit(["type": "turns", "turns": engine.turns.prefix(5).map(snapshot)])
         }
-        server.publish(["type": "status", "text": "\(label) · \(offline ? "offline" : answerer.provider.model)\(judging ? " · graded by \(judge.model)" : "")"])
+        emit(["type": "status", "text": "\(label) · \(offline ? "offline" : answerer.provider.model)\(judging ? " · graded by \(judge.model)" : "")"])
     }
     var sid = 0
+    let aside: Aside? = offline || flag("--no-aside") ? nil : Aside(key: answerer.key)
+    aside?.known = Transcriber.vocabulary
     engine.onSentence = { [weak engine] text, before, turn in
         guard let engine else { return }
         sid += 1
+        if let aside, turn == nil {
+            let id = sid
+            Asides.pending.insert(id)
+            Task { @MainActor in
+                defer { Asides.pending.remove(id) }
+                guard let note = await aside.consider(text, history: before, now: clock.now()) else { return }
+                guard engine.showAside(note.note, topic: note.topic) else {
+                    log(.aside, "held back \"\(note.note)\": an answer is on the lens")
+                    return
+                }
+                aside.didShow(note, at: clock.now())
+                Asides.notes[id] = "\(note.note) (\(note.kind): \(note.topic))"
+                emit(["type": "aside", "sid": id, "kind": note.kind, "note": note.note, "topic": note.topic])
+            }
+        }
         let sentence = Sentence(text: text, before: before, turn: turn.flatMap { id in engine.turns.first { $0.id == id } })
-        server?.publish(["type": "sentence", "sid": sid, "text": text, "turn": turn?.uuidString ?? NSNull(), "did": sentence.did])
+        emit(["type": "quota", "text": Quota.shared.summary])
+        emit(["type": "sentence", "sid": sid, "text": text, "turn": turn?.uuidString ?? NSNull(), "did": sentence.did])
         if judging { grade(text, before: before, turn: turn, engine: engine, log: log, sid: sid) }
     }
     if !offline, answerer.key == nil { log(.error, "no API key found; model answers will fail (try --local)") }
@@ -220,6 +262,8 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
         }
     } else if let input {
         let transcriber = Transcriber()
+        transcriber.model = recognizer
+        transcriber.useVocabulary = !noVocab
         transcriber.status = { log(.info, $0) }
         if let server {
             let last = SessionClock()
@@ -230,9 +274,21 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
             }
         }
         let work = Task { @MainActor in
-            try await transcriber.run(input, onStart: { clock.zero = Date() }) { text, final, end in
-                engine.heard(text, final: final, audioEnd: end)
+            var handler: Transcriber.Handler = { text, final, end in engine.heard(text, final: final, audioEnd: end) }
+            if !offline, !noWhisper, answerer.key != nil {
+                let second = SecondPass(key: answerer.key, vocabulary: Transcriber.vocabulary)
+                second.report = { original, fixed, ms, note in
+                    if let fixed {
+                        if QuestionGate.plain(fixed) != QuestionGate.plain(original) {
+                            log(.fix, "\"\(original)\" → \"\(fixed)\"  (Whisper \(ms) ms)")
+                        }
+                    } else {
+                        log(.fix, "kept \"\(original)\": \(note) (\(ms) ms)")
+                    }
+                }
+                handler = second.attach(transcriber, deliver: handler)
             }
+            try await transcriber.run(input, onStart: { clock.zero = Date() }, handler: handler)
         }
         if case .microphone = input {
             signal(SIGINT, SIG_IGN)
@@ -240,7 +296,9 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
             stop.setEventHandler { work.cancel() }
             stop.resume()
             log(.info, "speak; Ctrl-C to stop")
-            _ = await work.result
+            if case .failure(let error) = await work.result, !(error is CancellationError) {
+                log(.error, "\(error.localizedDescription)")
+            }
             stop.cancel()
         } else if case .failure(let error) = await work.result {
             log(.error, "\(error.localizedDescription)")
@@ -254,6 +312,7 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
     for _ in 0..<150 where Grades.pending > 0 {
         try? await Task.sleep(for: .milliseconds(100))
     }
+    forwarder?.drain()
     return engine.turns.reversed()
 }
 
@@ -312,7 +371,30 @@ let scenarios: [Scenario] = [
     .init(speech: "The demo went really well, I think.", expect: nil),
 ]
 
+let recognizer = Transcriber.Model(rawValue: option("--asr") ?? "speech") ?? .speech
+let noVocab = flag("--no-vocab")
+let noWhisper = flag("--no-whisper")
+
 switch mode {
+case "asr":
+    // Transcribe clips with Apple's recognizer only (no engine), one JSON line per file.
+    // For accuracy benchmarks: swift run assist asr a.wav b.wav --asr dictationFar --no-vocab
+    for path in args.dropFirst() {
+        let t = Transcriber()
+        t.model = recognizer
+        t.useVocabulary = !noVocab
+        var finals: [String] = []
+        var last = ""
+        do {
+            try await t.run(.file(URL(fileURLWithPath: path), realTime: false), onStart: {}) { text, final, _ in
+                if final { finals.append(text); last = "" } else { last = text }
+            }
+        } catch { print("{\"file\":\"\(path)\",\"error\":\"\(error)\"}"); continue }
+        if !last.isEmpty { finals.append(last) }
+        let out = try! JSONSerialization.data(withJSONObject: ["file": path, "text": finals.joined(separator: " ")])
+        print(String(data: out, encoding: .utf8)!)
+    }
+
 case "mic":
     summarize(await run(.microphone, label: "mic"))
 

@@ -13,7 +13,8 @@ header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.02em}
 #status{color:var(--dim);font-size:13px}
 .meter{flex:0 0 120px;height:4px;background:var(--line);border-radius:2px;overflow:hidden}.meter i{display:block;height:100%;width:0;background:var(--accent);transition:width .08s}
 .stats{margin-left:auto;display:flex;gap:22px;font-size:12px;color:var(--dim)}.stats b{display:block;color:var(--text);font:600 18px var(--mono)}
-main{display:grid;grid-template-columns:minmax(380px,1fr) minmax(420px,1.25fr);gap:0;height:calc(100vh - 61px)}
+main{display:grid;grid-template-columns:minmax(380px,1fr) minmax(420px,1.25fr);gap:0;height:calc(100vh - 84px)}
+.aside{margin-top:8px;color:#9fd7ff;font-size:13px}.k-aside,.k-fix{color:#9fd7ff!important}
 section{overflow:auto;padding:20px 22px}section+section{border-left:1px solid var(--line)}
 h2{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);font-weight:600;margin:0 0 10px}
 .lens{position:relative;height:190px;border-radius:22px;background:radial-gradient(120% 140% at 30% 0%,#1b2330,#0d1016);border:1px solid #263142;display:flex;flex-direction:column;justify-content:center;padding:26px 30px;margin-bottom:24px;overflow:hidden}
@@ -35,7 +36,8 @@ h2{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--fain
 .empty{color:var(--faint)}
 </style></head><body>
 <header><span class="dot" id="dot"></span><h1>assist · live</h1><span id="status">connecting…</span><div class="meter"><i id="lvl"></i></div>
-<div class="stats"><div>sentences<b id="sN">0</b></div><div>avg grade<b id="sAvg">–</b></div><div>missed<b id="sMiss">0</b></div><div>wrong<b id="sWrong">0</b></div><div>median 1st token<b id="sTok">–</b></div><div>median lead<b id="sLead">–</b></div></div></header>
+<div class="stats"><div>sentences<b id="sN">0</b></div><div>avg grade<b id="sAvg">–</b></div><div>missed<b id="sMiss">0</b></div><div>wrong<b id="sWrong">0</b></div><div>median 1st token<b id="sTok">–</b></div><div>median lead<b id="sLead">–</b></div><div>side notes<b id="sAside">0</b></div></div></header>
+<div id="quota" style="padding:4px 22px;font:11px var(--mono);color:var(--faint);border-bottom:1px solid var(--line)">Groq requests left today: –</div>
 <main>
 <section>
 <h2>Lens</h2>
@@ -71,10 +73,11 @@ function render(){
     }else what=`<span class="empty">${esc(s.did)}</span>`;
     const asked=t&&t.question?`<div class="empty" style="font-size:12px;margin-top:4px">asked the model: “${esc(t.question)}”</div>`:"";
     let j=`<div class="judge"><span class="empty">grading…</span></div>`;
-    if(s.verdict){const v=s.verdict,cls=s.outcome==="answered"||s.outcome==="correctly quiet"?"good":s.outcome==="missed"?"warn":"bad";
+    if(s.verdict){const v=s.verdict,cls=s.outcome==="answered"||s.outcome==="correctly quiet"||(s.outcome==="side note"&&v.score>=4)?"good":s.outcome==="missed"?"warn":"bad";
       j=`<div class="judge"><span class="score s${v.score}">${v.score}/5</span><span class="pill ${cls}">${esc(s.outcome)}</span>${v.heard_right?"":'<span class="pill warn">misheard</span>'}<span>${esc(v.note)}${v.better_answer&&s.outcome!=="answered"&&s.outcome!=="correctly quiet"?` · ideal: <b style="color:var(--text)">${esc(v.better_answer)}</b>`:""}</span></div>`}
     else if(s.error) j=`<div class="judge"><span class="pill bad">grader failed</span>${esc(s.error)}</div>`;
-    return `<div class="card"><div class="said">“${esc(s.text)}”</div>${asked}<div class="what">${what}</div>${j}</div>`}).join("");
+    const side=s.aside?`<div class="aside">ⓘ ${esc(s.aside.note)} <span class="empty">· ${esc(s.aside.kind)}: ${esc(s.aside.topic)}</span></div>`:"";
+    return `<div class="card"><div class="said">“${esc(s.text)}”</div>${asked}<div class="what">${what}</div>${side}${j}</div>`}).join("");
 }
 function log(e){const d=document.createElement("div");d.innerHTML=`<span class="t">${e.t.toFixed(2)}</span><span class="k k-${e.kind}">${e.kind.toUpperCase()}</span>${esc(e.msg)}`;const L=$("log");L.prepend(d);while(L.childNodes.length>300)L.lastChild.remove()}
 const es=new EventSource("/events");
@@ -89,6 +92,8 @@ es.onmessage=m=>{const e=JSON.parse(m.data);
     else{L.className="lens"+(e.card.thinking?" thinking":"");$("lensHead").textContent=e.card.headline;$("lensEcho").textContent=e.card.echo;$("lensTag").textContent=e.card.thinking?"streaming":"✓"}break}
   case "turns":for(const t of e.turns)turns.set(t.id,t);render();stats();break;
   case "sentence":sentences.push(e);render();stats();break;
+  case "aside":{const s=sentences.find(x=>x.sid===e.sid);if(s){s.aside=e}$("sAside").textContent=sentences.filter(x=>x.aside).length;render();break}
+  case "quota":if(e.text)$("quota").textContent="Groq requests left today: "+e.text;break;
   case "verdict":{const s=sentences.find(x=>x.sid===e.sid);if(s){s.verdict=e.verdict;s.outcome=e.outcome;s.error=e.error}render();stats();break}
   }};
 </script></body></html>

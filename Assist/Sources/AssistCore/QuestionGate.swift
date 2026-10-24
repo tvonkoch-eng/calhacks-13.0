@@ -10,6 +10,8 @@ public struct Candidate: Equatable, Sendable {
     /// Stops mid-phrase ("how tall is the") with no question mark: if the recognizer closes the
     /// sentence here, the rest is probably still coming in the next segment.
     public let unfinished: Bool
+    /// Starts with a question word, an auxiliary, or a peeled lead-in (not just a trailing "?").
+    public let interrogative: Bool
 
     public enum Confidence: Sendable { case strong, weak }
 }
@@ -42,6 +44,8 @@ public enum QuestionGate {
         "is", "are", "was", "were", "do", "does", "did", "has", "have", "had", "can", "could",
         "will", "would", "should", "be", "been", "being", "am", "very", "really", "most", "more",
         "much", "many", "about", "like",
+        // subjects: "what do you", "where did they" always continue
+        "you", "we", "i", "they", "he", "she", "people",
         // arithmetic: "what is 17 times" is not a question yet
         "times", "plus", "minus", "divided", "multiplied", "x", "squared", "percent", "point",
     ]
@@ -64,7 +68,7 @@ public enum QuestionGate {
     /// Clauses about the people talking, not about the world. Cheap pre-filter; the model backstops it.
     private static let personal = [
         "how are you", "how are we", "how r u", "how you doing", "how is it going", "hows it going",
-        "how was your", "how is your", "how are your", "whats up", "what is up", "whats new",
+        "how was your", "how is your", "how are your", "hows your", "hows the family", "hows work", "whats up", "what is up", "whats new",
         "whats your name", "what do you think", "what do you do", "what do you want",
         "where are you from", "where are we", "where do you live", "when are we", "when are you",
         "are you free", "are you coming", "are you ok", "are you okay", "are you good", "are you sure",
@@ -73,6 +77,38 @@ public enum QuestionGate {
         "do you like", "do you feel", "how do you feel", "what time are we", "whos coming",
     ]
 
+    /// Words a finished thought almost never ends on. Narrower than `dangling`: "thank you." and
+    /// "me too." are complete, "all data that I can." and "it'll like" are not.
+    private static let trailing: Set<String> = [
+        "the", "a", "an", "this", "that", "these", "those", "my", "your", "his", "her", "our",
+        "their", "of", "in", "on", "at", "to", "for", "from", "with", "by", "into", "than", "as",
+        "and", "or", "but", "if", "because", "so", "is", "are", "was", "were", "can", "could",
+        "will", "would", "should", "be", "been", "am", "very", "really", "like", "um", "uh",
+        "i", "we", "they", "he", "she", "its", "itll", "im", "theres", "whats", "how", "what",
+        "who", "where", "when", "why", "which", "many", "much",
+    ]
+
+    /// The recognizer closed this sentence, but the speaker had not finished the thought: it
+    /// trails off ("How many...", "Yeah. Wait, I'll be..."), stops on a function word ("all data
+    /// that I can."), or is a lone fragment with no closing punctuation ("pretty", "using?").
+    /// The engine holds these and joins them to whatever is said next.
+    public static func endsMidThought(_ text: String) -> Bool {
+        let t = text.trimmed
+        if t.hasSuffix("...") || t.hasSuffix("\u{2026}") { return true }
+        guard let sentence = tail(of: t) else { return false }
+        let words = normalize(sentence).split(separator: " ").map(String.init)
+        guard let last = words.last else { return false }
+        if trailing.contains(last) { return true }
+        let closed = t.last.map { ".?!".contains($0) } ?? false
+        if !closed { return true }
+        // "using?" — one word, no question word: a fragment, not a question.
+        if words.count == 1, t.hasSuffix("?"), !wh.contains(last) { return true }
+        return false
+    }
+
+    /// Lower-case words only, punctuation and apostrophes removed.
+    public static func plain(_ text: String) -> String { normalize(text) }
+
     /// Find the question at the end of `transcript`, if there is one.
     ///
     /// `settled: false` means the last word may still be arriving. Live recognizers stream word
@@ -80,6 +116,28 @@ public enum QuestionGate {
     /// its last word unless punctuation already closed it. Otherwise "how tall is the e" looks like
     /// a complete question and we would ask the model about it.
     public static func candidate(in transcript: String, settled: Bool = true) -> Candidate? {
+        let whole = evaluate(transcript, settled: settled)
+        if let whole, whole.interrogative { return whole }
+        // "We're having a conversation, like, how's your run?" — the recognizer used commas, and the
+        // question is the last wh-clause. Judge that clause on its own (personal ones still drop out).
+        guard let sentence = tail(of: transcript), sentence.contains(",") else { return whole }
+        let mark = transcript.trimmed.last.map { ".?!".contains($0) ? String($0) : "" } ?? ""
+        // Closed with a period: a statement, even with a wh-word after a comma ("…, which maybe is
+        // a product issue.", "…, when I get home.").
+        if mark == "." || mark == "!" { return whole }
+        let pieces = sentence.components(separatedBy: ",")
+        for i in stride(from: pieces.count - 1, to: 0, by: -1) {
+            var rest = pieces[i...].joined(separator: ",").trimmed
+            let head = strip(fillers, from: normalize(rest)).split(separator: " ").first.map(String.init) ?? ""
+            // "which"/"whom"/"whose" after a comma open a relative clause, not a question.
+            guard wh.contains(head), !["which", "whom", "whose"].contains(head) else { continue }
+            if !mark.isEmpty, !rest.hasSuffix(mark) { rest += mark }
+            return evaluate(rest, settled: settled)
+        }
+        return whole
+    }
+
+    private static func evaluate(_ transcript: String, settled: Bool) -> Candidate? {
         guard var clause = tail(of: transcript) else { return nil }
         let explicitMark = clause.hasSuffix("?")
         let closed = transcript.trimmed.last.map { ".?!,".contains($0) } ?? false
@@ -93,11 +151,16 @@ public enum QuestionGate {
         }
 
         clause = strip(fillers, from: clause)
+        clause = collapseRestarts(clause)
         // Peel lead-ins, then any fillers they were hiding ("so do you know, uh, how tall …").
+        // In a loop: speech restarts stack them up ("do you know, do you know how tall …").
         var peeled = false
-        for lead in leadIns where clause == lead || clause.hasPrefix(lead + " ") {
-            clause = strip(fillers, from: String(clause.dropFirst(lead.count)).trimmed)
-            peeled = true
+        peeling: while true {
+            for lead in leadIns where clause == lead || clause.hasPrefix(lead + " ") {
+                clause = collapseRestarts(strip(fillers, from: String(clause.dropFirst(lead.count)).trimmed))
+                peeled = true
+                continue peeling
+            }
             break
         }
         guard !clause.isEmpty else { return nil }
@@ -118,17 +181,24 @@ public enum QuestionGate {
 
         let interrogative = wh.contains(first) || aux.contains(first) || peeled
         guard interrogative || explicitMark else { return nil }
+        // A long statement that merely ends on rising intonation ("this is all data that I can
+        // using?") is not a question. Short ones ("Jupiter has 95 moons?") still go to the model.
+        if !interrogative, count > 6 { return nil }
 
         // Strong once there is enough of the clause to guess the whole question *and* the clause
         // does not stop mid-phrase. An explicit "?" from the recognizer means it is definitely done.
         let complete = !dangling.contains(words[count - 1])
-        let long = (wh.contains(first) && count >= 4)
+        let long = (wh.contains(first) && count >= 3)
             || (aux.contains(first) && count >= 5)
             || (peeled && count >= 3)
-        let strong = explicitMark || (long && complete)
+        // A "?" on a clause with no question word ("Oh, so fast I was?") is just rising intonation,
+        // and volatile hypotheses flip it to "." a moment later. Never fire early on that alone;
+        // if the final sentence keeps the "?", the commit still asks the model.
+        let strong = (explicitMark && interrogative) || (long && complete)
         // Even "Do you know what?" with a question mark is a sentence the recognizer closed at a pause.
         let unfinished = count < 3 || (!explicitMark && !complete)
-        return Candidate(text: clause, confidence: strong ? .strong : .weak, words: count, unfinished: unfinished)
+        return Candidate(text: clause, confidence: strong ? .strong : .weak, words: count,
+                         unfinished: unfinished, interrogative: interrogative)
     }
 
     /// Last sentence of the transcript — the one still being spoken.
@@ -147,6 +217,9 @@ public enum QuestionGate {
 
     private static func normalize(_ s: String) -> String {
         s.lowercased()
+            // "we're" would otherwise become the auxiliary "were" and read as a yes/no question.
+            .replacingOccurrences(of: "'re ", with: " are ")
+            .replacingOccurrences(of: "\u{2019}re ", with: " are ")
             .replacingOccurrences(of: "'", with: "")
             .replacingOccurrences(of: "\u{2019}", with: "")
             .components(separatedBy: CharacterSet.alphanumerics.union(.whitespaces).inverted)
@@ -154,6 +227,36 @@ public enum QuestionGate {
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    /// Speech restarts: "how how's your run", "do you do you know", "what what is the capital".
+    /// Drop a leading word or phrase the speaker immediately said again.
+    private static func collapseRestarts(_ clause: String) -> String {
+        var words = clause.split(separator: " ").map(String.init)
+        // Abandoned start: "how many who won the world cup" -> "who won the world cup". A new
+        // question word right after a question word (plus at most one dangling word) restarts it.
+        for k in 1...2 where words.count > k + 1 && wh.contains(words[k]) {
+            if words[0..<k].allSatisfy({ wh.contains($0) || dangling.contains($0) }), wh.contains(words[0]) {
+                words.removeFirst(k)
+                break
+            }
+        }
+        var changed = true
+        while changed, words.count > 1 {
+            changed = false
+            for n in stride(from: min(3, words.count / 2), through: 1, by: -1) {
+                let head = words[0..<n], next = words[n..<min(words.count, n * 2)]
+                // Exact repeat, or a repeat whose last word was cut short ("how" then "how's").
+                guard head.count == next.count,
+                      zip(head, next).allSatisfy({ $0 == $1 }) ||
+                      (head.dropLast().elementsEqual(next.dropLast()) && next.last!.hasPrefix(head.last!))
+                else { continue }
+                words.removeFirst(n)
+                changed = true
+                break
+            }
+        }
+        return words.joined(separator: " ")
     }
 
     private static func strip(_ set: Set<String>, from clause: String) -> String {

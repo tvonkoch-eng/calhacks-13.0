@@ -29,10 +29,27 @@ public enum TranscriberError: LocalizedError {
 /// was the source of questions being cut in half: the previous session's late "final" callback
 /// would land during the next sentence and flush it early.
 @MainActor public final class Transcriber {
+    /// Words to favour in recognition. Add event, venue and people names here.
+    public static var vocabulary = [
+        "Cal Hacks", "CalHacks", "Berkeley", "UC Berkeley", "Groq", "Joaquin", "Toby", "Avi",
+        "Mirabelle", "Presidio", "Palace of Fine Arts", "Meta Ray-Ban", "Moss", "hackathon",
+    ]
+
     /// (text of the sentence in progress, recognizer closed the sentence, audio time it ends at)
     public typealias Handler = @MainActor (_ text: String, _ final: Bool, _ audioEnd: Double?) -> Void
 
     public var locale = Locale(identifier: "en-US")
+    /// Which Apple recognizer to run. `.speech` is the new conversational model; `.dictation` is
+    /// the older one, which supports a far-field hint (speaker away from the mic).
+    public enum Model: String, Sendable { case speech, dictation, dictationFar }
+    public var model: Model = .speech
+    public var useVocabulary = true
+    /// Audio-clock start of the result being delivered to the handler right now (read it inside
+    /// the handler). Lets a second pass cut out exactly the audio of a finished sentence.
+    public private(set) var resultStart: Double?
+    /// Every buffer fed to the recognizer, in the recognizer's format, with its start time on
+    /// the audio clock. For keeping recent audio around (second-opinion transcription).
+    public var onAudio: (@Sendable (AVAudioPCMBuffer, Double) -> Void)?
     public var status: (@MainActor (String) -> Void)?
     /// Microphone level 0...1, for a meter.
     public var level: (@Sendable (Float) -> Void)?
@@ -44,29 +61,62 @@ public enum TranscriberError: LocalizedError {
     public func run(_ input: AudioInput, onStart: @MainActor () -> Void, handler: @escaping Handler) async throws {
         guard SpeechTranscriber.isAvailable else { throw TranscriberError.unavailable }
         let locale = await SpeechTranscriber.supportedLocale(equivalentTo: self.locale) ?? self.locale
-        let transcriber = SpeechTranscriber(
-            locale: locale,
-            transcriptionOptions: [],
-            reportingOptions: ProcessInfo.processInfo.environment["ASSIST_NO_FAST"] == nil
-                ? [.volatileResults, .fastResults] : [.volatileResults],
-            attributeOptions: [.audioTimeRange]
-        )
-        if let download = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+        let speech: SpeechTranscriber?
+        let dictation: DictationTranscriber?
+        let module: any SpeechModule
+        switch model {
+        case .speech:
+            let t = SpeechTranscriber(
+                locale: locale,
+                transcriptionOptions: [],
+                reportingOptions: ProcessInfo.processInfo.environment["ASSIST_NO_FAST"] == nil
+                    ? [.volatileResults, .fastResults] : [.volatileResults],
+                attributeOptions: [.audioTimeRange]
+            )
+            speech = t; dictation = nil; module = t
+        case .dictation, .dictationFar:
+            let t = DictationTranscriber(
+                locale: locale,
+                contentHints: model == .dictationFar ? [.farField] : [],
+                transcriptionOptions: [.punctuation],
+                reportingOptions: [.volatileResults, .frequentFinalization],
+                attributeOptions: [.audioTimeRange]
+            )
+            speech = nil; dictation = t; module = t
+        }
+        if let download = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
             status?("Preparing speech model…")
             try await download.downloadAndInstall()
         }
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
             throw TranscriberError.noFormat
         }
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let analyzer = SpeechAnalyzer(modules: [module])
+        // Names the recognizer otherwise mangles ("Cal Hacks" came out as "Cowhags", "California
+        // hat", "Calhax"). Biases recognition toward them; harmless if they never come up.
+        if useVocabulary {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = Self.vocabulary
+            try? await analyzer.setContext(context)
+        }
         let (inputs, feed) = AsyncStream.makeStream(of: AnalyzerInput.self)
         try await analyzer.start(inputSequence: inputs)
 
         let reader = Task { @MainActor in
-            for try await result in transcriber.results {
-                let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                let end = result.range.end
-                handler(text, result.isFinal, end.isNumeric ? end.seconds : nil)
+            if let speech {
+                for try await result in speech.results {
+                    let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let end = result.range.end
+                    self.resultStart = result.range.start.isNumeric ? result.range.start.seconds : nil
+                    handler(text, result.isFinal, end.isNumeric ? end.seconds : nil)
+                }
+            } else if let dictation {
+                for try await result in dictation.results {
+                    let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let end = result.range.end
+                    self.resultStart = result.range.start.isNumeric ? result.range.start.seconds : nil
+                    handler(text, result.isFinal, end.isNumeric ? end.seconds : nil)
+                }
             }
         }
 
@@ -83,6 +133,14 @@ public enum TranscriberError: LocalizedError {
     private func pump(_ input: AudioInput, into feed: AsyncStream<AnalyzerInput>.Continuation,
                       format: AVAudioFormat, onStart: @MainActor () -> Void) async throws {
         let converter = Converter(to: format)
+        let tap = onAudio
+        let clock = FedClock()
+        // Every buffer the recognizer sees, also handed to `onAudio` with its time on the audio clock.
+        func send(_ buffer: AVAudioPCMBuffer) {
+            let t = clock.advance(Double(buffer.frameLength) / buffer.format.sampleRate)
+            tap?(buffer, t)
+            feed.yield(AnalyzerInput(buffer: buffer))
+        }
         switch input {
         case .file(let url, let realTime):
             let file = try AVAudioFile(forReading: url)
@@ -101,7 +159,7 @@ public enum TranscriberError: LocalizedError {
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunk) else { break }
                 try file.read(into: buffer, frameCount: chunk)
                 if buffer.frameLength == 0 { break }
-                feed.yield(AnalyzerInput(buffer: try converter.convert(buffer)))
+                send(try converter.convert(buffer))
                 sent += Double(buffer.frameLength) / rate
                 try await pace()
             }
@@ -109,7 +167,7 @@ public enum TranscriberError: LocalizedError {
             // on its own timing rather than because the input ended.
             for _ in 0..<40 {
                 try Task.checkCancellation()
-                feed.yield(AnalyzerInput(buffer: Converter.silence(format, seconds: 0.05)))
+                send(Converter.silence(format, seconds: 0.05))
                 sent += 0.05
                 try await pace()
             }
@@ -123,26 +181,69 @@ public enum TranscriberError: LocalizedError {
                                     options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             #endif
-            let engine = AVAudioEngine()
-            let node = engine.inputNode
+            // The input device can change under us (AirPods switching to their mic profile a second
+            // or two after the mic opens, a headset plugged in, another app changing the sample
+            // rate). AVAudioEngine then stops silently and the tap never fires again. So: watch for
+            // configuration changes and for audio simply ceasing, and rebuild the engine.
             let level = self.level
-            node.installTap(onBus: 0, bufferSize: 2048, format: node.outputFormat(forBus: 0)) { buffer, _ in
-                level?(Converter.level(buffer))
-                if let converted = try? converter.convert(buffer) {
-                    feed.yield(AnalyzerInput(buffer: converted))
+            var started = false
+            while true {
+                try Task.checkCancellation()
+                let engine = AVAudioEngine()
+                let node = engine.inputNode
+                let format = node.outputFormat(forBus: 0)
+                guard format.sampleRate > 0, format.channelCount > 0 else {
+                    status?("No microphone input available; retrying")
+                    try await Task.sleep(for: .seconds(1))
+                    continue
                 }
+                let pulse = Pulse()
+                node.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+                    pulse.beat()
+                    level?(Converter.level(buffer))
+                    if let converted = try? converter.convert(buffer) { send(converted) }
+                }
+                let changed = Pulse()
+                let observer = NotificationCenter.default.addObserver(
+                    forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { _ in changed.beat() }
+                defer {
+                    NotificationCenter.default.removeObserver(observer)
+                    node.removeTap(onBus: 0)
+                    engine.stop()
+                }
+                engine.prepare()
+                try engine.start()
+                if !started { onStart(); started = true }
+                status?("Listening (mic \(Int(format.sampleRate)) Hz, \(format.channelCount) ch)")
+                var reason = ""
+                while reason.isEmpty {
+                    try await Task.sleep(for: .milliseconds(250))
+                    if changed.count > 0 { reason = "audio device changed" }
+                    else if pulse.age > 1.5 { reason = "mic stopped delivering audio" }
+                    else if !engine.isRunning { reason = "audio engine stopped" }
+                }
+                status?("\(reason); restarting the mic")
             }
-            engine.prepare()
-            try engine.start()
-            onStart()
-            defer {
-                node.removeTap(onBus: 0)
-                engine.stop()
-            }
-            // Park until cancelled.
-            while true { try await Task.sleep(for: .seconds(3600)) }
         }
     }
+}
+
+/// Seconds of audio fed so far (the recognizer's clock). Audio-thread safe.
+final class FedClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var t = 0.0
+    /// Returns the start time of the span just added.
+    func advance(_ seconds: Double) -> Double { lock.lock(); defer { lock.unlock() }; let s = t; t += seconds; return s }
+}
+
+/// Thread-safe "last time something happened" for the realtime audio thread.
+final class Pulse: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date()
+    private var n = 0
+    func beat() { lock.lock(); last = Date(); n += 1; lock.unlock() }
+    var age: TimeInterval { lock.lock(); defer { lock.unlock() }; return Date().timeIntervalSince(last) }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return n }
 }
 
 /// Converts whatever the source produces to the format the transcriber wants.

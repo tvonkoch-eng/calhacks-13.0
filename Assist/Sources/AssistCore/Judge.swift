@@ -37,6 +37,8 @@ public struct Sentence: Sendable {
     /// "showed \"330 meters\" 0.54 s before the speaker finished", "nothing shown (skipped as personal)" …
     public var did: String
     public var shown: Bool
+    /// A side note shown after this sentence (not an answer), if any.
+    public var aside: String?
 
     public init(text: String, before: [String], turn: Turn?) {
         self.text = text
@@ -61,12 +63,23 @@ public struct Sentence: Sendable {
         }
     }
 
-    var prompt: String {
+    public var prompt: String {
         var lines: [String] = []
-        if !before.isEmpty { lines.append("Said just before (context only): \"\(before.suffix(2).joined(separator: " "))\"") }
-        lines.append("Sentence to grade: \"\(text)\"")
+        var graded = text
+        var context = before
+        if let asked {
+            let own = Set(QuestionGate.plain(text).split(separator: " "))
+            let sent = asked.split(separator: " ")
+            // The engine joined this sentence to the previous one: grade them as one utterance.
+            if sent.count > own.count, sent.filter({ !own.contains($0) }).count >= 2, let prev = context.popLast() {
+                graded = prev + " " + text
+            }
+        }
+        if !context.isEmpty { lines.append("Said just before (context only): \"\(context.suffix(2).joined(separator: " "))\"") }
+        lines.append("Sentence to grade: \"\(graded)\"")
         if let asked { lines.append("Assistant sent the model: \"\(asked)\"") }
         lines.append("Assistant did: \(did)")
+        if let aside { lines.append("Assistant also showed a side note: \"\(aside)\"") }
         return lines.joined(separator: "\n")
     }
 }
@@ -81,7 +94,8 @@ public struct Judge: Sendable {
     You grade a live assistant on smart glasses. It listens to an in-person conversation. When \
     someone asks a factual question about the world it shows a short answer (at most 12 words) on \
     the lens, ideally before the speaker finishes. It must stay silent for questions about the \
-    people talking (their lives, plans, opinions), for statements, and for requests.
+    people talking (their lives, plans, opinions, whether they can hear or understand each \
+    other), for statements, and for requests.
 
     You get one sentence (a speech-recognizer transcript that may contain recognition errors) and \
     what the assistant did. Judge the speaker's evident intent, not just the literal words. Return \
@@ -95,12 +109,36 @@ public struct Judge: Sendable {
     populations, prices, office-holders). If a shown answer is plausible and could be newer than \
     what you know, set answer_correct true and say "unverified" in the note rather than calling \
     it wrong.
+    The speech recognizer sometimes cuts one spoken question into two sentences at a pause \\
+    ("Who painted them?" then "Mona Lisa."). When "Assistant sent the model" shows the assistant \\
+    joined this sentence to the one before, grade the joined question: answering it is correct. \\
+    If this sentence is a question that the next one may complete, staying quiet is acceptable \\
+    (score 4) as long as the question is clearly unfinished or garbled.
+    Besides answers, the assistant may show a side note after a sentence that is not a question: \
+    explaining a niche name or term, correcting a clearly wrong fact, converting a unit, or \
+    supplying a word the speaker is searching for. A side note is good (score 5) when it is \
+    correct, short and genuinely useful to someone in the conversation; obvious, redundant or \
+    intrusive notes score 3; notes about the people's private lives, or wrong notes, score 1. \
+    Put your view of the note in "note". Judge should_answer only on the sentence itself.
     answer_correct is null when nothing was shown. Score 5: right behaviour and a correct, concise \
     answer. Score 1: a wrong answer shown, or an obvious factual question missed. Being late is \
     a smaller fault than being wrong.
     """ }
 
+    /// Graded off the hot path, so a rate limit is worth waiting out rather than dropping.
     public func grade(_ sentence: Sentence) async throws -> Verdict {
+        var delay = 2.0
+        for attempt in 0..<4 {
+            do { return try await ask(sentence) }
+            catch AnswerError.http(let code) where (code == 429 || code >= 500) && attempt < 3 {
+                try? await Task.sleep(for: .seconds(delay))
+                delay *= 2
+            }
+        }
+        return try await ask(sentence)
+    }
+
+    private func ask(_ sentence: Sentence) async throws -> Verdict {
         guard let key else { throw AnswerError.unconfigured }
         var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/chat/completions")!)
         request.httpMethod = "POST"
@@ -114,6 +152,7 @@ public struct Judge: Sendable {
             "messages": [["role": "system", "content": Self.system], ["role": "user", "content": sentence.prompt]],
         ] as [String: Any])
         let (data, response) = try await URLSession.shared.data(for: request)
+        Quota.shared.note(response, model: model)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 { throw AnswerError.http(http.statusCode) }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any],

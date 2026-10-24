@@ -18,7 +18,9 @@ public protocol AnswerSource: Sendable {
     /// Instant, on-device answers (arithmetic, time, date), or nil.
     func local(_ question: String) -> String?
     /// `context`: the last few sentences of conversation, to resolve "it", "she", "that one".
-    func stream(_ question: String, context: String) -> AsyncThrowingStream<AnswerEvent, Error>
+    /// `settled` means the speaker has finished: the question will not grow, so the model must
+    /// answer or SKIP, never WAIT.
+    func stream(_ question: String, context: String, settled: Bool) -> AsyncThrowingStream<AnswerEvent, Error>
 }
 
 /// OpenAI-compatible chat endpoints. Groq is the one to use: ~100 ms to first token.
@@ -32,6 +34,9 @@ public enum Provider: String, Sendable {
         case .openai: URL(string: "https://api.openai.com/v1/chat/completions")!
         }
     }
+
+    /// Used when the main Groq model returns 429 (daily request cap): separate quota.
+    public static let groqFallback = "openai/gpt-oss-20b"
 
     /// Groq: qwen3.8-27b measured ~100 ms to first token, 20/20 on answer-vs-SKIP (Tests/groq-latency.md).
     /// Not Groq's gpt-oss models: they reason before answering, which is slower and can return nothing.
@@ -82,19 +87,42 @@ public struct Answerer: AnswerSource {
         return Answerer(key: nil, provider: provider ?? .groq)
     }
 
+    /// Shared rules. The speculative (unsettled) and final (settled) requests differ only in the
+    /// suffix: a partial may be refused with WAIT, a finished sentence may not.
     public static let prompt = """
     You help someone wearing smart glasses during a live, in-person conversation. The input is a \
-    live speech transcript of a question someone is asking out loud, possibly cut off \
-    mid-sentence. If the full question is clear from what is there, answer it.
+    live speech transcript of a question someone is asking out loud.
 
     Answer in ONE line of at most 12 words. No preamble, do not restate the question, no trailing \
     punctuation. If the answer is a number or a name, lead with it. Plain facts only.
 
     Reply with exactly SKIP if the question is about the people talking (their lives, feelings, \
     plans, opinions or preferences), is rhetorical, or asks someone to do something.
-    Reply with exactly WAIT if it is cut off too early to tell what is being asked.
 
-    "Said just before" is earlier conversation, only for resolving words like it, she or there.
+    "Said just before" is earlier conversation. Words like it, there, she or he mean the most \
+    recent matching thing there; resolve them and answer.
+    """
+
+    /// Speculative request: the sentence is still being spoken, so refusing a fragment is useful.
+    public static let partialSuffix = """
+
+    The speaker may still be talking, so the last word can be cut off mid-word ("eiff" for \\
+    Eiffel, "jup" for Jupiter): complete it and answer. If the full question is clear from what \\
+    is there, answer it.
+    Reply with exactly WAIT only if the thing being asked about has not been said yet, like \\
+    "how tall is the", "who wrote" or "what is the capital".
+    """
+
+    /// Final request: no more words are coming, so there is nothing to wait for. WAIT is not
+    /// offered at all here — mentioning it at all made the model stall on complete questions
+    /// whose answer depends on context it does not have.
+    public static let settledSuffix = """
+
+    The speaker has finished, so this is the whole question. Always give a short answer or SKIP. \
+    For quantities (distances, sizes, counts, dates) give your best estimate if unsure, leading \
+    with "about". For a specific fact you do not know (who won a small event, a niche detail), \
+    reply SKIP rather than guess. \
+    Never ask for more information.
     """
 
     // MARK: - Local tier
@@ -104,14 +132,22 @@ public struct Answerer: AnswerSource {
     /// Instant, no network. Covers the questions that are embarrassing to be slow on.
     public static func local(_ question: String) -> String? {
         let q = question.lowercased()
-        if q.contains("what time"), q.contains(" it") {
+        // Only the clock/calendar question itself. "what time does it start" and "what date did
+        // the wall fall" are about something else and go to the model.
+        let plain = QuestionGate.plain(question)
+        if plain.wholeMatch(of: timeAsk) != nil {
             return Date().formatted(date: .omitted, time: .shortened)
         }
-        if q.contains("what"), q.contains("date") || q.contains("day is") {
+        if plain.wholeMatch(of: dateAsk) != nil {
             return Date().formatted(date: .abbreviated, time: .omitted)
         }
         return arithmetic(q)
     }
+
+    nonisolated(unsafe) private static let timeAsk = try! Regex(
+        #"(?:(?:so|and|ok|okay|hey|um|uh) )*(?:what time is it|what time it is|whats the time|what is the time|whats the current time|what is the current time)(?: now| right now| here)?"#)
+    nonisolated(unsafe) private static let dateAsk = try! Regex(
+        #"(?:(?:so|and|ok|okay|hey|um|uh) )*(?:(?:whats|what is) (?:the date|todays date|the date today)(?: today)?|what day is (?:it|today)(?: today)?|what day it is|whats today|what is today)"#)
 
     /// "whats 17 times 23" → "391". Recognizers write numbers as digits.
     private static func arithmetic(_ q: String) -> String? {
@@ -143,8 +179,9 @@ public struct Answerer: AnswerSource {
 
     // MARK: - Model tier
 
-    public func stream(_ question: String, context: String) -> AsyncThrowingStream<AnswerEvent, Error> {
+    public func stream(_ question: String, context: String, settled: Bool) -> AsyncThrowingStream<AnswerEvent, Error> {
         let content = context.isEmpty ? question : "Said just before: \(context)\nQuestion: \(question)"
+        let system = Self.prompt + (settled ? Self.settledSuffix : Self.partialSuffix)
         let key = key, provider = provider
         return AsyncThrowingStream { continuation in
             let work = Task.detached {
@@ -156,18 +193,33 @@ public struct Answerer: AnswerSource {
                     request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue("calhacks-assist/1.0", forHTTPHeaderField: "User-Agent")
-                    request.httpBody = try JSONSerialization.data(withJSONObject: [
-                        "model": provider.model,
-                        "stream": true,
-                        "temperature": 0,
-                        "max_tokens": 48,
-                        "messages": [
-                            ["role": "system", "content": Self.prompt],
-                            ["role": "user", "content": content],
-                        ],
-                    ] as [String: Any])
-
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    func body(_ model: String) throws -> Data {
+                        var b: [String: Any] = [
+                            "model": model,
+                            "stream": true,
+                            "temperature": 0,
+                            "max_tokens": 48,
+                            "messages": [
+                                ["role": "system", "content": system],
+                                ["role": "user", "content": content],
+                            ],
+                        ]
+                        // gpt-oss reasons before answering: keep that short and out of the stream.
+                        if model.hasPrefix("openai/gpt-oss") {
+                            b["reasoning_effort"] = "low"; b["include_reasoning"] = false; b["max_tokens"] = 400
+                        }
+                        return try JSONSerialization.data(withJSONObject: b)
+                    }
+                    request.httpBody = try body(provider.model)
+                    var (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    Quota.shared.note(response, model: provider.model)
+                    // Free-tier daily cap (or a burst limit) on the main model: answer with the
+                    // fallback model, which has its own separate quota, rather than show nothing.
+                    if let http = response as? HTTPURLResponse, http.statusCode == 429, provider == .groq {
+                        request.httpBody = try body(Provider.groqFallback)
+                        (bytes, response) = try await URLSession.shared.bytes(for: request)
+                        Quota.shared.note(response, model: Provider.groqFallback)
+                    }
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                         throw AnswerError.http(http.statusCode)
                     }
@@ -184,7 +236,11 @@ public struct Answerer: AnswerSource {
                               let chunk = delta["content"] as? String, !chunk.isEmpty else { continue }
                         answer += chunk
                         let head = answer.trimmed.uppercased()
-                        if head.hasPrefix("SKIP") { continuation.yield(.personal); continuation.finish(); return }
+                        if head.hasPrefix("SKIP") || head.hasPrefix("I DON'T KNOW") || head.hasPrefix("I DON\u{2019}T KNOW") || head.hasPrefix("UNKNOWN") {
+                            continuation.yield(.personal); continuation.finish(); return
+                        }
+                        // Could still become "I don't know": hold it back until it can't.
+                        if "I DON'T KNOW".hasPrefix(head) || "UNKNOWN".hasPrefix(head) { continue }
                         if head.hasPrefix("WAIT") { continuation.yield(.incomplete); continuation.finish(); return }
                         // "S" or "WA" could still turn into a control word; never flash it on the lens.
                         if "SKIP".hasPrefix(head) || "WAIT".hasPrefix(head) { continue }
