@@ -54,6 +54,9 @@ struct LensShot: Equatable {
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
 /// who they are and three lines of background.
 enum LensCards {
+    /// One line from the CRM for a person's card ("You said: Send Avi the deck"). Set by Assistant.
+    nonisolated(unsafe) static var recall: ((String) -> String?)?
+
     /// The lens while the aid listens: the aid on top, who you're talking to pinned at the bottom.
     /// The root grows to the panel's height and a growing spacer sits between the halves, so the
     /// person stays at the bottom edge whether or not the aid has anything up. The person reads
@@ -257,7 +260,8 @@ enum LensCards {
             if let tie = person.tie, !tie.isEmpty { primary.append(tie) }
             primary += highlights.map { "\u{2014} " + $0 }
             shot.primary = primary
-            shot.secondary = [person.personal, person.source].compactMap { $0 }.filter { !$0.isEmpty }
+            // What you owe them, or talked about last (the CRM), before the background lines.
+            shot.secondary = [recall?(person.id), person.personal, person.source].compactMap { $0 }.filter { !$0.isEmpty }
             shot.details = primary.isEmpty
                 ? person.details.prefix(3).map { LensShot.Row(icon: symbol($0.kind), text: $0.text) }
                 : []
@@ -314,7 +318,7 @@ enum LensCards {
         if let person, group.count < 2 {
             // The one line that says why they matter: how you know them, else their first highlight,
             // else their first detail (school, work…).
-            shot.context = [person.tie, person.highlights?.first, person.details.first?.text]
+            shot.context = [LensCards.recall?(person.id), person.tie, person.highlights?.first, person.details.first?.text]
                 .compactMap { $0 }.first { !$0.isEmpty }
         }
         return shot

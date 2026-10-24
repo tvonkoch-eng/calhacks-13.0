@@ -1,0 +1,9 @@
+# quant.txt as the recognizer might hear it.
+THEM: So what do you study?
+ME: Financial math at UCSB.
+THEM: No way, I did market making at Jane st for two years.
+ME: That's awesome.
+THEM: Mostly options, a lot of gamma scal ping. Hey, what was the s and p clothes yesterday, do you know
+ME: No idea.
+THEM: Anyway, I left to start a robotics company, we're building where house picking arms.
+PAUSE: 4

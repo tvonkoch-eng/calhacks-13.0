@@ -169,6 +169,33 @@ enum Talk {
             .contains { t.hasPrefix($0) }
     }
 
+    /// "what time does it start", "you know how much they raised", "Do you know X?": a request for
+    /// something, as opposed to a statement ("we just raised a seed round").
+    static func asks(_ text: String) -> Bool {
+        if text.contains("?") { return true }
+        let t = " " + normalized(text) + " "
+        return [" what ", " when ", " where ", " who ", " how ", " which ", " why ", " do you know ", " you know what ",
+                " you know how ", " is there ", " are there ", " can you ", " could you ", " tell me "].contains { t.contains($0) }
+    }
+
+    /// "Toby promised to send her the demo video": a promise the wearer made.
+    static func isPromise(_ fact: String, by wearer: String) -> Bool {
+        let f = fact.lowercased()
+        return ["promised", "owes", "will send", "said he'd", "said she'd", "offered to"].contains { f.contains($0) }
+            && (f.contains(wearer.lowercased()) || f.hasPrefix("wearer") || f.contains("you promised"))
+    }
+
+    /// A suggestion that asks them whether something in `promise` happened ("Did you catch the demo
+    /// video?"), when the promise is the wearer's to keep.
+    static func asksAbout(_ promise: String, in suggestion: String) -> Bool {
+        let s = normalized(suggestion)
+        guard ["did you", "have you", "did u", "you get", "you got", "you see", "you catch"].contains(where: s.hasPrefix)
+                || s.hasPrefix("did") else { return false }
+        let wanted = content(suggestion).subtracting(["did", "catch", "see", "get", "got", "send", "sent"])
+        guard !wanted.isEmpty else { return false }
+        return Double(wanted.intersection(content(promise)).count) / Double(wanted.count) >= 0.5
+    }
+
     /// "Lens, what should I ask?", "what do I say", "give me something to talk about": the wearer
     /// wants a line to say, not an answer.
     static func asksForSuggestion(_ request: String) -> Bool {
@@ -806,6 +833,12 @@ enum Talk {
                     ack?.cancel()
                     guard !Task.isCancelled else { return }
                     self.compositor.endWork(id: card)
+                    // Research that found nothing ("Not yet announced") isn't worth a glance.
+                    guard !result.title.isEmpty else {
+                        if command { self.put(Card(kind: .answer, title: "Couldn't find that", detail: echo, id: card)) }
+                        self.log(.lookup, request, detail: "no answer found")
+                        return
+                    }
                     self.put(Card(kind: .answer, title: result.title, detail: result.detail, id: card, icon: result.icon))
                     self.log(.answer, result.title, detail: "\(request) · \(name) · \(self.ms(since: started)) ms · \(used.model)")
                 }
@@ -967,7 +1000,10 @@ enum Talk {
         // The recognizer garbled a request the gate or the answer model let go: the coach's clean
         // version goes to the tool model (answer, device tool or Fetch), unless something already
         // answered this turn.
-        if let ask = advice.ask, Date().timeIntervalSince(answeredAt) > 8, lookupTask == nil,
+        // Only if they asked something: "we just raised a seed around" was rebuilt into "How much
+        // did the company raise?" and answered with a made-up number about their own company.
+        let theirs = (lines.last { !roles.isWearer($0.speaker) }?.text ?? "") + " " + (predictedWearer() ? "" : partial)
+        if let ask = advice.ask, Talk.asks(theirs), Date().timeIntervalSince(answeredAt) > 8, lookupTask == nil,
            turns.first?.live != true, !asked.contains(where: { Talk.same($0, ask) }) {
             asked.append(ask)
             answeredAt = now
@@ -980,7 +1016,12 @@ enum Talk {
             // A lull is optional: a line the coach itself rates as one anyone could say isn't worth
             // breaking the silence for. Asked for, or a face just recognised, the best one goes up.
             let good = moment != .lull || (advice.score ?? 3) >= 3
-            if let text = advice.suggest, good, usable(text) { suggest(text) } else if wanted == moment { wanted = nil }
+            // The best that passes the checks; a runner-up when the best asks them about the wearer's
+            // own promise ("Did you catch the demo video?" when Toby owes it) or was already said.
+            let promises = (them.facts + others.flatMap(\.facts)).filter { Talk.isPromise($0, by: config.wearer) }
+            let pick = ([advice.suggest].compactMap { $0 } + advice.alternatives.map(\.say))
+                .first { line in usable(line) && !promises.contains { Talk.asksAbout($0, in: line) } }
+            if let text = pick, good { suggest(text) } else if wanted == moment { wanted = nil }
         }
         // The runners-up wait for the next lull, which then needs no call at all.
         if moment != nil {
@@ -1035,10 +1076,13 @@ enum Talk {
     /// conversation, so a stale one is never shown.
     @ObservationIgnored private var ideas: [(text: String, at: Date, line: Int)] = []
 
-    /// The best idea still current: under 90 s old, at most five lines ago, never said or shown.
+    /// The best idea still current: under 90 s old, never said or shown, and nothing new from them
+    /// since it was written. Once they've said something, the newest thing beats an old thread
+    /// ("we're hiring" lost to a queued "What base models do you test?").
     private func nextIdea() -> String? {
         let now = Date()
-        ideas.removeAll { now.timeIntervalSince($0.at) > 90 || lines.count - $0.line > 5 || !usable($0.text) }
+        let theirs = lines.lastIndex { !roles.isWearer($0.speaker) && !Talk.isBackchannel($0.text) }.map { $0 + 1 } ?? 0
+        ideas.removeAll { now.timeIntervalSince($0.at) > 90 || theirs > $0.line || !usable($0.text) }
         return ideas.isEmpty ? nil : ideas.removeFirst().text
     }
 
@@ -1117,6 +1161,12 @@ enum Talk {
                 }
                 guard let self else { return }
                 self.compositor.endWork(id: card)
+                guard !result.title.isEmpty else {
+                    self.log(.lookup, question, detail: "no answer found")
+                    self.publish()
+                    self.lookupTask = nil
+                    return
+                }
                 self.put(Card(kind: .answer, title: result.title, detail: result.detail, id: card, icon: result.icon))
                 let ms = self.ms(since: started)
                 self.timings["research", default: []].append(ms)
