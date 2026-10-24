@@ -25,6 +25,8 @@ targets:
         product: MWDATCamera
       - package: MWDAT
         product: MWDATDisplay
+      - package: MWDAT
+        product: MWDATInputs
     info:
       path: App/Info.plist
       properties:

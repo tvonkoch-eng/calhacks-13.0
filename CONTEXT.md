@@ -43,5 +43,5 @@ Cleaned up from the team's Granola notes (Cal Hacks 13.0).
 - [ ] Decide generic vs. personalized card (tailored to the user's stated goals?).
 - [ ] Build the consent sign-up form (photo + LinkedIn).
 - [ ] Apify LinkedIn scrape → profile JSON in the app's format (`App/people.json`: name, role, facts).
-- [ ] Wire "press to identify" on the glasses (today Scan matches continuously while open).
+- [x] Press to identify on the glasses (phone button, lens button, capture button via Inputs).
 - [ ] Note: Meta's developer terms (checked Oct 19) prohibit face identification on the glasses without Meta's prior approval. Confirm how this affects the Meta prize demo.

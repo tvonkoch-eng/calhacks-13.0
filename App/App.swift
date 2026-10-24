@@ -10,10 +10,126 @@ struct CalHacksApp: App {
 
     var body: some Scene {
         WindowGroup {
-            PeopleView()
+            GlassesView()
                 .environment(store)
                 .environment(glasses)
-                .onOpenURL { Glasses.handle($0) }
+                .onOpenURL { glasses.handle($0) }
+                .task {
+                    glasses.store = store
+                    await glasses.connectIfRegistered()
+                }
+        }
+    }
+}
+
+struct GlassesView: View {
+    @Environment(Store.self) private var store
+    @Environment(Glasses.self) private var glasses
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                ZStack {
+                    if let frame = glasses.frame {
+                        Image(uiImage: frame).resizable().scaledToFill()
+                    } else {
+                        Color(.secondarySystemBackground)
+                        Image(systemName: "eyeglasses").font(.system(size: 44)).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 280)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                resultCard
+                Spacer()
+
+                if glasses.connected {
+                    Button { Task { await glasses.identify() } } label: {
+                        Label(glasses.identifying ? "Identifying…" : "Identify", systemImage: "eye")
+                            .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(glasses.identifying)
+                } else {
+                    Button { Task { await glasses.connect() } } label: {
+                        Label(glasses.connecting ? "Connecting…" : "Connect glasses", systemImage: "eyeglasses")
+                            .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(glasses.connecting)
+                }
+                Text(glasses.status).font(.footnote).foregroundStyle(.secondary)
+            }
+            .padding()
+            .navigationTitle("Glasses")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if glasses.connected { Button("Disconnect") { glasses.disconnect() } }
+                }
+                ToolbarItem { NavigationLink("People") { PeopleView() } }
+            }
+        }
+    }
+
+    @ViewBuilder private var resultCard: some View {
+        switch glasses.result {
+        case .ready:
+            Text("Look at someone, then tap Identify or press the capture button on your glasses.")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        case .noFace:
+            MessageCard(title: "No face found", detail: "Face the person and try again.")
+        case .unknown(let face):
+            MessageCard(title: "Not in your contacts", detail: nil) { SaveFaceMenu(face: face, label: "Save as…") }
+        case .known(let match, let face):
+            VStack(alignment: .trailing, spacing: 6) {
+                MatchCard(match: match)
+                SaveFaceMenu(face: face, label: "Wrong person?").font(.footnote)
+            }
+        }
+    }
+}
+
+struct MessageCard<Accessory: View>: View {
+    let title: String
+    let detail: String?
+    @ViewBuilder var accessory: () -> Accessory
+
+    init(title: String, detail: String?, @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }) {
+        self.title = title
+        self.detail = detail
+        self.accessory = accessory
+    }
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                if let detail { Text(detail).font(.subheadline).foregroundStyle(.secondary) }
+            }
+            Spacer()
+            accessory()
+        }
+        .padding(14)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+/// Saves the identified face as a sample for someone, then re-matches.
+struct SaveFaceMenu: View {
+    @Environment(Store.self) private var store
+    @Environment(Glasses.self) private var glasses
+    let face: FaceHit
+    let label: String
+
+    var body: some View {
+        Menu(label) {
+            ForEach(store.people) { person in
+                Button(person.name) {
+                    store.enroll(person.id, face)
+                    glasses.rematch()
+                }
+            }
         }
     }
 }
@@ -22,31 +138,20 @@ struct PeopleView: View {
     @Environment(Store.self) private var store
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ForEach(store.contacts) { person in
-                        NavigationLink(value: person) { PersonRow(person: person) }
-                    }
-                }
-                if let me = store.me {
-                    Section("You") {
-                        NavigationLink(value: me) { PersonRow(person: me) }
-                    }
+        List {
+            Section {
+                ForEach(store.contacts) { person in
+                    NavigationLink(value: person) { PersonRow(person: person) }
                 }
             }
-            .navigationTitle("People")
-            .navigationDestination(for: Person.self) { PersonView(person: $0) }
-            .safeAreaInset(edge: .bottom) {
-                NavigationLink { ScanView() } label: {
-                    Label("Scan", systemImage: "viewfinder")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 50)
+            if let me = store.me {
+                Section("You") {
+                    NavigationLink(value: me) { PersonRow(person: me) }
                 }
-                .buttonStyle(.borderedProminent)
-                .padding()
             }
         }
+        .navigationTitle("People")
+        .navigationDestination(for: Person.self) { PersonView(person: $0) }
     }
 }
 
@@ -119,75 +224,6 @@ struct PersonView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-struct ScanView: View {
-    @Environment(Store.self) private var store
-    @Environment(Glasses.self) private var glasses
-    @State private var model = CameraModel()
-    @AppStorage("useGlasses") private var useGlasses = false
-
-    private var faces: [FaceHit] { useGlasses ? glasses.faces : model.faces }
-
-    var body: some View {
-        @Bindable var store = store
-        ZStack(alignment: .bottom) {
-            if useGlasses {
-                Group {
-                    if let frame = glasses.frame {
-                        Image(uiImage: frame).resizable().scaledToFill()
-                    } else {
-                        Color.black
-                    }
-                }
-                .ignoresSafeArea()
-            } else {
-                CameraPreview(session: model.camera.session).ignoresSafeArea()
-            }
-            VStack(spacing: 8) {
-                if useGlasses && !glasses.connected {
-                    Button("Connect glasses") { Task { await glasses.connect() } }
-                        .buttonStyle(.borderedProminent)
-                    Text(glasses.status).font(.footnote).padding(8).background(.thinMaterial, in: Capsule())
-                } else if faces.isEmpty {
-                    Text("Point at someone").padding().background(.thinMaterial, in: Capsule())
-                }
-                ForEach(Array(faces.prefix(3).enumerated()), id: \.offset) { _, face in
-                    MatchCard(match: store.match(face.embedding))
-                }
-                HStack {
-                    Text("Strictness").font(.caption)
-                    Slider(value: $store.threshold, in: 0.5...0.98)
-                    Text(store.threshold, format: .number.precision(.fractionLength(2))).font(.caption.monospacedDigit())
-                }
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(.thinMaterial, in: Capsule())
-            }
-            .padding()
-        }
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("Source", selection: $useGlasses) {
-                    Text("Phone").tag(false)
-                    Text("Glasses").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-            }
-            if !useGlasses {
-                ToolbarItem { Button { model.flip() } label: { Image(systemName: "arrow.triangle.2.circlepath.camera") } }
-            } else if glasses.connected {
-                ToolbarItem { Button("Disconnect") { glasses.disconnect() } }
-            }
-        }
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear { if !useGlasses { model.start() } }
-        .onDisappear { model.stop() }
-        .onChange(of: useGlasses) { _, glassesOn in glassesOn ? model.stop() : model.start() }
-        .onChange(of: faces.first.flatMap { store.match($0.embedding)?.person }) { _, person in
-            if let person, useGlasses { glasses.show(person) }
-        }
     }
 }
 
