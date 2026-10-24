@@ -97,22 +97,26 @@ enum Identification {
     /// talking distance is still ~105 px, well above the 40 px crop floor, and feature prints
     /// score 0.79 on half-size crops. Both knobs are UserDefaults so they move with no rebuild:
     /// `streamFps` (2/7/15/24/30) and `streamRes` ("low"/"medium"/"high").
+    ///
+    /// Default is now medium at 2 fps (Toby's call, for battery). That is 0.9 Mpx/s against the
+    /// 1.6 Mpx/s of low at 7, so the radio carries less while each face is ~1.4x bigger, which is
+    /// what detection and alignment were short of: at low a face was found in only 30-70% of frames.
     /// What the currently-attached camera was actually built with, so a pushed change to
     /// `streamRes`/`streamFps` can notice it needs a new camera. The SDK fixes resolution and
     /// frame rate at addCamera time; changing the defaults alone does nothing until then.
     @ObservationIgnored private var liveStreamSettings: String?
-    private var streamSettings: String { "\(Tuning.int("streamFps", 7))/\(UserDefaults.standard.string(forKey: "streamRes") ?? "low")" }
+    private var streamSettings: String { "\(Tuning.int("streamFps", 2))/\(UserDefaults.standard.string(forKey: "streamRes") ?? "medium")" }
 
     private var streamConfig: StreamConfiguration {
         #if DEBUG
         // A simulated pair is a local AVCaptureSession with no radio at all.
         if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24) }
         #endif
-        let fps = UInt(Tuning.int("streamFps", 7))
-        switch UserDefaults.standard.string(forKey: "streamRes") {
+        let fps = UInt(Tuning.int("streamFps", 2))
+        switch UserDefaults.standard.string(forKey: "streamRes") ?? "medium" {
         case "high": return StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: fps)
-        case "medium": return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
-        default: return StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: fps)
+        case "low": return StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: fps)
+        default: return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
         }
     }
     #if DEBUG
@@ -164,9 +168,36 @@ enum Identification {
     @ObservationIgnored private var resultAt = Date.distantPast
     /// Don't announce the same person over and over.
     @ObservationIgnored private var lastShown: [String: Date] = [:]
-    @ObservationIgnored private let reannounceAfter: TimeInterval = 60
-    /// How long a card owns the lens before the watch may replace it.
-    @ObservationIgnored private let cardHolds: TimeInterval = 20
+    /// Conversation memory. Once someone has been on the lens they are "in the conversation", and
+    /// glancing back at them stays quiet for as long as they keep being seen. Only after they have
+    /// been out of view for `absentFor` does the next sighting announce them again. In a
+    /// three-person conversation that means each person is named once, not on every head turn.
+    @ObservationIgnored private var absentFor: TimeInterval { TimeInterval(Tuning.float("absentFor", 180)) }
+    /// Last confident sighting per person, shown or not.
+    @ObservationIgnored private var sighted: [String: Date] = [:]
+    /// Who the wearer is looking at right now (largest confident face in the latest frame), and
+    /// everyone confidently seen in the last few seconds. Updated quietly, without touching the
+    /// lens, so speech can attribute a voice to a face later.
+    private(set) var facing: String? {
+        didSet { if facing != oldValue { onFacing?(facing) } }
+    }
+    /// Called on the main actor when the person in focus changes (nil = nobody known in view).
+    /// For code that isn't SwiftUI, e.g. the conversation aid's "who is THEM" profile.
+    @ObservationIgnored var onFacing: ((String?) -> Void)?
+    var present: [String] {
+        let now = Date()
+        return sighted.filter { now.timeIntervalSince($0.value) < 10 }.map(\.key)
+    }
+    /// How long a card owns the lens before the watch may replace it with someone else. Was 20 s,
+    /// which on the glasses meant a 21 s wait to switch from Avi to the next person.
+    @ObservationIgnored private var cardHolds: TimeInterval { TimeInterval(Tuning.float("cardHolds", 3)) }
+    /// A single look this confident is enough on its own: ArcFace puts the same person at ~0.6-0.7
+    /// on a sharp frame and everyone else near 0.
+    @ObservationIgnored private var strongScore: Float { Tuning.float("strongScore", 0.55) }
+    /// Only the face you are looking at may take the lens: the most attended face in the frame,
+    /// or one within this share of it (two people side by side, both facing you). People at the
+    /// edge of the view are still recognised and tracked as present, just not announced.
+    @ObservationIgnored private var focusShare: Float { Tuning.float("focusShare", 0.7) }
 
     /// False when the Meta SDK could not start at all — notably in the Simulator, where
     /// `Wearables.configure()` fails and every later touch of `Wearables.shared` traps. Guarding
@@ -387,10 +418,13 @@ enum Identification {
             let scan = await scanFaces(image)
             hits = scan.hits
             timing = scan.timing
+            // A press is more looks at the same faces the watcher has been following.
+            tracker.update(scan.hits)
         } while hits.isEmpty && frames < 3
         log["frames"] = frames
         log["captureMs"] = ms(since: start)
-        guard frames > 0 else {
+        let fused = bestTrack()
+        guard frames > 0 || fused != nil else {
             result = .noFace
             log["outcome"] = "noImage"
             await finish(&log, start: start)
@@ -404,7 +438,15 @@ enum Identification {
         let matchStart = CFAbsoluteTimeGetCurrent()
         // Everyone in the frame is a candidate. The person you just turned to is not reliably the
         // biggest face, and matching the largest one only ever identified a single person.
-        let pick = bestKnown(hits)
+        // One frame is a weak vote (a face in ~1 of 3 low frames, single-frame scores ~0.1 below
+        // the fused ones), so the fused track wins whenever it names someone.
+        var pick = bestKnown(hits)
+        if let fused {
+            pick = (fused.track.best, fused.match)
+            announced.insert(fused.track.id)
+            log["fused"] = true
+            log["looks"] = fused.track.looks
+        }
         if let pick {
             result = pick.match.map { .known($0, pick.hit) } ?? .unknown(pick.hit)
         } else {
@@ -413,7 +455,7 @@ enum Identification {
         recordSeen()
         log["matchMs"] = ms(since: matchStart)
         if let hit = pick?.hit {
-            let ranked = store.ranked(hit.embedding)
+            let ranked = store.ranked(fused.map { $0.track.probe } ?? hit.embedding)
             log["person"] = ranked.first?.person.id
             log["score"] = ranked.first.map { (Double($0.score) * 1000).rounded() / 1000 }
             log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
@@ -422,6 +464,7 @@ enum Identification {
         // anyone — which made the log read as if matching was working while the lens said "not sure".
         log["outcome"] = pick == nil ? "noFace" : (pick?.match == nil ? "unknown" : "known")
         log["embedder"] = FaceEngine.embedder.name
+        log["detector"] = FaceEngine.detectorName
         await finish(&log, start: start)
     }
 
@@ -442,6 +485,7 @@ enum Identification {
         // immediately re-announce whoever you just identified by hand.
         resultAt = Date()
         lastShown[match.person.id] = Date()
+        sighted[match.person.id] = Date()
     }
 
     /// Re-match the last face after it was saved to someone.
@@ -846,8 +890,8 @@ enum Identification {
     /// True when a watch scan should run on this frame, and claims the slot if so.
     private func claimAutoScan() -> Bool {
         guard watching, connected, !identifying, !autoBusy, store != nil else { return false }
-        // A live conversation answer owns the lens; never fight it for the frame.
-        guard answer == nil else { return false }
+        // A conversation answer on the lens no longer pauses scanning: `mayShow` keeps the card off
+        // the lens, but `facing`/`present` stay current, which is what speech attribution reads.
         // NOTE: a card being up no longer stops the scan. It used to return false for the whole
         // 20 s `cardHolds`, so turning to a new person meant waiting out the old one with the
         // camera effectively off. `cardHolds` now gates only the *display* (see mayShow), and the
@@ -861,7 +905,7 @@ enum Identification {
     /// Whether a new person may take the lens right now.
     private func mayShow(_ id: String) -> Bool {
         guard answer == nil, !identifying else { return false }
-        if let last = lastShown[id], Date().timeIntervalSince(last) < reannounceAfter { return false }
+        if lastShown[id] != nil, let seen = sighted[id], Date().timeIntervalSince(seen) < absentFor { return false }
         // Someone else is on the card; leave them there for a beat before swapping.
         if case .known(let current, _) = result, current.person.id != id,
            Date().timeIntervalSince(resultAt) < cardHolds { return false }
@@ -883,17 +927,35 @@ enum Identification {
         let scan = await scanFaces(image)
         guard let store else { return }
         for hit in scan.hits where hit.sharpness > 0 { sharpSamples.append(hit.sharpness) }
-        let live = tracker.update(scan.hits)
-        guard !live.isEmpty else { return }
+        let frameTime = Date()
+        let live = tracker.update(scan.hits, now: frameTime)
+        guard !live.isEmpty else {
+            if facing != nil { facing = nil }
+            return
+        }
 
         // Strongest evidence first; the first track that clears the bar and is allowed on screen wins.
         var chosen: (track: FaceTracker.Track, match: Match)?
-        for track in live where track.weight >= minEvidence && !announced.contains(track.id) {
-            guard let match = store.confidentMatch(track.probe) else { continue }
-            if let current = chosen, match.score <= current.match.score { continue }
+        var seenNow: [(id: String, attention: Float)] = []
+        let inFrame = live.filter { $0.updated == frameTime }
+        let focus = inFrame.map(\.attention).max() ?? 0
+        for track in live where track.looks > 0 {
+            // A clear look at a strong match is enough on its own; anything weaker has to build up
+            // evidence over a couple of frames first.
+            guard let match = store.confidentMatch(track.probe),
+                  track.weight >= (match.score >= strongScore ? 0.5 : minEvidence) else { continue }
+            let current = track.updated == frameTime
+            if current { seenNow.append((match.person.id, track.attention)) }
+            guard current, track.attention >= focus * focusShare,
+                  !announced.contains(track.id), mayShow(match.person.id) else { continue }
+            if let best = chosen, track.attention <= best.track.attention { continue }
             chosen = (track, match)
         }
-        guard let chosen, mayShow(chosen.match.person.id) else {
+        // Sightings are recorded after the show decision, so this frame can't silence itself.
+        for seen in seenNow { sighted[seen.id] = frameTime }
+        let looking = seenNow.max { $0.attention < $1.attention }?.id
+        if looking != facing { facing = looking }
+        guard let chosen else {
             if scan.timing.gated > 0, scan.timing.faces > 0, Int.random(in: 0..<10) == 0 {
                 SpeedLog.record(["event": "autoBlurred", "faces": scan.timing.faces,
                                  "gated": scan.timing.gated,
@@ -907,6 +969,9 @@ enum Identification {
         recordSeen()
         let ranked = store.ranked(chosen.track.probe)
         var log: [String: Any] = ["event": "autoIdentify", "source": "watch",
+                                  "detector": FaceEngine.detectorName,
+                                  "attention": (Double(chosen.track.attention) * 100).rounded() / 100,
+                                  "inFrame": inFrame.count,
                                   "person": chosen.match.person.id,
                                   "score": (Double(chosen.match.score) * 1000).rounded() / 1000,
                                   "looks": chosen.track.looks,
@@ -934,18 +999,32 @@ enum Identification {
     private func scanFaces(_ image: CIImage) async -> (hits: [FaceHit], timing: FaceTiming) {
         await withCheckedContinuation { done in
             worker.async {
-                done.resume(returning: FaceEngine.scan(image, limit: 4))
+                done.resume(returning: FaceEngine.scan(image, limit: 4, rank: .attention, minFace: FaceEngine.minFacePx))
             }
         }
     }
 
     /// The face in this frame with the strongest match; when nobody is known, the largest face.
+    /// The strongest named match among faces seen in the last `maxAge`, using fused evidence.
+    private func bestTrack() -> (track: FaceTracker.Track, match: Match)? {
+        guard let store else { return nil }
+        var best: (track: FaceTracker.Track, match: Match)?
+        for track in tracker.tracks
+        where track.looks > 0 && Date().timeIntervalSince(track.updated) <= tracker.maxAge {
+            guard let match = store.match(track.probe) else { continue }
+            // The face you are looking at, not whoever happens to score highest.
+            if let current = best, track.attention <= current.track.attention { continue }
+            best = (track, match)
+        }
+        return best
+    }
+
     private func bestKnown(_ hits: [FaceHit]) -> (hit: FaceHit, match: Match?)? {
         guard let store, let largest = hits.first else { return nil }
         var best: (hit: FaceHit, match: Match)?
         for hit in hits {
             guard let match = store.match(hit.embedding) else { continue }
-            if let current = best, match.score <= current.match.score { continue }
+            if let current = best, hit.attention <= current.hit.attention { continue }
             best = (hit, match)
         }
         if let best { return (best.hit, best.match) }

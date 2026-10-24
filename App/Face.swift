@@ -18,8 +18,15 @@ struct FaceHit {
     /// Contrast-normalised Laplacian energy of the crop at a fixed face-relative resolution:
     /// "how sharp is this face, as the embedder will see it". ~0.05 is mush, ~0.25 is crisp.
     let sharpness: Float
-    /// True when Vision gave us both eyes and the crop is canonically aligned.
+    /// True when the detector gave us the keypoints and the crop is canonically aligned.
     let aligned: Bool
+    /// How much this look should count as evidence, 0.35-1: small or turned faces embed worse,
+    /// so the tracker weighs them less instead of letting them drag a fused probe around.
+    var quality: Float = 1
+    /// How likely this is the face the wearer is looking at: big, near the middle of the view,
+    /// facing the camera. The glasses camera points where the head points, so the person you
+    /// turned to is central and close; a crowd behind them is small and off to the side.
+    var attention: Float = 0
 
     var usable: Bool { !embedding.isEmpty }
 }
@@ -55,35 +62,48 @@ enum FaceEngine {
     /// Reference photos are enrolled unconditionally; a gate there would silently empty a gallery.
     static let enrolSharpness: Float = 0
 
+    /// Which faces get looked at first when there are more than `limit`.
+    enum Rank {
+        /// Biggest first. Enrolment: the subject of a reference photo is the big face, even when
+        /// the hall behind them scores higher (several references are shot on the hackathon floor).
+        case largest
+        /// Most likely to be the person the wearer is facing first. Live frames.
+        case attention
+    }
+
+    /// SCRFD when its model is bundled (and `useSCRFD` isn't switched off), Vision otherwise.
+    static var usingSCRFD: Bool { SCRFD.model != nil && Tuning.bool("useSCRFD", true) }
+    static var detectorName: String { usingSCRFD ? "scrfd-500m" : "vision" }
+
+    /// Live faces narrower than this (px in the frame) are not embedded or tracked. ArcFace on a
+    /// 25 px face is close to noise, and on the hackathon floor every frame has a dozen of them in
+    /// the background: they cost time and are the likeliest source of a stranger matching someone.
+    static var minFacePx: CGFloat { CGFloat(Tuning.float("minFacePx", 32)) }
+
     /// Detects faces (largest first) and embeds each one. Kept for the enrolment path.
     static func faces(in image: CIImage, limit: Int = .max) -> [FaceHit] {
         scan(image, limit: limit, minSharpness: enrolSharpness).hits
     }
 
-    /// Detection runs on every face; the `limit` largest are cropped, and of those only the ones
-    /// sharp enough to be worth 6 ms are embedded. Blurred faces come back with an empty embedding.
-    static func scan(_ image: CIImage, limit: Int = .max, minSharpness: Float? = nil) -> (hits: [FaceHit], timing: FaceTiming) {
+    /// Detection runs on every face; the first `limit` by `rank` are cropped, and of those only the
+    /// ones sharp enough to be worth embedding are. Blurred faces come back with an empty embedding.
+    static func scan(_ image: CIImage, limit: Int = .max, minSharpness: Float? = nil,
+                     rank: Rank = .largest, minFace: CGFloat = 24) -> (hits: [FaceHit], timing: FaceTiming) {
         let gate = minSharpness ?? self.minSharpness
         var timing = FaceTiming()
         var start = CFAbsoluteTimeGetCurrent()
-
-        // Landmarks, not just rectangles: the eye centres are what let us put every face into one
-        // canonical pose. The request also carries the bounding box and roll, so this replaces
-        // VNDetectFaceRectanglesRequest rather than running alongside it.
-        let wantAlignment = Tuning.bool("alignFaces", true)
-        let request: VNImageBasedRequest = wantAlignment ? VNDetectFaceLandmarksRequest() : VNDetectFaceRectanglesRequest()
-        try? VNImageRequestHandler(ciImage: image).perform([request])
-        let observations = ((request as? VNDetectFaceLandmarksRequest)?.results
-            ?? (request as? VNDetectFaceRectanglesRequest)?.results ?? [])
+        let found = detect(image).filter { $0.box.width >= minFace && $0.box.height >= minFace }
         timing.detectMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        timing.faces = found.count
 
-        let faces = observations.sorted {
-            $0.boundingBox.width * $0.boundingBox.height > $1.boundingBox.width * $1.boundingBox.height
+        let ordered: [Found]
+        switch rank {
+        case .largest: ordered = found.sorted { $0.box.width * $0.box.height > $1.box.width * $1.box.height }
+        case .attention: ordered = found.sorted { $0.attention > $1.attention }
         }
-        timing.faces = faces.count
 
         // Crop and score quality first — cheap — so the expensive embed only runs on what can win.
-        let candidates = faces.prefix(limit).compactMap { crop(image, $0) }
+        let candidates = ordered.prefix(limit).compactMap { crop(image, $0) }
         start = CFAbsoluteTimeGetCurrent()
         var hits: [FaceHit] = []
         hits.reserveCapacity(candidates.count)
@@ -93,13 +113,15 @@ enum FaceEngine {
                 timing.gated += 1
                 hits.append(FaceHit(embedding: [], crop: candidate.image, area: candidate.area,
                                     box: candidate.box, sharpness: candidate.sharpness,
-                                    aligned: candidate.aligned))
+                                    aligned: candidate.aligned, quality: candidate.quality,
+                                    attention: candidate.attention))
                 continue
             }
             guard let embedding = embed(candidate.image) else { continue }
             hits.append(FaceHit(embedding: embedding, crop: candidate.image, area: candidate.area,
                                 box: candidate.box, sharpness: candidate.sharpness,
-                                aligned: candidate.aligned))
+                                aligned: candidate.aligned, quality: candidate.quality,
+                                attention: candidate.attention))
         }
         timing.embedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
         return (hits, timing)
@@ -111,6 +133,77 @@ enum FaceEngine {
         let box: CGRect
         let sharpness: Float
         let aligned: Bool
+        let quality: Float
+        let attention: Float
+    }
+
+    // MARK: Detection
+
+    /// A face before cropping, from either detector.
+    private struct Found {
+        /// Image coordinates, y-up.
+        let box: CGRect
+        /// 0-1 within the frame, y-up — the same convention as Vision's `boundingBox`.
+        let normalized: CGRect
+        /// Keypoints and where they belong in the canonical face, when the detector gave them.
+        let pairs: (source: [CGPoint], target: [CGPoint])?
+        let roll: CGFloat
+        /// 1 facing the camera, down to 0.3 in profile.
+        let frontal: Float
+        let attention: Float
+        let quality: Float
+    }
+
+    private static func detect(_ image: CIImage) -> [Found] {
+        let extent = image.extent
+        func found(box: CGRect, pairs: (source: [CGPoint], target: [CGPoint])?, roll: CGFloat, frontal: Float) -> Found {
+            let normalized = CGRect(x: (box.minX - extent.minX) / extent.width,
+                                    y: (box.minY - extent.minY) / extent.height,
+                                    width: box.width / extent.width, height: box.height / extent.height)
+            // Gaussian falloff from the middle of the view, a little looser vertically: the camera
+            // sits above the eyes, so the face you look at lands slightly high in the frame.
+            let dx = Float(normalized.midX - 0.5), dy = Float(normalized.midY - 0.55)
+            let centrality = exp(-(dx * dx) / (2 * 0.22 * 0.22) - (dy * dy) / (2 * 0.3 * 0.3))
+            let size = Float(min(1, normalized.width / 0.25))
+            let attention = sqrt(size) * centrality * frontal
+            let quality = max(0.35, min(1, Float((box.width - 24) / 32))) * frontal
+            return Found(box: box, normalized: normalized, pairs: pairs, roll: roll,
+                         frontal: frontal, attention: attention, quality: quality)
+        }
+
+        if usingSCRFD, let detections = SCRFD.detect(image, context: context, threshold: Tuning.float("detScore", 0.5)) {
+            return detections.map { d in
+                let p = d.points
+                // Order by screen x, never by which side of the head it is (see landmarkPairs).
+                let eyes = p[0].x <= p[1].x ? [p[0], p[1]] : [p[1], p[0]]
+                let mouth = p[3].x <= p[4].x ? [p[3], p[4]] : [p[4], p[3]]
+                let eyeGap = max(hypot(eyes[1].x - eyes[0].x, eyes[1].y - eyes[0].y), 1)
+                // Yaw: how far the nose sits off the line between the eyes, in eye-gaps. ~0 facing
+                // the camera, ~0.5 well turned.
+                let yaw = Float(abs(p[2].x - (eyes[0].x + eyes[1].x) / 2) / eyeGap)
+                let frontal = max(0.3, min(1, 1.15 - 1.5 * yaw))
+                let roll = atan2(eyes[1].y - eyes[0].y, eyes[1].x - eyes[0].x)
+                return found(box: d.box,
+                             pairs: (eyes + [p[2]] + mouth, [eyeLeft, eyeRight, noseTip, mouthLeft, mouthRight]),
+                             roll: roll, frontal: frontal)
+            }
+        }
+
+        // Vision. Landmarks, not just rectangles: the eye centres are what let us put every face
+        // into one canonical pose. The request also carries the bounding box and roll.
+        let wantAlignment = Tuning.bool("alignFaces", true)
+        let request: VNImageBasedRequest = wantAlignment ? VNDetectFaceLandmarksRequest() : VNDetectFaceRectanglesRequest()
+        try? VNImageRequestHandler(ciImage: image).perform([request])
+        let observations = ((request as? VNDetectFaceLandmarksRequest)?.results
+            ?? (request as? VNDetectFaceRectanglesRequest)?.results ?? [])
+        return observations.map { face in
+            let box = VNImageRectForNormalizedRect(face.boundingBox, Int(extent.width), Int(extent.height))
+                .offsetBy(dx: extent.minX, dy: extent.minY)
+            let yaw = Float(abs(face.yaw?.doubleValue ?? 0))   // radians, 0 facing the camera
+            return found(box: box, pairs: wantAlignment ? landmarkPairs(image, face) : nil,
+                         roll: CGFloat(face.roll?.doubleValue ?? 0),
+                         frontal: max(0.3, min(1, 1.2 - yaw)))
+        }
     }
 
     // MARK: Alignment
@@ -138,26 +231,25 @@ enum FaceEngine {
     ///    near the edge of the frame returns a *non-square* rect; `.scaleFill` then stretched it
     ///    and the face was embedded in a distorted space it could never match from. Clamping the
     ///    source instead keeps every crop square — an edge face gets edge pixels, not a squash.
-    private static func crop(_ image: CIImage, _ face: VNFaceObservation) -> Candidate? {
-        let extent = image.extent
-        let box = VNImageRectForNormalizedRect(face.boundingBox, Int(extent.width), Int(extent.height))
-            .offsetBy(dx: extent.minX, dy: extent.minY)
+    private static func crop(_ image: CIImage, _ face: Found) -> Candidate? {
+        let box = face.box
         // Both dimensions, not just width: a box clipped to 10 px tall used to sail through.
         guard box.width >= 24, box.height >= 24 else { return nil }
 
         if Tuning.bool("alignFaces", true),
-           let pairs = landmarkPairs(image, face),
+           let pairs = face.pairs,
            let transform = similarity(from: pairs.source, to: pairs.target),
            let cg = context.createCGImage(image.clampedToExtent().transformed(by: transform),
                                           from: CGRect(x: 0, y: 0, width: canonical, height: canonical)) {
-            return Candidate(image: cg, area: box.width * box.height, box: face.boundingBox,
-                             sharpness: sharpness(cg), aligned: true)
+            return Candidate(image: cg, area: box.width * box.height, box: face.normalized,
+                             sharpness: sharpness(cg), aligned: true,
+                             quality: face.quality, attention: face.attention)
         }
 
         // Fallback: de-roll about the face's own centre, which leaves that centre in place.
         let centre = CGPoint(x: box.midX, y: box.midY)
         var source = image
-        let roll = CGFloat(face.roll?.doubleValue ?? 0)
+        let roll = face.roll
         if abs(roll) > 0.01 {
             source = image.transformed(by: CGAffineTransform(translationX: centre.x, y: centre.y)
                 .rotated(by: -roll)
@@ -166,8 +258,9 @@ enum FaceEngine {
         let side = max(box.width, box.height) * 1.25
         let square = CGRect(x: centre.x - side / 2, y: centre.y - side / 2, width: side, height: side)
         guard let cg = context.createCGImage(source.clampedToExtent(), from: square) else { return nil }
-        return Candidate(image: cg, area: box.width * box.height, box: face.boundingBox,
-                         sharpness: sharpness(cg), aligned: false)
+        return Candidate(image: cg, area: box.width * box.height, box: face.normalized,
+                         sharpness: sharpness(cg), aligned: false,
+                         quality: face.quality * 0.7, attention: face.attention)
     }
 
     /// Landmarks paired with where they belong in the canonical face.
@@ -320,6 +413,8 @@ enum FaceEngine {
     static func warmUp() {
         let blank = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 256, height: 256))
         try? VNImageRequestHandler(ciImage: blank).perform([VNDetectFaceLandmarksRequest()])
+        _ = SCRFD.detect(blank, context: context)
+        SpeedLog.record(["event": "detector", "using": detectorName])
         if let cg = context.createCGImage(blank, from: blank.extent) { _ = embed(cg) }
     }
 

@@ -267,6 +267,16 @@ if [ -f "$MODEL_SRC" ]; then
 else
   say "face model: NOT PRESENT at $MODEL_SRC — build will fall back to the Vision feature print"
 fi
+# SCRFD-500M face detector, same licence and same rule. Absent = the app uses Vision's detector.
+DET_SRC=$CAL/models/SCRFD_500M.mlpackage
+if [ -d "$DET_SRC" ]; then
+  if ! diff -rq "$DET_SRC" App/SCRFD_500M.mlpackage >/dev/null 2>&1; then
+    rm -rf App/SCRFD_500M.mlpackage && cp -R "$DET_SRC" App/SCRFD_500M.mlpackage
+    say "face detector: copied SCRFD_500M.mlpackage into App/"
+  fi
+else
+  say "face detector: NOT PRESENT at $DET_SRC — build will fall back to Vision's detector"
+fi
 
 # ---------- 4. regenerate project only when project.yml moved ----------
 PYHASH=$(layout_fp)

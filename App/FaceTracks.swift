@@ -26,6 +26,8 @@ final class FaceTracker {
         private(set) var weight: Float
         /// The sharpest look we got, for the avatar and the card.
         var best: FaceHit
+        /// Attention from the latest frame: is this the face the wearer is looking at right now.
+        var attention: Float
         let firstSeen: Date
         var updated: Date
 
@@ -45,13 +47,15 @@ final class FaceTracker {
     private(set) var tracks: [Track] = []
     private var nextID = 0
 
-    /// A face that hasn't been seen for this long is a new face next time it appears.
-    var maxAge: TimeInterval = 1.5
+    /// A face that hasn't been seen for this long is a new face next time it appears. At 2 fps one
+    /// missed detection is already a 1 s gap, so 1.5 s threw a track away after a single miss.
+    var maxAge: TimeInterval = 3
     /// Per-frame weight decay. 0.75 gives an effective window of ~4 frames: long enough to fuse
     /// away blur, short enough that turning your head to a new person doesn't drag the old one in.
     var decay: Float = 0.75
     /// Boxes overlapping by at least this are the same face.
-    var minOverlap: CGFloat = 0.25
+    /// Lowered from 0.25 for 2 fps: a head moves further in the 0.5 s between frames.
+    var minOverlap: CGFloat = 0.15
 
     /// Folds this frame's faces into the tracks and returns the live set, strongest evidence first.
     @discardableResult
@@ -74,10 +78,10 @@ final class FaceTracker {
                 // so the next frame has something to attach to, it just carries no evidence.
                 claimed.insert(tracks.count)
                 tracks.append(Track(id: nextID, box: hit.box,
-                                    sum: hit.usable ? hit.embedding : [],
+                                    sum: hit.usable ? hit.embedding.map { $0 * hit.quality } : [],
                                     looks: hit.usable ? 1 : 0,
-                                    weight: hit.usable ? 1 : 0,
-                                    best: hit, firstSeen: now, updated: now))
+                                    weight: hit.usable ? hit.quality : 0,
+                                    best: hit, attention: hit.attention, firstSeen: now, updated: now))
                 nextID += 1
             }
         }
@@ -100,16 +104,20 @@ private extension FaceTracker.Track {
     mutating func absorb(_ hit: FaceHit, decay: Float, now: Date) {
         box = hit.box
         updated = now
+        attention = hit.attention
         if hit.sharpness > best.sharpness || !best.usable { best = hit }
         guard hit.usable else { return }
+        // Each look counts by its quality: a small or turned face is a weaker vote, so it nudges
+        // the fused probe instead of pulling it as hard as a clear frontal look.
+        var q = hit.quality
         if sum.count == hit.embedding.count {
             var d = decay
             vDSP_vsmul(sum, 1, &d, &sum, 1, vDSP_Length(sum.count))
-            vDSP_vadd(sum, 1, hit.embedding, 1, &sum, 1, vDSP_Length(sum.count))
-            weight = weight * decay + 1
+            vDSP_vsma(hit.embedding, 1, &q, sum, 1, &sum, 1, vDSP_Length(sum.count))
+            weight = weight * decay + q
         } else {
-            sum = hit.embedding
-            weight = 1
+            sum = hit.embedding.map { $0 * q }
+            weight = q
         }
         looks += 1
     }

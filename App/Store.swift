@@ -61,7 +61,7 @@ struct Match {
     /// Samples saved in an older space are not comparable with new ones, and mixing them flattens
     /// every score — which is exactly the failure this guards against. v3 = eye-aligned canonical
     /// crops; everything enrolled before that was in the roll-corrected-square space.
-    private static let galleryVersion = 4
+    private static let galleryVersion = 5   // 5: SCRFD keypoints for alignment
     private static let versionKey = "galleryVersion"
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
