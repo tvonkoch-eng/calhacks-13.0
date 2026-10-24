@@ -38,6 +38,47 @@ looked up in 3.8-7.4 s; "where did you go to school" and "how long have you been
 quiet; qwen-3.8-27b 23/24 on answer/SKIP/WEB cases (`Tests/answer-latency.py`; it called "who won
 the World Series this year" SKIP rather than WEB).
 
+## Models per lane, ranked suggestions, groups (2026-10-24, branch `aid-brain`)
+
+From the research on open conversation copilots (Merge/Convoscope on Mentra, Natively, Omi) and
+model/provider benchmarks:
+
+- **Fast models everywhere.** Big models (Sonnet-class) weren't noticeably better on these short
+  lines and cost a second or more, so every lane stays on Cerebras. An optional suggest lane
+  (`SUGGEST_PROVIDER/API_KEY/MODEL`, unset by default = the coach's model) can move suggestions
+  elsewhere. `anthropic` = Claude through the raw Messages API (`Claude` in Coach.swift translates
+  the OpenAI-shaped bodies every lane builds, tools included), default `claude-haiku-5-5` with
+  thinking off.
+- **Ranked suggestions.** The coach returns up to three lines, best first, each scored 1-5. A
+  lull shows the best only at 3 or more (a line anyone could say isn't worth breaking a silence);
+  asked for or a face just recognised, the best always goes up. The runners-up wait: the next
+  lull within 90 s and 5 lines shows one **with no model call**, if it hasn't been said.
+- **Groups.** `Aid.nameFor` tags lines with the speaker's first name when face ID knows them, so
+  with three people the transcript says who said what instead of THEM twice. People the focus
+  leaves stay in every lane's context ("Also in this conversation: …"), and the recognised opener
+  fires once per person per conversation, not each time the focus comes back.
+- **Exa research** (`RESEARCH_PROVIDER = exa`): search in ~0.4-0.7 s instead of ASI:One's 4-8 s; a
+  question that leans on the conversation ("how much did they raise") is first made standalone by
+  the backup model, and the condenser cuts the findings to a card as before.
+- Measured: the ranked coach on a 3-person lull, qwen-3.8-27b 281 ms, gpt-oss-120b 251 ms, both
+  specific ("How do you handle judge drift?"). Claude and Exa are unmeasured here (no keys yet).
+
+### Replay findings and fixes (typed replays of `network/evals.txt` and `catchup.txt`)
+
+| seen | fix |
+|---|---|
+| Coach rate-limited 55 s on a qwen setup | an empty `COACH_MODEL` took the provider's default (gpt-oss, 5/min); it now takes the answer model |
+| "How many people are at this thing?" searched and found a different hackathon | `SITUATION` (event, place, dates) goes into every context; questions about here are resolved to it, or skipped when it's unset |
+| Cohen's kappa answered, then defined with the same words | no definition of a term an answer card covered in the last 15 s |
+| Research card titled "Cal Hacks 13.0 attendance" | the card's title is the answer ("3,000+ attendees"); the condenser runs on the uncapped answer model, 3.4 → 2.1 s |
+| Lull suggestion ignored "we're hiring like crazy" | the newest door THEM opened ranks first ("What's the hardest part of hiring now?") |
+| "Did you end up sending that demo video?" asked about the wearer's own promise | the wearer's promises are offered ("Want me to send that demo video?"), only THEM's are asked about |
+| Queued runners-up shown in lulls regardless of quality | only ones the coach scored 3+ are kept |
+
+Setup now: everything on `qwen-3.8-27b` on the free Cerebras key (450/min, 150k tokens/min), backup
+OpenAI `gpt-4.1-mini` (or `openrouter`, which routes `qwen/qwen3.8-27b` to Cerebras first, once it has
+credits), research Exa `instant` (0.4-0.5 s measured).
+
 ## On the phone when merging
 
 1. Turn the coach back on: `Assistant.makeAid` has `Tuning aidCoach` default **false** because of

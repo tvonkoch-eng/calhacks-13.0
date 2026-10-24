@@ -94,6 +94,14 @@
 	<string>$(RESEARCH_MODEL)</string>
 	<key>ResearchProvider</key>
 	<string>$(RESEARCH_PROVIDER)</string>
+	<key>Situation</key>
+	<string>$(SITUATION)</string>
+	<key>SuggestAPIKey</key>
+	<string>$(SUGGEST_API_KEY)</string>
+	<key>SuggestModel</key>
+	<string>$(SUGGEST_MODEL)</string>
+	<key>SuggestProvider</key>
+	<string>$(SUGGEST_PROVIDER)</string>
 	<key>TestLocation</key>
 	<string>$(TEST_LOCATION)</string>
 	<key>Tools</key>

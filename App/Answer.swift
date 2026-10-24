@@ -8,7 +8,7 @@ import FoundationNetworking
 /// ~100-250 ms, which is the whole ballgame on a wearable. Muse is Meta's Muse Spark: always
 /// reasons first, so ~1.2 s to first token (see Tests/muse-latency.py).
 enum Provider: String {
-    case groq, cerebras, openai, muse
+    case groq, cerebras, openai, muse, anthropic, openrouter
 
     var endpoint: URL {
         switch self {
@@ -16,6 +16,11 @@ enum Provider: String {
         case .cerebras: URL(string: "https://api.cerebras.ai/v1/chat/completions")!
         case .openai: URL(string: "https://api.openai.com/v1/chat/completions")!
         case .muse: URL(string: "https://api.meta.ai/v1/chat/completions")!
+        // Not OpenAI-compatible: requests are translated (`Claude.body`).
+        case .anthropic: Claude.endpoint
+        // Pay-as-you-go access to the same hosts (Cerebras first) when their own free tiers run
+        // out; requests get routing and reasoning fields added (`OpenRouter.adjust`).
+        case .openrouter: OpenRouter.endpoint
         }
     }
 
@@ -35,6 +40,9 @@ enum Provider: String {
         // 1.1 over 1.3: both 20/20 on answer-vs-SKIP, 1.1 median first token 1.17 s vs 1.87 s
         // (2026-10-23, Tests/muse-latency.py). Override with ANSWER_MODEL.
         case .muse: "muse-spark-1.1"
+        // Haiku with thinking off: the quickest Claude, if a lane is pointed at it.
+        case .anthropic: "claude-haiku-5-5"
+        case .openrouter: "qwen/qwen3.8-27b"
         }
     }
 
@@ -43,9 +51,10 @@ enum Provider: String {
     func extras(model: String) -> [String: Any] {
         if model.contains("gpt-oss") { return ["max_tokens": 600, "reasoning_effort": "low"] }
         // Cerebras runs Qwen3 with thinking on by default; "none" turns it off (3 tokens, not 30).
-        if self == .cerebras, model.contains("qwen") { return ["max_tokens": 48, "reasoning_effort": "none"] }
+        if self == .cerebras || self == .openrouter, model.contains("qwen") { return ["max_tokens": 48, "reasoning_effort": "none"] }
         switch self {
         case .muse: return ["max_tokens": 400, "reasoning_effort": "minimal"]
+        case .anthropic: return ["max_tokens": 64, "reasoning_effort": "none"]
         default: return ["max_tokens": 48]
         }
     }
@@ -78,7 +87,8 @@ struct Answerer {
     You help someone wearing smart glasses during a live, in-person conversation. The input is a \
     live speech transcript of a question someone just asked out loud, sometimes after what's known \
     about the other person and the last few lines of the conversation. The question may be cut off \
-    mid-sentence — infer the obvious full question and answer that. Speech recognition mishears \
+    mid-sentence — infer the obvious full question and answer that. The audio is often imperfect, \
+    so read through misheard or missing words to what was clearly meant. Speech recognition mishears \
     jargon: read "the sharp on a market making book" as the Sharpe ratio, and so on, when the \
     conversation makes the meaning clear.
 
@@ -90,6 +100,10 @@ struct Answerer {
     memory: news or anything recent, prices, scores, schedules, or a specific company, product or \
     paper you don't know well. You do know the current date and time (below): use them for time \
     zones, ages and countdowns.
+
+    "Where" names the event and place they're at: use it for "here" and "this thing". A question \
+    about this place or event that nothing above answers is WEB only when "Where" names the \
+    event; otherwise SKIP.
 
     Reply with exactly SKIP, and nothing else, if the question is personal or social (about the \
     people talking, their feelings, plans, opinions or preferences, or anything that's theirs: \
@@ -158,11 +172,11 @@ struct Answerer {
                     guard let key else {
                         throw AnswerError.unconfigured
                     }
+                    let claude = provider == .anthropic
                     var request = URLRequest(url: provider.endpoint)
                     request.httpMethod = "POST"
                     request.timeoutInterval = 8
-                    request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    Claude.authorize(&request, key: key, claude: claude)
                     var body: [String: Any] = [
                         "model": model,
                         "stream": true,
@@ -177,7 +191,8 @@ struct Answerer {
                         ],
                     ]
                     body.merge(provider.extras(model: model)) { _, extra in extra }
-                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                    request.httpBody = try JSONSerialization.data(withJSONObject: claude ? Claude.body(body)
+                        : provider == .openrouter ? OpenRouter.adjust(body) : body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
@@ -189,11 +204,18 @@ struct Answerer {
                         guard line.hasPrefix("data: ") else { continue }
                         let payload = String(line.dropFirst(6))
                         if payload == "[DONE]" { break }
-                        guard let data = payload.data(using: .utf8),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let choices = json["choices"] as? [[String: Any]],
-                              let delta = choices.first?["delta"] as? [String: Any],
-                              let chunk = delta["content"] as? String, !chunk.isEmpty else { continue }
+                        let chunk: String
+                        if claude {
+                            guard let text = Claude.delta(payload), !text.isEmpty else { continue }
+                            chunk = text
+                        } else {
+                            guard let data = payload.data(using: .utf8),
+                                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                  let choices = json["choices"] as? [[String: Any]],
+                                  let delta = choices.first?["delta"] as? [String: Any],
+                                  let text = delta["content"] as? String, !text.isEmpty else { continue }
+                            chunk = text
+                        }
                         answer += chunk
                         // Bail the instant the model starts refusing; nothing reaches the lens. Some
                         // models stream "SKIP" as "SK" + "IP", so hold back anything that could still

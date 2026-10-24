@@ -53,7 +53,7 @@ enum Identification {
         self.meSpeaking = meSpeaking
         // Only a lens that shows the group needs rewriting; the identity card doesn't.
         let after = currentMode()
-        if aidArmed, before != after || [.aid, .both, .compact].contains(after) { renderLens() }
+        if aidArmed, before != after || after == .split { renderLens() }
     }
 
     /// Every confident face in a scanned frame (person ids), whether or not it is announced. The
@@ -343,7 +343,7 @@ enum Identification {
             onFacing?(facing)
             // Turning to or away from the person on the card can move the lens between the aid
             // alone and the aid with who you're talking to; write only if it actually moves.
-            if aidArmed, currentMode() != lensMode { renderLens() }
+            if aidArmed, currentMode() != lensMode { renderLens() }   // (the split lens doesn't move with facing)
         }
     }
     /// Called on the main actor when the person in focus changes (nil = nobody known in view).
@@ -357,7 +357,9 @@ enum Identification {
     /// which on the glasses meant a 21 s wait to switch from Avi to the next person.
     /// Now 1.5 s: with `followFace` the card tracks whoever you turn to, and this is only the
     /// anti-flicker beat between two people.
-    @ObservationIgnored private var cardHolds: TimeInterval { TimeInterval(Tuning.float("cardHolds", 1.5)) }
+    /// 8 s since the split lens: the person at the bottom is who you're talking to, and turning
+    /// your head (to nobody, or past someone) flipped it every 1.5 s.
+    @ObservationIgnored private var cardHolds: TimeInterval { TimeInterval(Tuning.float("cardHolds", 8)) }
     /// The card shows whoever you are facing, every time you turn — the most accurate name at all
     /// times. Off restores conversation memory (`absentFor`): each person named once while they
     /// stay around. A run on Oct 24 turning Toby -> Avi -> Toby every ~3 s showed Toby throughout
@@ -979,7 +981,7 @@ enum Identification {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, !Task.isCancelled, !self.aidLens.working.isEmpty else { return }
-                if self.lensMode == .aid || self.lensMode == .both { self.renderLens() }
+                if self.lensMode == .split { self.renderLens() }
             }
         }
     }
@@ -1023,6 +1025,7 @@ enum Identification {
         frameWatchdog?.cancel()
         frameWatchdog = nil
         lensShot = nil
+        sentShot = nil
         povWatch?.cancel()
         povWatch = nil
         pov = nil
@@ -1843,9 +1846,16 @@ enum Identification {
 
     // MARK: - Lens
 
+    /// What was last sent, so an identical lens isn't written again: every write redraws the
+    /// whole panel, and a person turning back used to blink the answer that was up.
+    @ObservationIgnored private var sentShot: LensShot?
+
     private func renderLens() {
         guard displayReady else { return }
-        send(lensView())
+        let view = lensView()
+        guard lensShot == nil || lensShot != sentShot else { return }
+        sentShot = lensShot
+        send(view)
     }
 
     /// The person on the card, if the face side has one.
@@ -1857,44 +1867,23 @@ enum Identification {
     /// The whole lens as it should be right now: `LensPolicy` picks the face side, the aid, or
     /// both, and this builds that card and its mirror.
     private func currentMode() -> LensMode {
-        let person = knownPerson
-        // A group of two or more is "who you're talking to" whether or not anyone's card is up.
-        let grouped = group.count >= 2
-        let around = grouped || (person.map { facing == $0.id || present.contains($0.id) } ?? false)
-        return LensPolicy.mode(identifying: identifying, confirming: confirming, known: person != nil || grouped, around: around,
-                               sinceIdentified: clockNow.timeIntervalSince(resultAt), bioHolds: bioHolds,
-                               aidArmed: aidArmed, aidEmpty: aidLens.isEmpty)
+        LensPolicy.mode(identifying: identifying, confirming: confirming, aidArmed: aidArmed)
     }
 
     private func lensView() -> FlexBox {
         let person = knownPerson
         let mode = currentMode()
         lensMode = mode
-        let connected = store?.connectedCount ?? 0
         let avatar: (String) -> UIImage? = { [store] in store?.lensAvatar($0) }
         switch mode {
         case .identity:
             return hud()
-        case .aid, .both:
-            let grouped = mode == .both && group.count >= 2
-            let partner = mode == .both && !grouped ? person : nil
-            let members = grouped ? group : []
-            lensShot = LensCards.shot(aid: aidLens, person: partner, group: members, meSpeaking: meSpeaking)
-            return LensCards.aid(aidLens, person: partner, group: members, meSpeaking: meSpeaking, avatar: avatar)
-        case .compact:
-            if group.count >= 2 {
-                lensShot = LensCards.shot(compact: group, meSpeaking: meSpeaking)
-                return LensCards.compact(group: group, meSpeaking: meSpeaking, avatar: avatar)
-            }
-            guard let person else { return hud() }
-            lensShot = LensCards.shot(compact: person, identifying: identifying, connected: connected)
-            return LensCards.compact(person, avatar: avatar, identifying: identifying, connected: connected,
-                                     identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } })
-        case .idle:
-            lensShot = LensCards.shot(result: .ready, identifying: false, confirming: confirming, connected: connected)
-            return LensCards.hud(result: .ready, avatar: avatar, identifying: false, confirming: confirming,
-                                 connected: connected,
-                                 identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } })
+        case .split:
+            // Two or more people: the group row. One: the person on the card, sticky (cardHolds).
+            let members = group.count >= 2 ? group : []
+            let partner = members.isEmpty ? person : nil
+            lensShot = LensCards.shot(split: aidLens, person: partner, group: members, meSpeaking: meSpeaking)
+            return LensCards.split(aidLens, person: partner, group: members, meSpeaking: meSpeaking, avatar: avatar)
         }
     }
 
@@ -1964,6 +1953,7 @@ enum Identification {
         }
         guard display != nil, displayReady else { return false }
         send(lensView())
+        sentShot = lensShot
         return await withCheckedContinuation { writeWaiters.append($0) }
     }
 }
