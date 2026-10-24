@@ -1229,6 +1229,8 @@ struct LensPanel: View {
     let avatar: (String) -> UIImage?
     /// The pixel size of the frames off the camera; nil until the first one lands.
     var frameSize: CGSize? = nil
+    /// Tapped in on the lens to read the card; out is the whole scene across.
+    @State private var zoomed = false
 
     private var state: (String, Color) {
         if identifying { return ("Looking", .orange) }
@@ -1294,11 +1296,11 @@ struct LensPanel: View {
         let optics = LensOptics(frame: frame)
         let side = optics.side
         let center = optics.center
-        // A wide window of the scene around the lens, not the whole portrait frame: at the full
-        // 56° the card is a fingernail and unreadable on a phone. `eyeViewDeg` is how much of the
-        // scene shows across; the lens keeps its true size *relative to that scene*, so what is
-        // behind and around the card is exactly what the wearer sees behind and around it.
-        let window = optics.window(degrees: CGFloat(Tuning.float("eyeViewDeg", 19)))
+        // A wide band of the portrait frame: its full width (all 56° the camera sees across),
+        // 16:9, around the lens. At that size the card is true to scale and too small to read,
+        // so a tap zooms to `eyeZoomDeg` of scene around the lens and back. Either way the lens
+        // keeps its true size relative to the scene behind it.
+        let window = optics.window(degrees: zoomed ? CGFloat(Tuning.float("eyeZoomDeg", 19)) : 180)
         return GeometryReader { geo in
             ZStack(alignment: .topLeading) {
                 Color.black
@@ -1337,13 +1339,15 @@ struct LensPanel: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .aspectRatio(window.width / window.height, contentMode: .fit)
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.25)) { zoomed.toggle() } }
         // Height from the full width, rather than squeezed by whatever height the stack offers.
         .fixedSize(horizontal: false, vertical: true)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(.separator)))
         .overlay(alignment: .bottomTrailing) {
             // Under the panel, not on it: the lens fills most of the window.
-            Text(verbatim: "scene \(Int(optics.degrees(window.width).rounded()))°×\(Int(optics.degrees(window.height).rounded()))° · lens \(Int(optics.lensDegrees.rounded()))° · camera \(Int(frame.width))×\(Int(frame.height))")
+            Text(verbatim: "\(zoomed ? "tap for full view" : "tap to read") · scene \(Int(optics.degrees(window.width).rounded()))°×\(Int(optics.degrees(window.height).rounded()))° · lens \(Int(optics.lensDegrees.rounded()))°")
                 .lineLimit(1).minimumScaleFactor(0.6)
                 .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 .offset(y: 16)
