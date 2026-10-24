@@ -64,9 +64,11 @@ struct CalHacksApp: App {
                         if let spec = env["PREVIEW_AID"] {
                             let parts = spec.components(separatedBy: "|")
                             glasses.aidArmed = true
+                            // PREVIEW_WORK="Researching the GENIUS Act": a thinking row with its countdown.
+                            let work = env["PREVIEW_WORK"].map { [Work(id: 99, label: $0, started: Date())] } ?? []
                             glasses.showAid(LensView(card: Card(kind: .answer, title: parts[0],
                                                                 detail: parts.count > 1 ? parts[1] : ""),
-                                                     followup: parts.count > 2 ? parts[2] : nil))
+                                                     followup: parts.count > 2 ? parts[2] : nil, working: work))
                         }
                         return
                     }
@@ -368,6 +370,33 @@ struct HeardLine: View {
     }
 }
 
+/// Slow work in flight: a ring that drains over the estimate, the seconds left, and a pulse once
+/// it runs past ("almost there").
+struct WorkRow: View {
+    let work: Work
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.1)) { context in
+            let elapsed = context.date.timeIntervalSince(work.started)
+            let left = max(0, 1 - elapsed / work.eta)
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle().stroke(Color(.systemFill), lineWidth: 2.5)
+                    Circle().trim(from: 0, to: left)
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 16, height: 16)
+                .opacity(left > 0 ? 1 : 0.4 + 0.6 * abs(sin(elapsed * 3)))
+                Text(work.label).font(.footnote)
+                Spacer(minLength: 4)
+                Text(work.remaining(at: context.date).map { "\($0)s" } ?? "almost there")
+                    .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 /// What the conversation aid has on the lens right now, on the phone.
 struct AidStrip: View {
     let view: LensView
@@ -382,6 +411,7 @@ struct AidStrip: View {
                     Text(card.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
+            ForEach(view.working, id: \.id) { WorkRow(work: $0) }
             if let followup = view.followup {
                 Label(followup, systemImage: "bubble.left").font(.footnote)
             }
@@ -903,6 +933,12 @@ struct LensMirror: View {
                         if let detail = shot.echo {
                             Text(detail).font(.system(size: m.body)).foregroundStyle(secondary)
                         }
+                    }
+                }
+                ForEach(Array(shot.working.enumerated()), id: \.offset) { _, line in
+                    HStack(spacing: 10) {
+                        Image(systemName: "sparkles").font(.system(size: m.glyph))
+                        Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
                     }
                 }
                 if let followup = shot.followup {

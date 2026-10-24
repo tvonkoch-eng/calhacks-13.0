@@ -9,9 +9,29 @@ struct LensView: Equatable {
     var header: String?
     var card: Card?
     var followup: String?
+    /// Slow work in flight (a tool, a lookup): a row each, under the card, with a countdown. The
+    /// card slot stays free meanwhile, so a quick answer or a definition can show while an agent
+    /// is still pulling the harder one.
+    var working: [Work] = []
 
-    /// The name alone isn't worth a glance; it only shows with a card or a suggestion.
-    var isEmpty: Bool { card == nil && followup == nil }
+    /// The name alone isn't worth a glance; it only shows with a card, a suggestion or work.
+    var isEmpty: Bool { card == nil && followup == nil && working.isEmpty }
+}
+
+/// Something the aid is still getting: "Researching the GENIUS Act", started, about how long.
+struct Work: Equatable {
+    var id: Int
+    var label: String
+    var started: Date
+    /// The countdown's length. 8 s unless the lane knows better.
+    var eta: TimeInterval = Work.defaultETA
+    static let defaultETA: TimeInterval = 8
+
+    /// Whole seconds left, never below zero; nil once past the estimate ("almost there").
+    func remaining(at now: Date) -> Int? {
+        let left = eta - now.timeIntervalSince(started)
+        return left > 0 ? Int(left.rounded(.up)) : nil
+    }
 }
 
 struct Card: Equatable {
@@ -103,6 +123,19 @@ struct Compositor {
         promote(at: now)
     }
 
+    /// At most two rows of work show; more than that is noise on a lens.
+    static let maxWorking = 2
+
+    mutating func startWork(id: Int, label: String, eta: TimeInterval = Work.defaultETA, at now: Date) {
+        view.working.removeAll { $0.id == id }
+        view.working.append(Work(id: id, label: label, started: now, eta: eta))
+        if view.working.count > Self.maxWorking { view.working.removeFirst(view.working.count - Self.maxWorking) }
+    }
+
+    mutating func endWork(id: Int) {
+        view.working.removeAll { $0.id == id }
+    }
+
     /// `nil` or empty clears the suggestion.
     mutating func pin(_ followup: String?, at now: Date) {
         let text = followup?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -133,6 +166,8 @@ struct Compositor {
 
     /// Expire what's due and promote what's waiting. Call at `nextDeadline`, or whenever.
     mutating func tick(at now: Date) {
+        // A lane that never reported back doesn't get to sit on the lens forever.
+        view.working.removeAll { now.timeIntervalSince($0.started) > max($0.eta * 4, 30) }
         if let expiresAt, now >= expiresAt {
             view.card = nil
             self.expiresAt = nil

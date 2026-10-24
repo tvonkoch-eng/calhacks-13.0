@@ -25,6 +25,8 @@ struct LensShot: Equatable {
     var followup: String?
     /// The aid card's icon (a lens IconName raw value), for tool results: cart, cloud, calendar…
     var cardIcon: String?
+    /// Work in flight, already worded with its countdown: "Researching GENIUS Act · 6s".
+    var working: [String] = []
     var name: String?
     var headline: String?
     /// Person id, so the mirror can look the avatar up the same way the card did.
@@ -75,6 +77,12 @@ enum LensCards {
                     if let detail = shot.echo { Text(detail, style: .body, color: .secondary).flexShrink(1) }
                 }
             }
+            for line in shot.working {
+                FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                    Icon(name: .starCircleTriangleAi, style: .outline)
+                    Text(line, style: .meta, color: .secondary).flexShrink(1)
+                }
+            }
             if let followup = shot.followup {
                 FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
                     Icon(name: .speechBubble, style: .outline)
@@ -84,6 +92,12 @@ enum LensCards {
         }
         .padding(22)
         .background(.card)
+    }
+
+    /// "Finding Target nearby · 6s", then "· almost there" once past the estimate. The lens can't
+    /// animate on its own, so the glasses re-send this once a second while work is in flight.
+    static func workLine(_ work: Work, at now: Date) -> String {
+        work.remaining(at: now).map { "\(work.label) \u{00B7} \($0)s" } ?? "\(work.label) \u{00B7} almost there"
     }
 
     /// Who you're talking to, shrunk to one line once their card has been read and the aid is
@@ -222,6 +236,7 @@ enum LensCards {
             shot.cardIcon = card.icon
         }
         shot.followup = view.followup
+        shot.working = view.working.map { workLine($0, at: Date()) }
         return shot
     }
 

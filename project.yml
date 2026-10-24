@@ -59,6 +59,7 @@ targets:
         ResearchProvider: $(RESEARCH_PROVIDER)
         ResearchAPIKey: $(RESEARCH_API_KEY)
         ResearchModel: $(RESEARCH_MODEL)
+        OpenAIAPIKey: $(OPENAI_API_KEY)
         WearerBackground: $(WEARER_BACKGROUND)
         WearerName: $(WEARER_NAME)
         Tools: $(TOOLS)

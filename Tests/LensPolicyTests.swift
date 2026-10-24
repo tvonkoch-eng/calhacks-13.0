@@ -25,6 +25,25 @@ check(mode() == .idle, "aid quiet, nobody known: just the Identify row")
 check(mode(known: true, around: true, since: 11, armed: false) == .identity, "mic off: the full card stays, as before")
 check(mode(armed: false) == .identity, "mic off, nobody: the face side's idle HUD")
 
+// Several things at once: work rows sit under the card slot and never take it.
+do {
+    let t0 = Date()
+    var lens = Compositor()
+    lens.startWork(id: 1, label: "Researching the GENIUS Act", at: t0)
+    check(!lens.view.isEmpty && lens.view.card == nil, "work alone keeps the lens up")
+    lens.show(Card(kind: .definition, title: "stablecoin", detail: "a token pegged to a currency", id: 2), at: t0.addingTimeInterval(1))
+    check(lens.view.card?.title == "stablecoin" && lens.view.working.count == 1, "a quick definition shows while the lookup runs")
+    check(lens.view.working[0].remaining(at: t0.addingTimeInterval(2.2)) == 6, "8 s countdown, whole seconds")
+    check(lens.view.working[0].remaining(at: t0.addingTimeInterval(9)) == nil, "past the estimate: almost there")
+    lens.startWork(id: 3, label: "Finding coffee nearby", at: t0)
+    lens.startWork(id: 4, label: "Checking your calendar", at: t0)
+    check(lens.view.working.map(\.id) == [3, 4], "at most two rows, newest kept")
+    lens.endWork(id: 3)
+    check(lens.view.working.map(\.id) == [4], "a finished lane takes its row away")
+    lens.tick(at: t0.addingTimeInterval(40))
+    check(lens.view.working.isEmpty, "a lane that never reports back is dropped")
+}
+
 MainActor.assumeIsolated {
     var config = Aid.Config()
     config.wearer = "Toby"

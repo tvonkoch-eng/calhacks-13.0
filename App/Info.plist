@@ -84,6 +84,8 @@
 	<string>Listens for questions so answers can appear on your glasses. Audio is transcribed by Meta's Muse Voice Transcribe.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Sets reminders when you ask.</string>
+	<key>OpenAIAPIKey</key>
+	<string>$(OPENAI_API_KEY)</string>
 	<key>ResearchAPIKey</key>
 	<string>$(RESEARCH_API_KEY)</string>
 	<key>ResearchModel</key>

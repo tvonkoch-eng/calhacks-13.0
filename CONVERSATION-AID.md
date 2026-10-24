@@ -37,6 +37,12 @@ All shared files are pure Foundation, so the phone and the Mac tool run the same
   0.82 s, weather 0.62 s, a plain question through the same path 0.2 s, time 0 s.
 - Mac: `sh tools/live-mac.sh --type` takes typed lines ("them: …" for the other person), and
   typing works during a mic session too. `TEST_LOCATION` pins the location.
+- **Tier 3, `research`**: one more tool the same model can pick, for the web and agents
+  ("Lens, what's the latest on the GENIUS Act?", "a quiet coffee shop near here that's open
+  late"). It gets the conversation, what's known about them and a reverse-geocoded "near …", so
+  "her company" and "near here" resolve. Fetch.ai ASI:One (`RESEARCH_PROVIDER = asi1`, agentic
+  model, `x-session-id` per task) is the primary; OpenAI's web search is the automatic fallback.
+  A fast model cuts the finding to a card (title + one line). ~7.5–8.6 s via OpenAI search.
 - iOS needs Info.plist strings: `NSLocationWhenInUseUsageDescription`,
   `NSRemindersFullAccessUsageDescription`, `NSCalendarsFullAccessUsageDescription`. The location
   comes from the phone (the glasses have no GPS).

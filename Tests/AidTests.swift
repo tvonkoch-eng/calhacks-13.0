@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 // Offline checks on the conversation aid's pure rules: what the lens shows when, who's who, and
@@ -186,11 +187,44 @@ do {
     check(Tools.distance(503, us: true) == "0.3 mi", "miles: \(Tools.distance(503, us: true))")
     check(Tools.distance(120, us: true) == "400 ft", "feet: \(Tools.distance(120, us: true))")
     check(Tools.distance(503, us: false) == "500 m" && Tools.distance(1530, us: false) == "1.5 km", "metric")
-    check(Tools.travel(503) == "~6 min walk", "walk: \(Tools.travel(503))")
-    check(Tools.travel(8000) == "~16 min drive", "drive: \(Tools.travel(8000))")
+    check(Tools.travel(503) == "~8 min walk", "walk, with streets 1.3× the straight line: \(Tools.travel(503))")
+    check(Tools.travel(8000) == "~21 min drive", "drive: \(Tools.travel(8000))")
+    check(Tools.placeQuery(in: "how far is the nearest Target?") == "target", "prefetch: nearest X")
+    check(Tools.placeQuery(in: "is there a good coffee place near here?") == "coffee place", "prefetch: is there a X near")
+    check(Tools.placeQuery(in: "who wrote Dune") == nil, "no place, no prefetch")
+    check(Tools.wantsWeather("is it going to rain later") && !Tools.wantsWeather("what's the training time"), "weather prefetch")
+    check(Answerer.local("what time is it in Tokyo") == nil, "another zone's time is not the local time")
+    check(Answerer.local("what time is it") != nil, "the local time still is")
     let six = Tools.date("2026-10-24T18:00")
     check(six.map { Calendar.current.component(.hour, from: $0) } == 18, "local ISO time")
     check(Tools.date("2026-10-24T18:00:00Z") != nil && Tools.date("tomorrow") == nil, "zoned ISO; nonsense is nil")
+}
+
+// Research: offered as a tool only with a researcher behind it, and tried in order.
+struct Fake: Researcher {
+    let name: String
+    let fails: Bool
+    func research(_ query: String, context: String) async throws -> String {
+        if fails { throw LLM.Failure.unreadable(name) }
+        return "\(name): \(query)"
+    }
+}
+do {
+    let here = CLLocation(latitude: 37.788, longitude: -122.4075)
+    let plain = DeviceTools(pinned: here)
+    let deep = DeviceTools(pinned: here, researcher: Fake(name: "fetch", fails: false))
+    let names = { (tools: DeviceTools) -> [String] in
+        ((try? JSONSerialization.jsonObject(with: Data(tools.definitions.utf8)) as? [[String: Any]]) ?? [])
+            .compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+    }
+    check(names(plain) == ["nearby", "weather", "remind", "next_event"], "device tools: \(names(plain))")
+    check(names(deep) == ["nearby", "weather", "remind", "next_event", "research"], "plus research: \(names(deep))")
+    let chain = FallbackResearcher(chain: [Fake(name: "fetch", fails: true), Fake(name: "openai", fails: false)])
+    let done = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var got = ""
+    Task { got = (try? await chain.research("Ledgerline", context: "")) ?? "failed"; done.signal() }
+    done.wait()
+    check(got == "openai: Ledgerline", "falls back when the first researcher fails: \(got)")
 }
 
 // A refusal never reaches the lens; an answer that merely starts with I does.

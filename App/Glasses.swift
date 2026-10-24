@@ -779,7 +779,19 @@ enum Identification {
         guard view != aidLens else { return }
         aidLens = view
         renderLens()
+        countdown?.cancel()
+        countdown = nil
+        guard !view.working.isEmpty else { return }
+        // The countdown ticks on the lens: one re-send a second while something is in flight.
+        countdown = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled, !self.aidLens.working.isEmpty else { return }
+                if self.lensMode == .aid || self.lensMode == .both { self.renderLens() }
+            }
+        }
     }
+    @ObservationIgnored private var countdown: Task<Void, Never>?
 
     private func classify(_ face: FaceHit) -> Identification {
         guard let store else { return .noFace }
