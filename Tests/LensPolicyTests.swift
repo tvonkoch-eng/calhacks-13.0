@@ -6,24 +6,10 @@ func check(_ condition: Bool, _ what: String) {
     if !condition { failures += 1; print("FAIL: \(what)") }
 }
 
-func mode(identifying: Bool = false, known: Bool = false, around: Bool = false, since: TimeInterval = 60,
-          armed: Bool = true, aid: Bool = false) -> LensMode {
-    LensPolicy.mode(identifying: identifying, known: known, around: around, sinceIdentified: since,
-                    bioHolds: 10, aidArmed: armed, aidEmpty: !aid)
-}
-
-check(mode(identifying: true, aid: true) == .identity, "a press shows its progress over an aid card")
-check(LensPolicy.mode(identifying: false, confirming: true, known: true, around: true, sinceIdentified: 60,
-                      bioHolds: 10, aidArmed: true, aidEmpty: false) == .identity, "so does Are you sure?")
-check(mode(known: true, around: true, since: 9, aid: true) == .identity, "the bio holds for ~10 s")
-check(mode(known: true, around: true, since: 1, aid: true) == .identity, "a fresh identification wins over an aid card")
-check(mode(known: true, around: true, since: 11, aid: true) == .both, "after the bio, the aid card with who you're talking to")
-check(mode(known: true, around: false, since: 11, aid: true) == .aid, "the person left: the aid card alone")
-check(mode(aid: true) == .aid, "nobody known: the aid card alone")
-check(mode(known: true, around: true, since: 11) == .compact, "aid quiet, person still here: one line")
-check(mode() == .idle, "aid quiet, nobody known: just the Identify row")
-check(mode(known: true, around: true, since: 11, armed: false) == .identity, "mic off: the full card stays, as before")
-check(mode(armed: false) == .identity, "mic off, nobody: the face side's idle HUD")
+check(LensPolicy.mode(identifying: true, aidArmed: true) == .identity, "a press shows its progress")
+check(LensPolicy.mode(identifying: false, confirming: true, aidArmed: true) == .identity, "so does Are you sure?")
+check(LensPolicy.mode(identifying: false, aidArmed: true) == .split, "listening: aid on top, person at the bottom")
+check(LensPolicy.mode(identifying: false, aidArmed: false) == .identity, "mic off: the face side alone")
 
 // Several things at once: work rows sit under the card slot and never take it.
 do {
