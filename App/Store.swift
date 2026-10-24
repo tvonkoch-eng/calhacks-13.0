@@ -175,7 +175,7 @@ struct Match {
         let fresh = urls.filter { !loaded.contains($0.lastPathComponent) }
         guard !fresh.isEmpty else { return }
         for url in fresh {
-            guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
+            guard let image = Self.readable(url),
                   let face = FaceEngine.faces(in: image).first, face.usable else { continue }
             gallery[id, default: []].append(face.embedding)
         }
@@ -185,6 +185,21 @@ struct Match {
         defaults.set(urls.map(\.lastPathComponent), forKey: key)
     }
 
+    /// A bundled photo, downscaled before any Vision work touches it.
+    ///
+    /// Reference photos are phone-camera originals — 12 megapixels of which the face is a few
+    /// hundred. Face detection cost scales with the frame, and this runs for every reference at
+    /// first launch (and again whenever `galleryVersion` moves), on the main thread, which is
+    /// exactly the moment you do not want a multi-second stall. 1600 px on the long edge still
+    /// leaves the face far larger than the 160 px canonical crop it ends up as.
+    static func readable(_ url: URL) -> CIImage? {
+        guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return nil }
+        let longest = max(image.extent.width, image.extent.height)
+        guard longest > 1600 else { return image }
+        return image.applyingFilter("CILanczosScaleTransform",
+                                    parameters: [kCIInputScaleKey: 1600 / longest, kCIInputAspectRatioKey: 1.0])
+    }
+
     /// Headshot from a bundled App/Faces/<id>.jpg|png becomes the avatar only; match examples come from the photo library.
     private func seedAvatar(_ id: String) {
         // Prefer a dedicated headshot, but fall back to the first bundled reference photo: someone
@@ -192,8 +207,7 @@ struct Match {
         // with no face on it.
         let headshot = ["jpg", "jpeg", "png"].lazy.compactMap { Bundle.main.url(forResource: id, withExtension: $0) }.first
         let firstReference = referenceURLs(id).first
-        guard let url = headshot ?? firstReference,
-              let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return }
+        guard let url = headshot ?? firstReference, let image = Self.readable(url) else { return }
         // Face crop when Vision finds one, otherwise the headshot as is.
         guard let avatar = FaceEngine.faces(in: image).first.map({ UIImage(cgImage: $0.crop) })
                 ?? UIImage(contentsOfFile: url.path) else { return }
@@ -287,7 +301,10 @@ struct Match {
     /// A person's score is the mean of their best `matchTopK` samples, not their single best one.
     /// `max` meant one bad gallery photo — a group shot that enrolled the wrong face — could name
     /// that person forever, and nothing would ever undo it.
-    var matchTopK: Int { max(1, Tuning.int("matchTopK", 2)) }
+    /// Default 1 for now: on the current feature-print embedding, mean-of-top-2 shrinks the
+    /// runner-up margin and answers fewer walk-ups (25/43 vs 29/43 in simulation). It becomes the
+    /// right default the moment the embedding has margin to spare — push `matchTopK: 2` then.
+    var matchTopK: Int { max(1, Tuning.int("matchTopK", 1)) }
 
     /// A deliberate press still means "tell me who that is", but nearest-neighbour on its own will
     /// always name somebody: it was naming people at 0.45 with the runner-up 0.006 behind, which is
@@ -386,7 +403,7 @@ struct Match {
         let urls = (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
             .filter { $0.lastPathComponent.hasPrefix("cohort_") }
         for url in urls {
-            guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
+            guard let image = Self.readable(url),
                   let face = FaceEngine.faces(in: image).first, face.usable else { continue }
             cohort.append(face.embedding)
         }

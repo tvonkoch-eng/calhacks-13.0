@@ -37,14 +37,19 @@ enum FaceEngine {
 
     /// Canonical face size for the aligned crop. Both the bundled references and live frames go
     /// through this, so the gallery and the probe always live in the same space.
-    static let canonical: CGFloat = 160
+    /// 112 px, not 160 or 224: measured EER 7.4% at 112 against 10.5% at 160 and 11.5% at 224 on
+    /// the real references. It is also exactly what the ArcFace-family models expect.
+    static let canonical: CGFloat = 112
 
     // MARK: Quality gate
 
     /// Below this the crop is not embedded at all. Measured: a *small sharp* face reaches d' 2.73
     /// while a *large blurry* one manages 0.54, so blur — not size — is what has to be rejected.
     /// Live-tunable: `minSharpness` in tuning.json.
-    static var minSharpness: Float { Tuning.float("minSharpness", 0.10) }
+    /// Default OFF (0). In simulation the gate never bound — live-frame sharpness sat at p10 0.25
+    /// against a 0.10 gate — and a gate calibrated on simulated blur could silence a real demo.
+    /// `streamStats` now logs the real p10/p50 from the glasses; set this from those numbers.
+    static var minSharpness: Float { Tuning.float("minSharpness", 0) }
     /// Reference photos are enrolled unconditionally; a gate there would silently empty a gallery.
     static let enrolSharpness: Float = 0
 

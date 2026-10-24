@@ -57,6 +57,14 @@ enum Identification {
     /// so the wearer's view and the wearer's display can be watched while a session runs.
     var pov: UIImage?
     @ObservationIgnored private var lastPov = Date.distantPast
+    /// Frame sizes and arrival times since the camera was attached. Resolution and frame rate are
+    /// *requests*: the SDK's bandwidth governor quietly degrades both when the radio is loaded, so
+    /// the only honest answer to "what resolution are we getting" is to measure the frames.
+    @ObservationIgnored private var frameSizes: [String: Int] = [:]
+    @ObservationIgnored private var statsFrom = Date()
+    @ObservationIgnored private var statsFrames = 0
+    @ObservationIgnored private var sharpSamples: [Float] = []
+    @ObservationIgnored private var lastStats = Date.distantPast
     @ObservationIgnored private var povWatch: Task<Void, Never>?
 
     @ObservationIgnored var store: Store?
@@ -89,12 +97,18 @@ enum Identification {
     /// talking distance is still ~105 px, well above the 40 px crop floor, and feature prints
     /// score 0.79 on half-size crops. Both knobs are UserDefaults so they move with no rebuild:
     /// `streamFps` (2/7/15/24/30) and `streamRes` ("low"/"medium"/"high").
+    /// What the currently-attached camera was actually built with, so a pushed change to
+    /// `streamRes`/`streamFps` can notice it needs a new camera. The SDK fixes resolution and
+    /// frame rate at addCamera time; changing the defaults alone does nothing until then.
+    @ObservationIgnored private var liveStreamSettings: String?
+    private var streamSettings: String { "\(Tuning.int("streamFps", 7))/\(UserDefaults.standard.string(forKey: "streamRes") ?? "low")" }
+
     private var streamConfig: StreamConfiguration {
         #if DEBUG
         // A simulated pair is a local AVCaptureSession with no radio at all.
         if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24) }
         #endif
-        let fps = UInt(UserDefaults.standard.object(forKey: "streamFps") as? Int ?? 7)
+        let fps = UInt(Tuning.int("streamFps", 7))
         switch UserDefaults.standard.string(forKey: "streamRes") {
         case "high": return StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: fps)
         case "medium": return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
@@ -710,6 +724,9 @@ enum Identification {
     }
 
     private func attachCamera(_ camera: Camera) {
+        liveStreamSettings = streamSettings
+        frameSizes.removeAll()
+        statsFrom = Date()
         cameraTokens.append(camera.stream.videoFramePublisher.listen { [weak self] frame in
             // Decode on the publisher's own thread. Hopping to the main actor first and calling
             // makeUIImage() there is what made the POV tile stutter: the decode was spending the
@@ -719,6 +736,7 @@ enum Identification {
             Task { @MainActor in
                 guard let self else { return }
                 self.lastFrameAt = Date()
+                self.noteFrame(image)
                 // Every frame is already decoded and downscaled above for the face path, whether
                 // or not anyone is looking at the phone, so showing it costs one texture upload
                 // and no extra radio time. Real glasses arrive at 7 fps: a slideshow, by budget.
@@ -759,6 +777,43 @@ enum Identification {
     private func resumeFrame(_ image: CIImage?) {
         frameWaiter?.resume(returning: image)
         frameWaiter = nil
+    }
+
+    /// Counts a delivered frame and, every 10 s, writes one line saying what the link really gave
+    /// us: size, true frame rate, and how sharp the faces in it were. Raising `streamRes` is only
+    /// worth it if these numbers move — the SDK will happily accept "high" and send you something
+    /// else when the radio is busy.
+    private func noteFrame(_ image: UIImage?) {
+        guard let image else { return }
+        let scale = image.scale
+        let key = "\(Int(image.size.width * scale))x\(Int(image.size.height * scale))"
+        frameSizes[key, default: 0] += 1
+        statsFrames += 1
+        let now = Date()
+        guard now.timeIntervalSince(lastStats) >= 10 else { return }
+        lastStats = now
+        let seconds = max(now.timeIntervalSince(statsFrom), 0.001)
+        var log: [String: Any] = ["event": "streamStats",
+                                  "asked": streamSettings,
+                                  "sizes": frameSizes.map { "\($0.key)x\($0.value)" }.sorted().joined(separator: ","),
+                                  "frames": statsFrames,
+                                  "fps": (Double(statsFrames) / seconds * 10).rounded() / 10]
+        if !sharpSamples.isEmpty {
+            let sorted = sharpSamples.sorted()
+            log["sharpP10"] = (Double(sorted[max(0, sorted.count / 10)]) * 1000).rounded() / 1000
+            log["sharpP50"] = (Double(sorted[sorted.count / 2]) * 1000).rounded() / 1000
+            log["faceFrames"] = sorted.count
+        }
+        SpeedLog.record(log)
+        frameSizes.removeAll(); statsFrames = 0; sharpSamples.removeAll(); statsFrom = now
+    }
+
+    /// A pushed `streamRes`/`streamFps` only takes effect on a new camera, so swap one in.
+    /// This is what makes resolution a 0.3 s tuning push instead of a build.
+    func restreamIfSettingsChanged() {
+        guard connected, let live = liveStreamSettings, live != streamSettings else { return }
+        SpeedLog.record(["event": "restream", "from": live, "to": streamSettings])
+        rebuildCamera()
     }
 
     // MARK: - Auto-identify
@@ -802,6 +857,7 @@ enum Identification {
         let start = CFAbsoluteTimeGetCurrent()
         let scan = await scanFaces(image)
         guard let store else { return }
+        for hit in scan.hits where hit.sharpness > 0 { sharpSamples.append(hit.sharpness) }
         let live = tracker.update(scan.hits)
         guard !live.isEmpty else { return }
 
