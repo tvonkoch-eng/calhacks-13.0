@@ -108,9 +108,12 @@ struct Match {
         let pushed = try? Data(contentsOf: Tuning.peopleURL)
         let bundled = Bundle.main.url(forResource: "people", withExtension: "json").flatMap { try? Data(contentsOf: $0) }
         // A pushed file that will not decode must not empty the roster mid-demo: fall back.
+        if edits.isEmpty, let data = try? Data(contentsOf: editsURL) {
+            edits = (try? JSONDecoder().decode([String: Person].self, from: data)) ?? [:]
+        }
         for data in [pushed, bundled].compactMap(\.self) {
             if let decoded = try? JSONDecoder().decode([Person].self, from: data), !decoded.isEmpty {
-                people = decoded
+                people = decoded.map { edits[$0.id] ?? $0 }
                 return
             }
         }
@@ -221,7 +224,21 @@ struct Match {
     /// holder was kept out of matching, but both phones ship the same people.json, so the flag
     /// made whoever it named unrecognizable on every device at once. Per-device identity, if we
     /// want it later, belongs in UserDefaults — not in a file identical for the whole team.
-    var contacts: [Person] { people }
+    var contacts: [Person] { people + saved.map { edits[$0.id] ?? $0 } }
+    /// People met in conversation whom the wearer chose to keep (`CRM.keep`). They match like the
+    /// roster once they have face photos; people met but not kept are never here, so never matched.
+    var saved: [Person] = [] { didSet { indexDirty = true } }
+
+    /// The wearer's own corrections to anyone's details (People → Edit), over the roster and kept
+    /// contacts alike. Per phone, in Documents/edits.json: the roster file stays the team's.
+    private(set) var edits: [String: Person] = [:]
+    private var editsURL: URL { docs.appendingPathComponent("edits.json") }
+
+    func update(_ person: Person) {
+        edits[person.id] = person
+        if let i = people.firstIndex(where: { $0.id == person.id }) { people[i] = person }
+        try? JSONEncoder().encode(edits).write(to: editsURL, options: [.atomic, .completeFileProtection])
+    }
 
     /// Contacts, most recently seen first; people you haven't met keep their file order.
     var recents: [Person] {

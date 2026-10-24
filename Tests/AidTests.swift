@@ -251,6 +251,20 @@ do {
     check(Coach.message(quiet).contains("Suggest now: no"), "no moment, no suggestion")
 }
 
+// Misheard and mixed-up: a statement isn't a request; the wearer's promise is offered, not asked about.
+do {
+    check(!Talk.asks("And we just raised a seed around, so we're hiring two evil engineers."), "a statement is not a request")
+    check(Talk.asks("Thanks. You know what time the closing ceremonies start tomorrow"), "a question without its question mark")
+    check(Talk.asks("Do you know Figure?"), "a plain question")
+    let promise = "Toby promised to send her the hackathon demo video"
+    check(Talk.isPromise(promise, by: "Toby"), "the wearer's promise")
+    check(!Talk.isPromise("Dana promised to visit in May", by: "Toby"), "their promise isn't the wearer's")
+    check(Talk.asksAbout(promise, in: "Did you catch the demo video?"), "asking them about the wearer's promise")
+    check(Talk.asksAbout(promise, in: "Did you send the demo video?"), "asking them whether they sent it")
+    check(!Talk.asksAbout(promise, in: "Want me to send the demo video?"), "offering it is fine")
+    check(!Talk.asksAbout(promise, in: "Did you make it to Lisbon?"), "a different question is fine")
+}
+
 // Asking the glasses for a line to say, as opposed to asking them a question.
 do {
     check(Talk.asksForSuggestion("what should I ask?"), "what should I ask")

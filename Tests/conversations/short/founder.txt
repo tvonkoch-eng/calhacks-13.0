@@ -1,0 +1,9 @@
+# Mixer: Priya runs an evals startup; jargon, then a hiring opening and a pause.
+THEM: Hey, I'm Priya. Are you building something this weekend?
+ME: Yeah, a conversation aid for smart glasses.
+THEM: Nice. I run a small evals startup, we do LLM as a judge for agent testing.
+ME: Oh cool, how's that going?
+THEM: Good, but our judges drift whenever the base model changes, so we recalibrate with Cohen's kappa every week.
+ME: Huh.
+THEM: And we just raised a seed round, so we're hiring two eval engineers.
+PAUSE: 4

@@ -1,0 +1,9 @@
+# founder.txt as the recognizer might hear it: names, jargon and a few words wrong.
+THEM: Hey, I'm Pria. Are you building something this weekend?
+ME: Yeah, a conversation aid for smart glasses.
+THEM: Nice. I run a small evil startup, we do LOM as a judge for agent testing.
+ME: Oh cool, how's that going?
+THEM: Good, but our judges drift whenever the base model changes, so we recalibrate with co ends kappa every week.
+ME: Huh.
+THEM: And we just raised a seed around, so we're hiring two evil engineers.
+PAUSE: 4

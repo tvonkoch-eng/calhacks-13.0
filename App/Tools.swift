@@ -186,7 +186,8 @@ enum Tools {
                     {"title": "the answer itself, at most 6 words", "detail": "the single most useful \
                     supporting fact, at most 14 words"}. The title answers the task: lead with the \
                     number, name or date ("3,000+ hackers", not "Cal Hacks attendance"); never the \
-                    topic restated. No links, no citations, no preamble.
+                    topic restated. If the notes don't answer the task (not announced, no data, only \
+                    related facts), reply {"title": ""}. No links, no citations, no preamble.
                     """],
                 ["role": "user", "content": "Task: \(task)\n\nNotes:\n\(finding.prefix(4000))"],
             ],
@@ -197,8 +198,10 @@ enum Tools {
         let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 8)
         if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,
            let json = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any],
-           let title = json["title"] as? String, !title.isEmpty {
-            return ToolResult(title: title, detail: json["detail"] as? String ?? "", icon: "starCircleTriangleAi")
+           let title = json["title"] as? String {
+            // An empty title is the notes not answering it: the caller shows nothing.
+            return ToolResult(title: title.trimmingCharacters(in: .whitespaces), detail: json["detail"] as? String ?? "",
+                              icon: "starCircleTriangleAi")
         }
         return ToolResult(title: String(text.prefix(80)), detail: "", icon: "starCircleTriangleAi")
     }
