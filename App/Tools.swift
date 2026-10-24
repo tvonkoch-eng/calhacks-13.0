@@ -259,7 +259,7 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
 
     func working(_ name: String, arguments: String) -> String {
         switch name {
-        case "research": return researcher?.name.contains("ASI") == true ? "Asking Fetch.ai agents" : "Looking it up"
+        case "research": return researcher?.name.contains("Fetch") == true ? "Asking Fetch.ai" : "Looking it up"
         case "nearby": return "Finding \(Self.arguments(arguments)["query"] as? String ?? "it") nearby"
         case "weather": return "Checking the weather"
         case "remind": return "Setting a reminder"
