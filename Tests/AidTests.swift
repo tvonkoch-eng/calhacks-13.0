@@ -13,7 +13,7 @@ let t0 = Date(timeIntervalSince1970: 1_000_000)
 func at(_ s: TimeInterval) -> Date { t0.addingTimeInterval(s) }
 let definition = Card(kind: .definition, title: "ColBERT", detail: "late-interaction search model", id: 1)
 let other = Card(kind: .definition, title: "LoRA", detail: "cheap fine-tuning for big models", id: 2)
-let research = Card(kind: .research, title: "GENIUS Act", detail: "Signed July 2025; rules due 2026", id: 3)
+let third = Card(kind: .definition, title: "ColPali", detail: "searches page images directly", id: 3)
 func answer(_ text: String, live: Bool, id: Int = 9) -> Card { Card(kind: .answer, title: text, detail: "q", live: live, id: id) }
 
 // The point of two slots: a definition never knocks the pinned follow-up off the lens.
@@ -57,8 +57,8 @@ do {
     check(lens.view.card == definition, "a second definition waits for the first's minimum dwell")
     lens.tick(at: at(2 + Compositor.minDwell + 0.1))
     check(lens.view.card == other, "then takes over")
-    lens.show(research, at: at(10))
-    check(lens.view.card == other || lens.view.card == research, "research shows once the dwell has passed")
+    lens.show(third, at: at(10))
+    check(lens.view.card == third, "a third shows once the dwell has passed")
     var stale = Compositor()
     stale.show(answer("x", live: true), at: at(0))
     stale.show(definition, at: at(0))
@@ -230,16 +230,34 @@ do {
 
 // The coach's JSON, as models actually send it.
 do {
-    let one = Coach.parse(#"{"define": {"term": "LoRA", "meaning": "cheap fine-tuning"}, "followup": null, "them": null, "facts": null, "research": null, "wearer": null}"#)
-    check(one?.define.count == 1 && one?.followup == .keep && one?.facts == [], "single definition object, nulls")
-    let two = Coach.parse(#"Sure: {"define": [{"term":"SAFE","meaning":"a"},{"term":"pro rata","meaning":"b"},{"term":"x","meaning":"c"}], "followup": "", "them": {"name": "Daniela", "label": null}, "facts": ["sails"], "research": "GENIUS Act status", "wearer": "b"}"#)
+    let one = Coach.parse(#"{"define": {"term": "LoRA", "meaning": "cheap fine-tuning"}, "suggest": null}"#)
+    check(one?.define.count == 1 && one?.suggest == nil, "single definition object, nulls")
+    let two = Coach.parse(#"Sure: {"define": [{"term":"SAFE","meaning":"a"},{"term":"pro rata","meaning":"b"},{"term":"x","meaning":"c"}], "suggest": "", "facts": ["sails"], "them": {"name": "Daniela"}}"#)
     check(two?.define.count == 1 && two?.define.first?.term == "SAFE", "one definition at a time, the first")
-    check(two?.followup == .clear, "empty follow-up clears")
-    check(two?.name == "Daniela" && two?.label == nil, "them fields")
-    check(two?.research == "GENIUS Act status", "research")
-    let say = Coach.parse(#"{"followup": "What was the Transpac like?"}"#)
-    check(say?.followup == .say("What was the Transpac like?") && say?.define.isEmpty == true, "missing keys are fine")
+    check(two?.suggest == nil, "an empty suggestion is none")
+    let say = Coach.parse(#"{"suggest": "What was the Transpac like?"}"#)
+    check(say?.suggest == "What was the Transpac like?" && say?.define.isEmpty == true, "missing keys are fine")
     check(Coach.parse("no json here") == nil, "prose without JSON is rejected")
+    let input = Coach.Input(wearer: "Toby", background: "finance student", known: "Priya · evals founder; Wearer promised: send the deck",
+                            defined: [], suggested: ["How did the seed close?"], moment: "a silence", transcript: [])
+    let message = Coach.message(input)
+    check(message.contains("Wearer promised: send the deck") && message.contains("\"How did the seed close?\"")
+          && message.contains("(nothing said yet)"), "the coach sees the record, past suggestions and an empty start")
+    check(message.contains("Suggest now: yes (a silence)"), "a moment asks for a suggestion")
+    var quiet = input
+    quiet.moment = nil
+    check(Coach.message(quiet).contains("Suggest now: no"), "no moment, no suggestion")
+}
+
+// Asking the glasses for a line to say, as opposed to asking them a question.
+do {
+    check(Talk.asksForSuggestion("what should I ask?"), "what should I ask")
+    check(Talk.asksForSuggestion("what do I say next"), "what do I say")
+    check(Talk.asksForSuggestion("give me something to talk about"), "give me something to")
+    check(Talk.asksForSuggestion("help me out here"), "help me out")
+    check(!Talk.asksForSuggestion("what should I eat nearby"), "a question about food is a question")
+    check(!Talk.asksForSuggestion("what's her name again"), "a memory question is a question")
+    check(!Talk.asksForSuggestion("how far is the nearest Target?"), "a place question is a question")
 }
 
 print(failures == 0 ? "AID OK" : "\(failures) failures")

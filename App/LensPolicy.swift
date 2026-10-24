@@ -33,3 +33,13 @@ enum LensPolicy {
         return partner ? .compact : .idle
     }
 }
+
+/// Someone in the conversation, as the lens and the phone show them. The host fills `speaking`
+/// from who said the last line (or is saying this one).
+struct Member: Equatable {
+    let id: String
+    /// First name: three of them have to fit on one lens row.
+    var name: String
+    var headline: String
+    var speaking = false
+}

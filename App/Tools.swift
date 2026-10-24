@@ -69,22 +69,34 @@ enum Tools {
         "remind", "reminder", "calendar", "my next", "meeting", "schedule", "agenda", "what do i have",
     ]
 
-    private static let prompt = """
-    You act for someone wearing smart glasses, usually mid-conversation. If the request needs their \
-    location, the weather, their reminders or their calendar, call the one tool that answers it. \
-    Otherwise answer in one line of at most 12 words: lead with the answer, no preamble, no \
-    restating the question, no full stop ("Frank Herbert", not "Frank Herbert wrote Dune."). Reply \
-    exactly SKIP if it is personal, social, needs live data you don't have, or you can't know. Never \
-    ask a follow-up.
-    """
+    /// Where the answer lives decides who answers. The web knows public things, not these two
+    /// people: "what's the latest on the GENIUS Act" is research; "what did she say her company
+    /// does" is the conversation; "how's her fundraise going" is nobody's to look up.
+    private static func prompt(research: Bool) -> String {
+        var sources = """
+        - the conversation, or what's known about the person they're talking to: answer from that;
+        - where they are, the weather, their reminders or their calendar: call that tool;
+        - stable general knowledge: answer it yourself;
+        """
+        if research {
+            sources += "\n" + """
+            - public facts that are recent or specific (news, prices, scores, opening hours, a \
+            company's or product's latest, places with conditions like open late): call research \
+            with a self-contained task.
+            Never research a person, or anything only the people talking would know (their plans, \
+            their work in progress, their history together): answer that from what's known, or SKIP.
+            """
+        }
+        return """
+        You act for someone wearing smart glasses, usually mid-conversation. Answer from wherever \
+        the answer lives:
+        \(sources)
 
-    /// Only when the research tool is offered. Without it, "needs live data" above meant SKIP, and
-    /// gpt-oss kept skipping "what's the latest on the GENIUS Act?" instead of calling research.
-    private static let web = """
-     For public, current facts (news, "the latest on", prices, scores, opening hours, recent \
-    events), call research instead of saying SKIP. Never research the speakers' own product, \
-    project, company or work: SKIP those.
-    """
+        Answer in one line of at most 12 words: lead with the answer, no preamble, no restating \
+        the question, no full stop ("Frank Herbert", not "Frank Herbert wrote Dune."). Reply \
+        exactly SKIP if nothing above can answer it. Never ask a follow-up.
+        """
+    }
 
     /// One round: the model answers in a line, says SKIP, or names a tool for the caller to run.
     static func decide(_ request: String, context: String, toolbox: any Toolbox,
@@ -97,7 +109,7 @@ enum Tools {
             "temperature": 0,
             "tool_choice": "auto",
             "messages": [
-                ["role": "system", "content": prompt + (toolbox.definitions.contains("\"research\"") ? web : "")
+                ["role": "system", "content": prompt(research: toolbox.definitions.contains("\"research\""))
                     + "\nIt is \(now), \(TimeZone.current.identifier).\(place)"],
                 ["role": "user", "content": user],
             ],
@@ -233,8 +245,8 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
 
     private static let research = """
       {"type": "function", "function": {"name": "research",
-        "description": "Anything that needs the web or other AI agents: current events, a company, product or person's public work, recommendations with conditions (open late, quiet, highly rated, vegetarian), or a multi-step task. Takes several seconds.",
-        "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "The full task, with 'her company' or 'that place' resolved from the conversation and 'near here' replaced by where they are"}}, "required": ["task"]}}}
+        "description": "Public facts from the web: news and anything recent, prices, scores, opening hours, a company's or product's public details, places matching conditions (open late, quiet, vegetarian). Never a person, and nothing only the people talking would know. Takes several seconds.",
+        "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "The full task, self-contained: 'her company' or 'that bill' resolved from the conversation, 'near here' replaced by where they are, and no names of the people talking"}}, "required": ["task"]}}}
     """
 
     private static let device = """

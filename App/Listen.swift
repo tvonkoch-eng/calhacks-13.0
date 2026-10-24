@@ -67,6 +67,11 @@ import Observation
 
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private let uplink = Uplink()
+    /// Loudness at each mic over the last minute, sent or not. With the glasses' mic on, the phone's
+    /// keeps running underneath, and the gap between the two is the best wearer signal sound alone
+    /// gives: the wearer's mouth is centimetres from the glasses and a metre from the phone, the
+    /// other person is about as far from both.
+    @ObservationIgnored let meter = LevelMeter()
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
     @ObservationIgnored private var reader: Task<Void, Never>?
     @ObservationIgnored private var player: Task<Void, Never>?
@@ -129,9 +134,10 @@ import Observation
         // the sample rate in between; the uplink adapts to each buffer's format instead.
         // Realtime audio thread: hand the buffer to the uplink (it converts and sends off this
         // thread) and send only a level reading to the main actor.
-        node.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self, uplink = self.uplink] buffer, _ in
-            guard uplink.pushPhone(buffer) else { return }
+        node.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self, uplink = self.uplink, meter = self.meter] buffer, _ in
             let db = Uplink.decibels(buffer)
+            meter.record(.phone, db)
+            guard uplink.pushPhone(buffer) else { return }
             Task { @MainActor in self?.level = max(0, min(1, (db + 60) / 60)) }
         }
         uplink.inputStarted()
@@ -217,8 +223,9 @@ import Observation
 
     /// The glasses' mic, from any thread: the Meta SDK's stream audio callback.
     nonisolated func feed(_ buffer: AVAudioPCMBuffer) {
-        guard uplink.pushExternal(buffer) else { return }
         let db = Uplink.decibels(buffer)
+        meter.record(.glasses, db)
+        guard uplink.pushExternal(buffer) else { return }
         Task { @MainActor [weak self] in self?.level = max(0, min(1, (db + 60) / 60)) }
     }
 
@@ -419,6 +426,39 @@ import Observation
             guard let self, self.listening, connection == self.connection else { return }
             self.connect()
         }
+    }
+}
+
+/// Loudness per mic over time, from any thread.
+final class LevelMeter: @unchecked Sendable {
+    enum Source { case glasses, phone }
+    private let lock = NSLock()
+    private var samples: [Source: [(at: Date, db: Float)]] = [:]
+
+    func record(_ source: Source, _ db: Float, at now: Date = Date()) {
+        lock.lock(); defer { lock.unlock() }
+        var list = samples[source] ?? []
+        list.append((now, db))
+        if let first = list.first, now.timeIntervalSince(first.at) > 90 {
+            list.removeFirst(list.firstIndex { now.timeIntervalSince($0.at) <= 60 } ?? list.count)
+        }
+        samples[source] = list
+    }
+
+    /// Mean dB of the loudest 30% of a stretch (pauses don't drag a short turn down); nil when the
+    /// mic sent nothing then.
+    func level(_ source: Source, from start: Date, to end: Date) -> Float? {
+        lock.lock(); defer { lock.unlock() }
+        let span = (samples[source] ?? []).filter { $0.at >= start && $0.at <= end && $0.db > -100 }.map(\.db)
+        guard span.count >= 5 else { return nil }
+        let loud = span.sorted(by: >).prefix(max(1, span.count * 3 / 10))
+        return loud.reduce(0, +) / Float(loud.count)
+    }
+
+    /// Glasses minus phone over a stretch: large for the wearer, small for everyone else.
+    func gap(from start: Date, to end: Date) -> Float? {
+        guard let glasses = level(.glasses, from: start, to: end), let phone = level(.phone, from: start, to: end) else { return nil }
+        return glasses - phone
     }
 }
 

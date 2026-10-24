@@ -23,4 +23,9 @@ cp Tests/LensPolicyTests.swift "$out/LensPolicy/main.swift"
 swiftc -O "$out/LensPolicy/main.swift" App/LensPolicy.swift App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift App/Tools.swift -o "$out/LensPolicy/run"
 printf 'LensPolicy: '
 "$out/LensPolicy/run"
+mkdir -p "$out/Speakers"
+cp Tests/SpeakersTests.swift "$out/Speakers/main.swift"
+swiftc -O "$out/Speakers/main.swift" App/Speakers.swift App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift App/Tools.swift -o "$out/Speakers/run"
+printf 'Speakers: '
+"$out/Speakers/run"
 rm -rf "$out"
