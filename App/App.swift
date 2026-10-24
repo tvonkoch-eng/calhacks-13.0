@@ -178,15 +178,28 @@ struct HomeView: View {
                         SearchField(text: $query)
                             .padding(.horizontal, 16)
                             .padding(.bottom, 14)
+                        // Every slot from here to the person card is a fixed size, present or not, so
+                        // the chat and the card never jump when a line appears, wraps or goes away.
                         notice
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20, alignment: .leading)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 10)
-                        if assistant.armed { HeardLine().padding(.horizontal, 20).padding(.bottom, 10) }
-                        if assistant.armed, !assistant.aid.lens.isEmpty {
-                            AidStrip(view: assistant.aid.lens)
-                                .padding(.horizontal, 16)
-                                .padding(.bottom, 10)
-                        }
+                        HeardLine.template.hidden()
+                            .overlay(alignment: .topLeading) { if assistant.armed { HeardLine() } }
+                            .clipped()
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 10)
+                        AidStrip.template.hidden()
+                            .overlay(alignment: .topLeading) {
+                                if assistant.armed, !assistant.aid.lens.isEmpty {
+                                    AidStrip(view: assistant.aid.lens)
+                                }
+                            }
+                            .clipped()
+                            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color(.separator)))
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 10)
                         TimelineView(.periodic(from: .now, by: 30)) { context in
                             VStack(spacing: 0) {
                                 ForEach(items(now: context.date)) { item in
@@ -317,6 +330,17 @@ struct HeardLine: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// The tallest the line gets — status, a group row, two lines heard — so its slot is that size
+    /// whatever it is showing, and nothing under it moves.
+    static var template: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Listening").font(.caption)
+            Text("Group").font(.caption).padding(.vertical, 3)
+            Text("Heard\nHeard").font(.subheadline).lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 }
 
 /// Who's in the conversation and who has the floor, plus whether the glasses' own mic is helping
@@ -385,19 +409,32 @@ struct AidStrip: View {
             if let card = view.card {
                 Text(card.title)
                     .font(.system(.body, design: .serif, weight: .medium))
-                    .lineLimit(2)
+                    .lineLimit(1)
                 if !card.detail.isEmpty {
-                    Text(card.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                    Text(card.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            ForEach(view.working, id: \.id) { WorkRow(work: $0) }
-            if let followup = view.followup {
-                Label(followup, systemImage: "bubble.left").font(.footnote)
+            // One last row: work in flight wins over the follow-up, so the strip is three lines.
+            if let work = view.working.first {
+                WorkRow(work: work)
+            } else if let followup = view.followup {
+                Label(followup, systemImage: "bubble.left").font(.footnote).lineLimit(1)
             }
         }
-        .padding(14)
+        .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color(.separator)))
+    }
+
+    /// A full strip — title, detail, a work or follow-up row — so its slot is always that size and
+    /// the person card under it stays put. The outline is the slot's.
+    static var template: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Title").font(.system(.body, design: .serif, weight: .medium))
+            Text("Detail").font(.footnote)
+            Label("Follow-up", systemImage: "bubble.left").font(.footnote).frame(minHeight: 16)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1229,8 +1266,8 @@ struct LensPanel: View {
     let avatar: (String) -> UIImage?
     /// The pixel size of the frames off the camera; nil until the first one lands.
     var frameSize: CGSize? = nil
-    /// Tapped in on the lens to read the card; out is the whole scene across.
-    @State private var zoomed = false
+    /// Tapped out to the whole scene across; the default is zoomed in around the lens.
+    @State private var wide = false
 
     private var state: (String, Color) {
         if identifying { return ("Looking", .orange) }
@@ -1296,11 +1333,11 @@ struct LensPanel: View {
         let optics = LensOptics(frame: frame)
         let side = optics.side
         let center = optics.center
-        // A wide band of the portrait frame: its full width (all 56° the camera sees across),
-        // 16:9, around the lens. At that size the card is true to scale and too small to read,
-        // so a tap zooms to `eyeZoomDeg` of scene around the lens and back. Either way the lens
-        // keeps its true size relative to the scene behind it.
-        let window = optics.window(degrees: zoomed ? CGFloat(Tuning.float("eyeZoomDeg", 30)) : 180)
+        // A 16:9 band of the portrait frame around the lens: `eyeZoomDeg` of scene across by
+        // default, so the lens is about half the panel and the card can be read; a tap shows the
+        // frame's full width (all 56° the camera sees), true to scale and tiny. Either way the
+        // lens keeps its true size relative to the scene behind it.
+        let window = optics.window(degrees: wide ? 180 : CGFloat(Tuning.float("eyeZoomDeg", 30)))
         return GeometryReader { geo in
             ZStack(alignment: .topLeading) {
                 Color.black
@@ -1340,14 +1377,14 @@ struct LensPanel: View {
         }
         .aspectRatio(window.width / window.height, contentMode: .fit)
         .contentShape(Rectangle())
-        .onTapGesture { withAnimation(.easeInOut(duration: 0.25)) { zoomed.toggle() } }
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.25)) { wide.toggle() } }
         // Height from the full width, rather than squeezed by whatever height the stack offers.
         .fixedSize(horizontal: false, vertical: true)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(.separator)))
         .overlay(alignment: .bottomTrailing) {
             // Under the panel, not on it: the lens fills most of the window.
-            Text(verbatim: "\(zoomed ? "tap for full view" : "tap to read") · scene \(Int(optics.degrees(window.width).rounded()))°×\(Int(optics.degrees(window.height).rounded()))° · lens \(Int(optics.lensDegrees.rounded()))°")
+            Text(verbatim: "\(wide ? "tap to zoom in" : "tap for full view") · scene \(Int(optics.degrees(window.width).rounded()))°×\(Int(optics.degrees(window.height).rounded()))° · lens \(Int(optics.lensDegrees.rounded()))°")
                 .lineLimit(1).minimumScaleFactor(0.6)
                 .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 .offset(y: 16)
