@@ -70,10 +70,7 @@ struct Match {
     private func avatarURL(_ id: String) -> URL { docs.appendingPathComponent("avatar-\(id).jpg") }
 
     init() {
-        if let url = Bundle.main.url(forResource: "people", withExtension: "json"),
-           let data = try? Data(contentsOf: url) {
-            people = (try? JSONDecoder().decode([Person].self, from: data)) ?? []
-        }
+        loadPeople()
         if UserDefaults.standard.integer(forKey: Self.versionKey) != Self.galleryVersion {
             // Existing embeddings came from crops that were never straightened. Drop them and let
             // the bundled references reload, rather than compare across two different spaces.
@@ -95,11 +92,43 @@ struct Match {
         }
         // Installs from before the encounter log: their last sighting is their first encounter.
         for (id, date) in lastSeen where encounters[id] == nil { encounters[id] = [date] }
+        hydrate()
+        NotificationCenter.default.addObserver(forName: Tuning.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.reload()
+        }
+    }
+
+    /// The roster. A pushed `Documents/people.json` wins over the bundled copy, so names, roles,
+    /// ties and highlight copy can be corrected on a running phone — see `Tuning`.
+    private func loadPeople() {
+        let pushed = try? Data(contentsOf: Tuning.peopleURL)
+        let bundled = Bundle.main.url(forResource: "people", withExtension: "json").flatMap { try? Data(contentsOf: $0) }
+        // A pushed file that will not decode must not empty the roster mid-demo: fall back.
+        for data in [pushed, bundled].compactMap(\.self) {
+            if let decoded = try? JSONDecoder().decode([Person].self, from: data), !decoded.isEmpty {
+                people = decoded
+                return
+            }
+        }
+    }
+
+    /// Avatar and face samples for everyone currently on the roster. Both steps remember what
+    /// they have already done, so running this again after a roster push only touches new people.
+    private func hydrate() {
         for person in people {
             if let image = UIImage(contentsOfFile: avatarURL(person.id).path) { avatars[person.id] = image }
             if avatars[person.id] == nil { seedAvatar(person.id) }
             loadReferences(person.id)
         }
+    }
+
+    /// Re-reads the roster after a push. Embeddings stay: the expensive part is the face work, and
+    /// editing somebody's job title does not invalidate what their face looks like.
+    func reload() {
+        let before = people
+        loadPeople()
+        guard people != before else { return }
+        hydrate()
     }
 
     /// Bundled App/References/<id>_NN.jpg are match examples. We remember the exact filenames that
@@ -238,8 +267,8 @@ struct Match {
     /// and it is ~0.26 for a true match versus ~0.00 for a coin flip.
     ///
     /// Both are overridable from UserDefaults so they can be tuned on the phone without a rebuild.
-    var minScore: Float { UserDefaults.standard.object(forKey: "minScore") as? Float ?? 0.72 }
-    var minGap: Float { UserDefaults.standard.object(forKey: "minGap") as? Float ?? 0.05 }
+    var minScore: Float { Tuning.float("minScore", 0.72) }
+    var minGap: Float { Tuning.float("minGap", 0.05) }
 
     /// A deliberate press still means "tell me who that is", but nearest-neighbour on its own will
     /// always name somebody: it was naming people at 0.45 with the runner-up 0.006 behind, which is

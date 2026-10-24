@@ -9,6 +9,8 @@ struct CalHacksApp: App {
 
     init() {
         Glasses.configure()
+        // Before anything reads a threshold: a pushed tuning.json is authoritative from launch.
+        Tuning.shared.start()
         DispatchQueue.global(qos: .userInitiated).async { FaceEngine.warmUp() }
     }
 
@@ -22,6 +24,12 @@ struct CalHacksApp: App {
                 .task {
                     glasses.store = store
                     assistant.glasses = glasses
+                    // Knobs that are read once rather than per use have to be re-applied by hand
+                    // when a push lands; Store re-reads the roster on the same notification.
+                    NotificationCenter.default.addObserver(forName: Tuning.changed, object: nil, queue: .main) { _ in
+                        let wanted = Tuning.bool("AutoIdentify", glasses.watching)
+                        if wanted != glasses.watching { glasses.watching = wanted }
+                    }
                     #if DEBUG
                     let env = ProcessInfo.processInfo.environment
                     if Glasses.prefersMock {
