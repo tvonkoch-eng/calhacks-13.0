@@ -8,7 +8,7 @@ import FoundationNetworking
 /// ~100-250 ms, which is the whole ballgame on a wearable. Muse is Meta's Muse Spark: always
 /// reasons first, so ~1.2 s to first token (see Tests/muse-latency.py).
 enum Provider: String {
-    case groq, cerebras, openai, muse, anthropic
+    case groq, cerebras, openai, muse, anthropic, openrouter
 
     var endpoint: URL {
         switch self {
@@ -18,6 +18,9 @@ enum Provider: String {
         case .muse: URL(string: "https://api.meta.ai/v1/chat/completions")!
         // Not OpenAI-compatible: requests are translated (`Claude.body`).
         case .anthropic: Claude.endpoint
+        // Pay-as-you-go access to the same hosts (Cerebras first) when their own free tiers run
+        // out; requests get routing and reasoning fields added (`OpenRouter.adjust`).
+        case .openrouter: OpenRouter.endpoint
         }
     }
 
@@ -39,6 +42,7 @@ enum Provider: String {
         case .muse: "muse-spark-1.1"
         // Haiku with thinking off: the quickest Claude, if a lane is pointed at it.
         case .anthropic: "claude-haiku-5-5"
+        case .openrouter: "qwen/qwen3.8-27b"
         }
     }
 
@@ -47,7 +51,7 @@ enum Provider: String {
     func extras(model: String) -> [String: Any] {
         if model.contains("gpt-oss") { return ["max_tokens": 600, "reasoning_effort": "low"] }
         // Cerebras runs Qwen3 with thinking on by default; "none" turns it off (3 tokens, not 30).
-        if self == .cerebras, model.contains("qwen") { return ["max_tokens": 48, "reasoning_effort": "none"] }
+        if self == .cerebras || self == .openrouter, model.contains("qwen") { return ["max_tokens": 48, "reasoning_effort": "none"] }
         switch self {
         case .muse: return ["max_tokens": 400, "reasoning_effort": "minimal"]
         case .anthropic: return ["max_tokens": 64, "reasoning_effort": "none"]
@@ -96,6 +100,10 @@ struct Answerer {
     memory: news or anything recent, prices, scores, schedules, or a specific company, product or \
     paper you don't know well. You do know the current date and time (below): use them for time \
     zones, ages and countdowns.
+
+    "Where" names the event and place they're at: use it for "here" and "this thing". A question \
+    about this place or event that nothing above answers is WEB only when "Where" names the \
+    event; otherwise SKIP.
 
     Reply with exactly SKIP, and nothing else, if the question is personal or social (about the \
     people talking, their feelings, plans, opinions or preferences, or anything that's theirs: \
@@ -183,7 +191,8 @@ struct Answerer {
                         ],
                     ]
                     body.merge(provider.extras(model: model)) { _, extra in extra }
-                    request.httpBody = try JSONSerialization.data(withJSONObject: claude ? Claude.body(body) : body)
+                    request.httpBody = try JSONSerialization.data(withJSONObject: claude ? Claude.body(body)
+                        : provider == .openrouter ? OpenRouter.adjust(body) : body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {

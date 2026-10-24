@@ -266,11 +266,12 @@ do {
 do {
     let ranked = Coach.parse(#"{"define": [], "suggest": [{"say": "How did the Transpac go?", "score": 5}, {"say": "Who crewed with you?", "score": 3}, {"say": "Racing next year?", "score": 2}], "ask": null}"#)
     check(ranked?.suggest == "How did the Transpac go?" && ranked?.score == 5, "best suggestion and its score")
-    check(ranked?.alternatives == ["Who crewed with you?", "Racing next year?"], "runners-up in order")
+    check(ranked?.alternatives.map(\.say) == ["Who crewed with you?", "Racing next year?"]
+          && ranked?.alternatives.map(\.score) == [3, 2], "runners-up in order, with scores")
     let strings = Coach.parse(#"{"suggest": ["What's next for Rillet?", "Hiring?"]}"#)
-    check(strings?.suggest == "What's next for Rillet?" && strings?.score == nil && strings?.alternatives == ["Hiring?"], "a plain list of lines")
+    check(strings?.suggest == "What's next for Rillet?" && strings?.score == nil && strings?.alternatives.map(\.say) == ["Hiring?"], "a plain list of lines")
     let none = Coach.parse(#"{"suggest": [], "define": []}"#)
-    check(none?.suggest == nil && none?.alternatives == [], "an empty list is no suggestion")
+    check(none?.suggest == nil && none?.alternatives.isEmpty == true, "an empty list is no suggestion")
 }
 
 // Claude behind the OpenAI-shaped requests every lane builds.
@@ -306,6 +307,16 @@ do {
     check(reply.calls.first?.name == "nearby" && reply.calls.first?.arguments.contains("Target") == true, "tool_use becomes a call")
     check(Claude.delta(#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"391"}}"#) == "391", "stream text delta")
     check(Claude.delta(#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hm"}}"#) == nil, "thinking deltas never reach the lens")
+}
+
+// OpenRouter: Cerebras first, Qwen's thinking off unless a lane asks for some.
+do {
+    let qwen = OpenRouter.adjust(["model": "qwen/qwen3.8-27b", "reasoning_effort": "none", "messages": []])
+    check(qwen["reasoning_effort"] == nil && (qwen["reasoning"] as? [String: Bool])?["enabled"] == false, "no reasoning for a quick answer")
+    check(((qwen["provider"] as? [String: Any])?["order"] as? [String])?.first == "cerebras", "Cerebras first")
+    let oss = OpenRouter.adjust(["model": "openai/gpt-oss-120b", "reasoning_effort": "low"])
+    check((oss["reasoning"] as? [String: String])?["effort"] == "low", "reasoning effort carried over")
+    check((OpenRouter.adjust(["model": "qwen/qwen3.8-27b"])["reasoning"] as? [String: Bool])?["enabled"] == false, "Qwen defaults to no thinking")
 }
 
 // Exa: what needs the conversation to search, and findings as lines.

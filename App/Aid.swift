@@ -272,6 +272,9 @@ enum Talk {
         /// Who the wearer is and what they know: keeps obvious terms from being defined, and gives
         /// suggestions their common ground.
         var background = ""
+        /// Where the wearer is: "Cal Hacks 13.0, UC Berkeley, Oct 24-26 2026". "How many people are
+        /// at this thing?" is about here; without this a search found a different hackathon.
+        var situation = ""
         var answers: Model?
         var coach: Model?
         /// What to say next and openers when face ID recognises someone, if they should run on a
@@ -708,6 +711,7 @@ enum Talk {
             // half of everything on the lens, and most of those turned out to be SKIPs.
             guard !turn.answer.isEmpty else { return }
             answeredAt = now
+            answeredText = turn.question + " " + turn.answer
             compositor.show(Card(kind: .answer, title: turn.answer, detail: Self.echo(turn.question),
                                  live: turn.state != .done, id: turn.card), at: now)
         case .skipped, .failed:
@@ -815,7 +819,10 @@ enum Talk {
     }
 
     private func put(_ card: Card) {
-        if card.kind == .answer { answeredAt = Date() }
+        if card.kind == .answer {
+            answeredAt = Date()
+            answeredText = card.title + " " + card.detail
+        }
         compositor.show(card, at: Date())
         publish()
     }
@@ -833,8 +840,10 @@ enum Talk {
     @ObservationIgnored private var defined: [String] = []
     /// Requests the coach rebuilt, so one garbled question is asked once.
     @ObservationIgnored private var asked: [String] = []
-    /// When an answer last went up (any lane), so a rebuilt request doesn't repeat one.
+    /// When an answer last went up (any lane), so a rebuilt request doesn't repeat one, and what it
+    /// was about, so a definition doesn't either.
     @ObservationIgnored private var answeredAt = Date.distantPast
+    @ObservationIgnored private var answeredText = ""
 
     /// One call at a time; anything heard meanwhile folds into one more call right after.
     private func coachSoon() {
@@ -933,7 +942,7 @@ enum Talk {
         case .recognised: "face ID just recognised THEM; pick up where you left off last time"
         case nil: nil
         }
-        return Coach.Input(wearer: config.wearer, background: config.background, known: known,
+        return Coach.Input(wearer: config.wearer, background: config.background, situation: config.situation, known: known,
                            defined: defined, suggested: suggested, moment: why, transcript: transcript)
     }
 
@@ -944,8 +953,11 @@ enum Talk {
         // Only a term just said, of real substance, that the coach is sure of: "LO — likely
         // misheard LLM" (it was Elo) is worse than nothing.
         let unsure = ["misheard", "likely", "probably", "possibly", "unclear", "perhaps"]
+        // Not a term an answer card just covered: "what's Cohen's kappa?" got an answer and then the
+        // same thing again as a definition.
+        let answered = now.timeIntervalSince(answeredAt) < 15 ? Talk.normalized(answeredText) : ""
         for term in advice.define where !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + term.meaning)) })
-            && term.term.count >= 3 && Talk.mentioned(term.term, in: recent)
+            && term.term.count >= 3 && Talk.mentioned(term.term, in: recent) && !Talk.mentioned(term.term, in: answered)
             && !unsure.contains(where: term.meaning.lowercased().contains) {
             defined.append(term.term)
             nextCard += 1
@@ -972,7 +984,9 @@ enum Talk {
         }
         // The runners-up wait for the next lull, which then needs no call at all.
         if moment != nil {
-            let fresh = advice.alternatives.filter { text in usable(text) && !ideas.contains { Talk.same($0.text, text) } }
+            // Only ones good enough to show in a lull on their own (score 3+).
+            let fresh = advice.alternatives.filter { ($0.score ?? 3) >= 3 }.map(\.say)
+                .filter { text in usable(text) && !ideas.contains { Talk.same($0.text, text) } }
             ideas = Array((fresh.map { (text: $0, at: now, line: lines.count) } + ideas).prefix(4))
         }
         if status.hasPrefix("Coach") { status = "" }
@@ -1089,8 +1103,10 @@ enum Talk {
         let card = nextCard, started = Date()
         compositor.startWork(id: card, label: config.toolbox?.working("research", arguments: "{}") ?? "Looking it up", at: started)
         publish()
-        let context = transcript(last: 4) + (saying.isEmpty ? "" : "\n" + saying)
-        let condenser = config.backup ?? config.answers
+        // Where they are resolves "this thing" and "here"; who they are never goes out.
+        let context = (config.situation.isEmpty ? "" : "Where: \(config.situation)\n") + transcript(last: 4)
+            + (saying.isEmpty ? "" : "\n" + saying)
+        let condenser = (config.perMinute != nil ? config.backup : nil) ?? config.answers ?? config.backup
         lookupTask = Task { [weak self] in
             do {
                 let finding = try await researcher.research(question, context: context)
@@ -1159,7 +1175,8 @@ enum Talk {
     /// What a model needs to make sense of a question: what's known about them, the last few lines,
     /// and the turn the question is in.
     private func context(last n: Int) -> String {
-        (known.isEmpty ? "" : "About them: \(known)\n") + transcript(last: n) + (saying.isEmpty ? "" : "\n" + saying)
+        (config.situation.isEmpty ? "" : "Where: \(config.situation)\n") + (known.isEmpty ? "" : "About them: \(known)\n")
+            + transcript(last: n) + (saying.isEmpty ? "" : "\n" + saying)
     }
 
     /// What's known about whoever the wearer is talking to, then anyone else in the conversation.
@@ -1215,8 +1232,10 @@ extension Aid.Config {
         let backupProvider = Provider(rawValue: value("BackupProvider")?.lowercased() ?? "") ?? .openai
         let backup = value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) }
         let answers = answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) }
-        // Cutting a finding down to a card wants a fast model with calls to spare: the backup.
-        let condenser = (backup ?? answers).map { (provider: $0.provider, key: $0.key, model: $0.model) }
+        // Cutting a finding down to a card wants the fastest model with calls to spare: the answer
+        // model when it's uncapped (qwen on Cerebras: 450/min), else the backup.
+        let capped = value("AnswerPerMinute").flatMap { Int($0) } != nil
+        let condenser = ((capped ? backup : nil) ?? answers ?? backup).map { (provider: $0.provider, key: $0.key, model: $0.model) }
 
         // Research (tier 3): Exa (fast search, condensed by the backup), Fetch.ai ASI:One, or
         // OpenAI or Groq web search.
@@ -1224,7 +1243,7 @@ extension Aid.Config {
         let researchKey = value("ResearchAPIKey")
         switch value("ResearchProvider")?.lowercased() {
         case "exa":
-            if let key = researchKey { researcher = Exa(key: key, type: value("ResearchModel") ?? "fast", resolver: condenser) }
+            if let key = researchKey { researcher = Exa(key: key, type: value("ResearchModel") ?? "instant", resolver: condenser) }
         case "asi1", "fetch", "fetchai":
             if let key = researchKey { researcher = ASIOne(key: key, model: value("ResearchModel") ?? "asi1") }
         case "openai":
@@ -1246,8 +1265,12 @@ extension Aid.Config {
         return Aid.Config(
             wearer: wearer,
             background: value("WearerBackground") ?? "",
+            situation: value("Situation") ?? "",
             answers: answers,
-            coach: coachKey.map { Aid.Model(provider: coachProvider, key: $0, model: value("CoachModel") ?? coachProvider.model) },
+            // Same provider as the answers: same model too (the provider's default was gpt-oss,
+            // whose 5/min cap rate-limited the coach in the first replay on qwen).
+            coach: coachKey.map { Aid.Model(provider: coachProvider, key: $0, model: value("CoachModel")
+                ?? (coachProvider == answerProvider ? answers?.model : nil) ?? coachProvider.model) },
             suggest: suggest,
             backup: backup,
             toolbox: value("Tools")?.lowercased() == "off" ? nil

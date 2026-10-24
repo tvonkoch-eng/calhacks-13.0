@@ -16,6 +16,8 @@ enum Coach {
         /// Who the wearer is and what they know: keeps obvious terms from being defined, and gives
         /// suggestions their common ground ("CS and financial math student, trades").
         var background = ""
+        /// Where they are ("Cal Hacks 13.0, UC Berkeley"), for questions about here.
+        var situation = ""
         var known: String          // "Priya · evals startup founder; Berkeley CS; Last talked Oct 12: …"
         var defined: [String]
         /// Suggestions already shown, so none comes round twice.
@@ -31,15 +33,16 @@ enum Coach {
         /// coach thinks it is (1-5; nil when it didn't say).
         var suggest: String?
         var score: Int?
-        /// The runners-up, best first: kept for the next lull, so it needs no call.
-        var alternatives: [String] = []
+        /// The runners-up, best first, with their scores: kept for the next lull, so it needs no call.
+        var alternatives: [(say: String, score: Int?)] = []
         /// THEM asked for a fact or a task in words the recognizer mangled or left implicit: the
         /// request rebuilt as one clear question, for the answer lane to take.
         var ask: String?
 
         static func == (a: Advice, b: Advice) -> Bool {
             a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
-                && a.suggest == b.suggest && a.score == b.score && a.alternatives == b.alternatives && a.ask == b.ask
+                && a.suggest == b.suggest && a.score == b.score
+                && a.alternatives.map { "\($0.say)=\($0.score ?? 0)" } == b.alternatives.map { "\($0.say)=\($0.score ?? 0)" } && a.ask == b.ask
         }
     }
 
@@ -65,7 +68,9 @@ enum Coach {
     ("you know how much figure raised the robot ones", "whats that stable coin bill again"): the \
     request as one clear, self-contained question, resolving "it" or "they" from the transcript \
     ("How much did Figure AI raise in its latest round?"). null if it is personal or social (about \
-    the people talking), rhetorical, or no request at all. Usually null.
+    the people talking), rhetorical, or no request at all. A question about this place or event \
+    ("how many people are at this thing", "when does it end") only when "Where" names it, resolved \
+    to it ("How many attendees does Cal Hacks 13.0 have?"); otherwise null. Usually null.
 
     "define": [{"term": "...", "meaning": "..."}]
       At most one: the single least familiar term in the newest line that the wearer, given their \
@@ -88,7 +93,11 @@ enum Coach {
     words, in the wearer's voice, no greeting, no name. It is about THEM (their work, what they \
     said, what they're after) or what the two share; never about the wearer's own interests, and \
     never answered already. Draw on, best first:
-      - what's known about THEM from before: last time's topic, a promise either of them made;
+      - a door THEM just opened that the wearer hasn't walked through: they're hiring, raising, an \
+    offer, an invitation, news or a feeling they just shared (the newest thing beats an older thread);
+      - what's known about THEM from before: last time's topic, a promise either of them made. \
+    Mind whose promise it is: one the wearer made is offered, never asked about ("Want me to send \
+    you the demo video?"); one THEM made can be asked about;
       - a thread THEM opened that nobody followed up: a project, a problem, a plan, news;
       - something they have in common, going only by the wearer's background;
       - when the conversation winds down: a concrete next step (swap contacts, an intro, a follow-up).
@@ -103,6 +112,7 @@ enum Coach {
         func list(_ items: [String]) -> String { items.isEmpty ? "none" : items.joined(separator: ", ") }
         return """
         Wearer: \(input.wearer)\(input.background.isEmpty ? "" : " (\(input.background)); never define what they would know")
+        Where: \(input.situation.isEmpty ? "unknown" : input.situation)
         Known about them: \(input.known.isEmpty ? "nothing yet" : input.known)
         Already defined: \(list(input.defined))
         Already suggested: \(input.suggested.isEmpty ? "none" : input.suggested.map { "\"\($0)\"" }.joined(separator: ", "))
@@ -126,7 +136,7 @@ enum Coach {
         // JSON is short, but reasoning models (gpt-oss, Muse Spark) think before writing any of it.
         if model.contains("gpt-oss") {
             body.merge(["max_tokens": 1200, "reasoning_effort": "low"]) { _, new in new }
-        } else if provider == .cerebras, model.contains("qwen") {
+        } else if provider == .cerebras || provider == .openrouter, model.contains("qwen") {
             // Room for three scored suggestions as well as a definition.
             body.merge(["max_tokens": 320, "reasoning_effort": "none"]) { _, new in new }
         } else if provider == .muse {
@@ -169,7 +179,7 @@ enum Coach {
             }
             result.suggest = lines.first?.0
             result.score = lines.first?.1
-            result.alternatives = lines.dropFirst().map(\.0)
+            result.alternatives = lines.dropFirst().map { (say: $0.0, score: $0.1) }
         } else {
             result.suggest = clean(object["suggest"])
         }
@@ -327,7 +337,8 @@ enum LLM {
         request.timeoutInterval = timeout
         Claude.authorize(&request, key: key, claude: claude)
         request.setValue("calhacks-aid/1.0", forHTTPHeaderField: "User-Agent")
-        request.httpBody = try JSONSerialization.data(withJSONObject: claude ? Claude.body(body) : body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: claude ? Claude.body(body)
+            : endpoint == OpenRouter.endpoint ? OpenRouter.adjust(body) : body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -446,8 +457,9 @@ enum Claude {
 /// fast model, and Aid's condenser cuts the findings to a card as it does for every researcher.
 struct Exa: Researcher {
     let key: String
-    /// Exa's search type: "fast" by default; "instant" or "auto" via RESEARCH_MODEL.
-    var type = "fast"
+    /// Exa's search type: "instant", its real-time mode (measured 0.4-0.5 s, 0.09 s repeated),
+    /// by default; "fast" or "auto" via RESEARCH_MODEL.
+    var type = "instant"
     /// Rewrites a question that leans on the conversation into a standalone query.
     var resolver: (provider: Provider, key: String, model: String)?
     var name: String { "Exa" }
@@ -475,11 +487,13 @@ struct Exa: Researcher {
         request.timeoutInterval = 6
         request.setValue(key, forHTTPHeaderField: "x-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Exa's recommended request (query plus highlights), with fewer results than its 10: a
+        // card needs one fact, and four pages keep the condenser's prompt small and quick.
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "query": search,
             "type": type,
             "numResults": 4,
-            "contents": ["highlights": ["numSentences": 2, "highlightsPerUrl": 2]],
+            "contents": ["highlights": true],
         ])
         let (data, response) = try await URLSession.shared.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -496,7 +510,7 @@ struct Exa: Researcher {
     static func leans(_ query: String) -> Bool {
         let words = Set(Talk.normalized(query).split(separator: " ").map(String.init))
         return !words.isDisjoint(with: ["it", "its", "they", "their", "them", "that", "this", "those", "these",
-                                        "he", "she", "his", "her", "there", "one"])
+                                        "he", "she", "his", "her", "there", "one", "here", "thing"])
     }
 
     /// One line per result: title, date, highlights.
@@ -508,5 +522,27 @@ struct Exa: Researcher {
             let date = (result["publishedDate"] as? String).map { " (\($0.prefix(10)))" } ?? ""
             return "- \(result["title"] as? String ?? "")\(date): \(text)"
         }.joined(separator: "\n")
+    }
+}
+
+// MARK: - OpenRouter
+
+/// OpenRouter is OpenAI-compatible, but picks a host per request: ask for Cerebras, then Groq
+/// (the fastest for our models), falling back to whoever has capacity. Its reasoning switch is
+/// `reasoning`, not `reasoning_effort`; Qwen thinks unless told not to.
+enum OpenRouter {
+    static let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+
+    static func adjust(_ chat: [String: Any]) -> [String: Any] {
+        var body = chat
+        let effort = body.removeValue(forKey: "reasoning_effort") as? String
+        let model = body["model"] as? String ?? ""
+        if effort == "none" || (effort == nil && model.contains("qwen")) {
+            body["reasoning"] = ["enabled": false]
+        } else if let effort {
+            body["reasoning"] = ["effort": effort == "minimal" ? "low" : effort]
+        }
+        body["provider"] = ["order": ["cerebras", "groq"], "allow_fallbacks": true]
+        return body
     }
 }

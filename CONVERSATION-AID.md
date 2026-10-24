@@ -63,6 +63,22 @@ model/provider benchmarks:
 - Measured: the ranked coach on a 3-person lull, qwen-3.8-27b 281 ms, gpt-oss-120b 251 ms, both
   specific ("How do you handle judge drift?"). Claude and Exa are unmeasured here (no keys yet).
 
+### Replay findings and fixes (typed replays of `network/evals.txt` and `catchup.txt`)
+
+| seen | fix |
+|---|---|
+| Coach rate-limited 55 s on a qwen setup | an empty `COACH_MODEL` took the provider's default (gpt-oss, 5/min); it now takes the answer model |
+| "How many people are at this thing?" searched and found a different hackathon | `SITUATION` (event, place, dates) goes into every context; questions about here are resolved to it, or skipped when it's unset |
+| Cohen's kappa answered, then defined with the same words | no definition of a term an answer card covered in the last 15 s |
+| Research card titled "Cal Hacks 13.0 attendance" | the card's title is the answer ("3,000+ attendees"); the condenser runs on the uncapped answer model, 3.4 → 2.1 s |
+| Lull suggestion ignored "we're hiring like crazy" | the newest door THEM opened ranks first ("What's the hardest part of hiring now?") |
+| "Did you end up sending that demo video?" asked about the wearer's own promise | the wearer's promises are offered ("Want me to send that demo video?"), only THEM's are asked about |
+| Queued runners-up shown in lulls regardless of quality | only ones the coach scored 3+ are kept |
+
+Setup now: everything on `qwen-3.8-27b` on the free Cerebras key (450/min, 150k tokens/min), backup
+OpenAI `gpt-4.1-mini` (or `openrouter`, which routes `qwen/qwen3.8-27b` to Cerebras first, once it has
+credits), research Exa `instant` (0.4-0.5 s measured).
+
 ## On the phone when merging
 
 1. Turn the coach back on: `Assistant.makeAid` has `Tuning aidCoach` default **false** because of

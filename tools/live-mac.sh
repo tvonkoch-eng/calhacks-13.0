@@ -37,7 +37,7 @@ if [ ! -x "$out/live" ] || [ -n "$(find App tools Secrets.xcconfig -newer "$out/
                 SuggestProvider:SUGGEST_PROVIDER SuggestAPIKey:SUGGEST_API_KEY SuggestModel:SUGGEST_MODEL \
                 BackupProvider:BACKUP_PROVIDER BackupAPIKey:BACKUP_API_KEY BackupModel:BACKUP_MODEL \
                 ResearchProvider:RESEARCH_PROVIDER ResearchAPIKey:RESEARCH_API_KEY ResearchModel:RESEARCH_MODEL \
-                AnswerPerMinute:ANSWER_PER_MINUTE WearerBackground:WEARER_BACKGROUND \
+                AnswerPerMinute:ANSWER_PER_MINUTE WearerBackground:WEARER_BACKGROUND Situation:SITUATION \
                 Tools:TOOLS TestLocation:TEST_LOCATION; do
       printf '<key>%s</key><string>%s</string>\n' "${pair%%:*}" "$(val "${pair#*:}")"
     done

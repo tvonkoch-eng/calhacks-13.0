@@ -70,6 +70,7 @@ targets:
         ResearchModel: $(RESEARCH_MODEL)
         OpenAIAPIKey: $(OPENAI_API_KEY)
         WearerBackground: $(WEARER_BACKGROUND)
+        Situation: $(SITUATION)
         WearerName: $(WEARER_NAME)
         Tools: $(TOOLS)
         TestLocation: $(TEST_LOCATION)
