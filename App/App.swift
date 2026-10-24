@@ -29,6 +29,9 @@ struct CalHacksApp: App {
                     NotificationCenter.default.addObserver(forName: Tuning.changed, object: nil, queue: .main) { _ in
                         let wanted = Tuning.bool("AutoIdentify", glasses.watching)
                         if wanted != glasses.watching { glasses.watching = wanted }
+                        // Resolution and frame rate are fixed when the camera is added, so a push
+                        // needs a fresh camera to mean anything. Makes streamRes a 0.3 s change.
+                        glasses.restreamIfSettingsChanged()
                     }
                     #if DEBUG
                     let env = ProcessInfo.processInfo.environment

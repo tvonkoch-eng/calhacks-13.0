@@ -1,13 +1,25 @@
+import Accelerate
 import AVFoundation
 import CoreImage
 import SwiftUI
 import Vision
 
-/// One face found in a frame: where it is, its embedding, and a square crop for the avatar.
+/// One face found in a frame: where it is, how good a look we got, its embedding, and a crop.
 struct FaceHit {
+    /// L2-normalised. **Empty when the crop failed the quality gate** — the face was still seen
+    /// and can still be tracked, it just isn't evidence about who it is.
     let embedding: [Float]
     let crop: CGImage
     let area: CGFloat
+    /// Normalised bounding box in the source frame, so a face can be followed between frames.
+    let box: CGRect
+    /// Contrast-normalised Laplacian energy of the crop at a fixed face-relative resolution:
+    /// "how sharp is this face, as the embedder will see it". ~0.05 is mush, ~0.25 is crisp.
+    let sharpness: Float
+    /// True when Vision gave us both eyes and the crop is canonically aligned.
+    let aligned: Bool
+
+    var usable: Bool { !embedding.isEmpty }
 }
 
 /// Where the time went in one scan (milliseconds).
@@ -15,51 +27,133 @@ struct FaceTiming {
     var detectMs = 0.0
     var embedMs = 0.0
     var faces = 0
+    /// Faces seen but not embedded because they were too blurry or too small.
+    var gated = 0
+    var bestSharpness: Float = 0
 }
 
 enum FaceEngine {
-    private static let context = CIContext()
+    private static let context = CIContext(options: [.useSoftwareRenderer: false])
 
-    /// Detects faces (largest first) and embeds each one with a Vision feature print.
+    /// Canonical face size for the aligned crop. Both the bundled references and live frames go
+    /// through this, so the gallery and the probe always live in the same space.
+    /// 112 px, not 160 or 224: measured EER 7.4% at 112 against 10.5% at 160 and 11.5% at 224 on
+    /// the real references. It is also exactly what the ArcFace-family models expect.
+    static let canonical: CGFloat = 112
+
+    // MARK: Quality gate
+
+    /// Below this the crop is not embedded at all. Measured: a *small sharp* face reaches d' 2.73
+    /// while a *large blurry* one manages 0.54, so blur — not size — is what has to be rejected.
+    /// Live-tunable: `minSharpness` in tuning.json.
+    /// Default OFF (0). In simulation the gate never bound — live-frame sharpness sat at p10 0.25
+    /// against a 0.10 gate — and a gate calibrated on simulated blur could silence a real demo.
+    /// `streamStats` now logs the real p10/p50 from the glasses; set this from those numbers.
+    static var minSharpness: Float { Tuning.float("minSharpness", 0) }
+    /// Reference photos are enrolled unconditionally; a gate there would silently empty a gallery.
+    static let enrolSharpness: Float = 0
+
+    /// Detects faces (largest first) and embeds each one. Kept for the enrolment path.
     static func faces(in image: CIImage, limit: Int = .max) -> [FaceHit] {
-        scan(image, limit: limit).hits
+        scan(image, limit: limit, minSharpness: enrolSharpness).hits
     }
 
-    /// Detection runs on every face; only the `limit` largest get embedded (embedding is the slow part).
-    static func scan(_ image: CIImage, limit: Int = .max) -> (hits: [FaceHit], timing: FaceTiming) {
+    /// Detection runs on every face; the `limit` largest are cropped, and of those only the ones
+    /// sharp enough to be worth 6 ms are embedded. Blurred faces come back with an empty embedding.
+    static func scan(_ image: CIImage, limit: Int = .max, minSharpness: Float? = nil) -> (hits: [FaceHit], timing: FaceTiming) {
+        let gate = minSharpness ?? self.minSharpness
         var timing = FaceTiming()
         var start = CFAbsoluteTimeGetCurrent()
-        let detect = VNDetectFaceRectanglesRequest()
-        try? VNImageRequestHandler(ciImage: image).perform([detect])
+
+        // Landmarks, not just rectangles: the eye centres are what let us put every face into one
+        // canonical pose. The request also carries the bounding box and roll, so this replaces
+        // VNDetectFaceRectanglesRequest rather than running alongside it.
+        let wantAlignment = Tuning.bool("alignFaces", true)
+        let request: VNImageBasedRequest = wantAlignment ? VNDetectFaceLandmarksRequest() : VNDetectFaceRectanglesRequest()
+        try? VNImageRequestHandler(ciImage: image).perform([request])
+        let observations = ((request as? VNDetectFaceLandmarksRequest)?.results
+            ?? (request as? VNDetectFaceRectanglesRequest)?.results ?? [])
         timing.detectMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
 
-        let faces = (detect.results ?? []).sorted {
+        let faces = observations.sorted {
             $0.boundingBox.width * $0.boundingBox.height > $1.boundingBox.width * $1.boundingBox.height
         }
         timing.faces = faces.count
 
+        // Crop and score quality first — cheap — so the expensive embed only runs on what can win.
+        let candidates = faces.prefix(limit).compactMap { crop(image, $0) }
         start = CFAbsoluteTimeGetCurrent()
-        let hits: [FaceHit] = faces.prefix(limit).compactMap { crop(image, $0) }
+        var hits: [FaceHit] = []
+        hits.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            timing.bestSharpness = max(timing.bestSharpness, candidate.sharpness)
+            guard candidate.sharpness >= gate else {
+                timing.gated += 1
+                hits.append(FaceHit(embedding: [], crop: candidate.image, area: candidate.area,
+                                    box: candidate.box, sharpness: candidate.sharpness,
+                                    aligned: candidate.aligned))
+                continue
+            }
+            guard let embedding = embed(candidate.image) else { continue }
+            hits.append(FaceHit(embedding: embedding, crop: candidate.image, area: candidate.area,
+                                box: candidate.box, sharpness: candidate.sharpness,
+                                aligned: candidate.aligned))
+        }
         timing.embedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
         return (hits, timing)
     }
 
-    /// Cuts the face out of the frame *upright*.
+    private struct Candidate {
+        let image: CGImage
+        let area: CGFloat
+        let box: CGRect
+        let sharpness: Float
+        let aligned: Bool
+    }
+
+    /// Cuts the face out of the frame into the canonical space.
     ///
-    /// A feature print is a whole-image descriptor, so it compares a face to the gallery in
-    /// whatever orientation the pixels arrived in. Vision reports the in-plane roll of each face;
-    /// rotating it out puts every crop — live frames and bundled reference photos alike — into one
-    /// upright space. Measured on the real references: a frame rotated 90 degrees scored 0.78
-    /// against an upright gallery with the runner-up only 0.06 behind (82% correct); de-rolled,
-    /// the same frames score 0.97 with a 0.26 margin and 100% correct.
+    /// Two things happen here, and both are about making the gallery and the live frame comparable:
     ///
-    /// It also absorbs an ordinary tilted head, which used to eat the same margin.
-    private static func crop(_ image: CIImage, _ face: VNFaceObservation) -> FaceHit? {
+    /// 1. **Alignment.** A feature print is a whole-image descriptor, so it compares a face in
+    ///    whatever pose the pixels arrived in. When Vision gives us both eyes we map them onto a
+    ///    fixed position in a square canvas — the standard similarity-transform alignment every
+    ///    face model is trained on. Measured on the real references: EER 9.7% -> 7.0%, worst
+    ///    genuine pair 0.587 -> 0.700, watch gate 86% -> 93% with no wrong names. When the eyes
+    ///    aren't available we fall back to de-rolling about the face centre, which is what this
+    ///    did before.
+    /// 2. **The square is never clipped.** It used to be `.intersection(extent)`, which for a face
+    ///    near the edge of the frame returns a *non-square* rect; `.scaleFill` then stretched it
+    ///    and the face was embedded in a distorted space it could never match from. Clamping the
+    ///    source instead keeps every crop square — an edge face gets edge pixels, not a squash.
+    private static func crop(_ image: CIImage, _ face: VNFaceObservation) -> Candidate? {
         let extent = image.extent
         let box = VNImageRectForNormalizedRect(face.boundingBox, Int(extent.width), Int(extent.height))
             .offsetBy(dx: extent.minX, dy: extent.minY)
-        // Rotating about the face's own centre leaves that centre where it is, so the square below
-        // still frames the face in the rotated image.
+        // Both dimensions, not just width: a box clipped to 10 px tall used to sail through.
+        guard box.width >= 24, box.height >= 24 else { return nil }
+        let side = canonical
+
+        if let eyes = eyeCentres(image, face) {
+            let dx = eyes.right.x - eyes.left.x, dy = eyes.right.y - eyes.left.y
+            let dist = sqrt(dx * dx + dy * dy)
+            if dist > 4 {
+                let mid = CGPoint(x: (eyes.left.x + eyes.right.x) / 2, y: (eyes.left.y + eyes.right.y) / 2)
+                let scale = (side * 0.40) / dist
+                var t = CGAffineTransform.identity
+                    .translatedBy(x: side / 2, y: side * 0.62)
+                    .scaledBy(x: scale, y: scale)
+                    .rotated(by: -atan2(dy, dx))
+                t = t.translatedBy(x: -mid.x, y: -mid.y)
+                let square = CGRect(x: 0, y: 0, width: side, height: side)
+                if let cg = context.createCGImage(image.clampedToExtent().transformed(by: t), from: square) {
+                    return Candidate(image: cg, area: box.width * box.height,
+                                     box: face.boundingBox, sharpness: sharpness(cg), aligned: true)
+                }
+            }
+        }
+
+        // Fallback: de-roll about the face's own centre, which leaves that centre in place.
         let centre = CGPoint(x: box.midX, y: box.midY)
         var source = image
         let roll = CGFloat(face.roll?.doubleValue ?? 0)
@@ -68,33 +162,90 @@ enum FaceEngine {
                 .rotated(by: -roll)
                 .translatedBy(x: -centre.x, y: -centre.y))
         }
-        let side = max(box.width, box.height) * 1.25
-        let square = CGRect(x: centre.x - side / 2, y: centre.y - side / 2, width: side, height: side)
-            .intersection(source.extent)
-        // 40 px, not 60: feature prints still hold up on small crops, and 60 silently discarded
-        // anyone standing a couple of metres away.
-        guard square.width >= 40,
-              let cropped = context.createCGImage(source, from: square),
-              let embedding = embed(cropped) else { return nil }
-        return FaceHit(embedding: embedding, crop: cropped, area: box.width * box.height)
+        let boxSide = max(box.width, box.height) * 1.25
+        let square = CGRect(x: centre.x - boxSide / 2, y: centre.y - boxSide / 2, width: boxSide, height: boxSide)
+        guard let cg = context.createCGImage(source.clampedToExtent(), from: square) else { return nil }
+        return Candidate(image: cg, area: box.width * box.height,
+                         box: face.boundingBox, sharpness: sharpness(cg), aligned: false)
     }
+
+    private static func eyeCentres(_ image: CIImage, _ face: VNFaceObservation) -> (left: CGPoint, right: CGPoint)? {
+        guard let landmarks = face.landmarks, let le = landmarks.leftEye, let re = landmarks.rightEye else { return nil }
+        let size = CGSize(width: image.extent.width, height: image.extent.height)
+        func centre(_ region: VNFaceLandmarkRegion2D) -> CGPoint? {
+            let points = region.pointsInImage(imageSize: size)
+            guard !points.isEmpty else { return nil }
+            var x: CGFloat = 0, y: CGFloat = 0
+            for p in points { x += p.x; y += p.y }
+            return CGPoint(x: x / CGFloat(points.count) + image.extent.minX,
+                           y: y / CGFloat(points.count) + image.extent.minY)
+        }
+        guard let a = centre(le), let b = centre(re) else { return nil }
+        // "left"/"right" are the subject's; order them by screen x so the rotation never flips.
+        return a.x <= b.x ? (a, b) : (b, a)
+    }
+
+    // MARK: Sharpness
+
+    /// Variance of the Laplacian over a 48x48 grey version of the crop, divided by the crop's own
+    /// contrast. Dividing is what makes it a *blur* measure rather than a contrast measure: a dim
+    /// or flat face is not penalised, a smeared one is. Sampling at a fixed 48x48 makes it
+    /// face-relative — exactly the thing that matters, since the embedder sees a rescaled crop too.
+    static func sharpness(_ image: CGImage) -> Float {
+        let n = 48
+        var bytes = [UInt8](repeating: 0, count: n * n)
+        let drawn: Bool = bytes.withUnsafeMutableBytes { raw -> Bool in
+            guard let base = raw.baseAddress,
+                  let ctx = CGContext(data: base, width: n, height: n, bitsPerComponent: 8,
+                                      bytesPerRow: n, space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: n, height: n))
+            return true
+        }
+        guard drawn else { return 0 }
+
+        var pixels = [Float](repeating: 0, count: n * n)
+        vDSP.convertElements(of: bytes, to: &pixels)
+        var mean: Float = 0, deviation: Float = 0
+        vDSP_normalize(pixels, 1, nil, 1, &mean, &deviation, vDSP_Length(n * n))
+        guard deviation > 1 else { return 0 }
+
+        var energy: Float = 0
+        var count: Float = 0
+        for y in 1..<(n - 1) {
+            for x in 1..<(n - 1) {
+                let i = y * n + x
+                let lap = 4 * pixels[i] - pixels[i - 1] - pixels[i + 1] - pixels[i - n] - pixels[i + n]
+                energy += lap * lap
+                count += 1
+            }
+        }
+        return sqrt(energy / max(count, 1)) / deviation
+    }
+
+    // MARK: Embedding
 
     /// Loads the Vision models up front so the first identify doesn't pay for it.
     static func warmUp() {
-        let blank = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 128, height: 128))
-        try? VNImageRequestHandler(ciImage: blank).perform([VNDetectFaceRectanglesRequest()])
+        let blank = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 256, height: 256))
+        let handler = VNImageRequestHandler(ciImage: blank)
+        try? handler.perform([VNDetectFaceLandmarksRequest(), VNDetectFaceRectanglesRequest()])
         if let cg = context.createCGImage(blank, from: blank.extent) { _ = embed(cg) }
     }
 
-    private static func embed(_ image: CGImage) -> [Float]? {
+    static func embed(_ image: CGImage) -> [Float]? {
         let request = VNGenerateImageFeaturePrintRequest()
         request.imageCropAndScaleOption = .scaleFill
         try? VNImageRequestHandler(cgImage: image).perform([request])
         guard let print = request.results?.first, print.elementType == .float else { return nil }
         var v = print.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-        let norm = sqrt(v.reduce(0) { $0 + $1 * $1 })
+        var norm: Float = 0
+        vDSP_svesq(v, 1, &norm, vDSP_Length(v.count))
+        norm = sqrt(norm)
         guard norm > 0 else { return nil }
-        for i in v.indices { v[i] /= norm }
+        var scale = 1 / norm
+        vDSP_vsmul(v, 1, &scale, &v, 1, vDSP_Length(v.count))
         return v
     }
 }

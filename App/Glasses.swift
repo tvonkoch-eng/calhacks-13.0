@@ -57,6 +57,14 @@ enum Identification {
     /// so the wearer's view and the wearer's display can be watched while a session runs.
     var pov: UIImage?
     @ObservationIgnored private var lastPov = Date.distantPast
+    /// Frame sizes and arrival times since the camera was attached. Resolution and frame rate are
+    /// *requests*: the SDK's bandwidth governor quietly degrades both when the radio is loaded, so
+    /// the only honest answer to "what resolution are we getting" is to measure the frames.
+    @ObservationIgnored private var frameSizes: [String: Int] = [:]
+    @ObservationIgnored private var statsFrom = Date()
+    @ObservationIgnored private var statsFrames = 0
+    @ObservationIgnored private var sharpSamples: [Float] = []
+    @ObservationIgnored private var lastStats = Date.distantPast
     @ObservationIgnored private var povWatch: Task<Void, Never>?
 
     @ObservationIgnored var store: Store?
@@ -89,12 +97,18 @@ enum Identification {
     /// talking distance is still ~105 px, well above the 40 px crop floor, and feature prints
     /// score 0.79 on half-size crops. Both knobs are UserDefaults so they move with no rebuild:
     /// `streamFps` (2/7/15/24/30) and `streamRes` ("low"/"medium"/"high").
+    /// What the currently-attached camera was actually built with, so a pushed change to
+    /// `streamRes`/`streamFps` can notice it needs a new camera. The SDK fixes resolution and
+    /// frame rate at addCamera time; changing the defaults alone does nothing until then.
+    @ObservationIgnored private var liveStreamSettings: String?
+    private var streamSettings: String { "\(Tuning.int("streamFps", 7))/\(UserDefaults.standard.string(forKey: "streamRes") ?? "low")" }
+
     private var streamConfig: StreamConfiguration {
         #if DEBUG
         // A simulated pair is a local AVCaptureSession with no radio at all.
         if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24) }
         #endif
-        let fps = UInt(UserDefaults.standard.object(forKey: "streamFps") as? Int ?? 7)
+        let fps = UInt(Tuning.int("streamFps", 7))
         switch UserDefaults.standard.string(forKey: "streamRes") {
         case "high": return StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: fps)
         case "medium": return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
@@ -134,11 +148,18 @@ enum Identification {
     /// One watch scan at a time.
     @ObservationIgnored private var autoBusy = false
     @ObservationIgnored private var lastAutoScan = Date.distantPast
-    /// 5 fps arrives; look at two of them a second and drop the rest undecoded.
-    @ObservationIgnored private let autoInterval: TimeInterval = 0.5
-    /// A confident match has to show up twice running before it reaches the lens, so someone
-    /// walking past behind your shoulder can't take the card.
-    @ObservationIgnored private var pending: (id: String, at: Date)?
+    /// Look at every frame we can. A scan is ~8 ms of detection plus ~6 ms per sharp face, and
+    /// frames arrive at 7 fps, so the budget is not the constraint — evidence is. Each extra look
+    /// at the same face is another vote in the fused embedding.
+    @ObservationIgnored private var autoInterval: TimeInterval { TimeInterval(Tuning.float("autoInterval", 0.12)) }
+    /// Faces followed across frames, with their embeddings accumulating. This replaces the old
+    /// "two consecutive confident frames, reset on any miss" rule, which discarded every near-miss.
+    @ObservationIgnored private let tracker = FaceTracker()
+    /// How much accumulated evidence a track needs before it may claim the lens. Weight is the
+    /// decayed count of sharp looks, so 1.6 is roughly two good frames or three mediocre ones.
+    @ObservationIgnored private var minEvidence: Float { Tuning.float("minEvidence", 1.6) }
+    /// Tracks that have already had their turn on the lens, so a held card doesn't re-fire.
+    @ObservationIgnored private var announced: Set<Int> = []
     /// When the current card went up, so a stale one stops blocking a new person.
     @ObservationIgnored private var resultAt = Date.distantPast
     /// Don't announce the same person over and over.
@@ -347,7 +368,6 @@ enum Identification {
         }
         let start = CFAbsoluteTimeGetCurrent()
         identifying = true
-        pending = nil
         var log: [String: Any] = ["source": source, "resolution": "medium-stream"]
         defer { identifying = false }
         renderLens()
@@ -419,7 +439,6 @@ enum Identification {
         // immediately re-announce whoever you just identified by hand.
         resultAt = Date()
         lastShown[match.person.id] = Date()
-        pending = nil
     }
 
     /// Re-match the last face after it was saved to someone.
@@ -552,7 +571,8 @@ enum Identification {
     func dismiss() {
         result = .ready
         resultAt = .distantPast
-        pending = nil
+        // Dismissing is "show me someone else": let the watch re-offer anyone it is tracking.
+        announced.removeAll()
         renderLens()
     }
 
@@ -591,7 +611,8 @@ enum Identification {
         povWatch = nil
         pov = nil
         autoBusy = false
-        pending = nil
+        tracker.reset()
+        announced.removeAll()
         resultAt = .distantPast
         resumeFrame(nil)
         self.status = status
@@ -720,6 +741,9 @@ enum Identification {
     }
 
     private func attachCamera(_ camera: Camera) {
+        liveStreamSettings = streamSettings
+        frameSizes.removeAll()
+        statsFrom = Date()
         cameraTokens.append(camera.stream.videoFramePublisher.listen { [weak self] frame in
             // Decode on the publisher's own thread. Hopping to the main actor first and calling
             // makeUIImage() there is what made the POV tile stutter: the decode was spending the
@@ -729,6 +753,7 @@ enum Identification {
             Task { @MainActor in
                 guard let self else { return }
                 self.lastFrameAt = Date()
+                self.noteFrame(image)
                 // Every frame is already decoded and downscaled above for the face path, whether
                 // or not anyone is looking at the phone, so showing it costs one texture upload
                 // and no extra radio time. Real glasses arrive at 7 fps: a slideshow, by budget.
@@ -771,6 +796,43 @@ enum Identification {
         frameWaiter = nil
     }
 
+    /// Counts a delivered frame and, every 10 s, writes one line saying what the link really gave
+    /// us: size, true frame rate, and how sharp the faces in it were. Raising `streamRes` is only
+    /// worth it if these numbers move — the SDK will happily accept "high" and send you something
+    /// else when the radio is busy.
+    private func noteFrame(_ image: UIImage?) {
+        guard let image else { return }
+        let scale = image.scale
+        let key = "\(Int(image.size.width * scale))x\(Int(image.size.height * scale))"
+        frameSizes[key, default: 0] += 1
+        statsFrames += 1
+        let now = Date()
+        guard now.timeIntervalSince(lastStats) >= 10 else { return }
+        lastStats = now
+        let seconds = max(now.timeIntervalSince(statsFrom), 0.001)
+        var log: [String: Any] = ["event": "streamStats",
+                                  "asked": streamSettings,
+                                  "sizes": frameSizes.map { "\($0.key)x\($0.value)" }.sorted().joined(separator: ","),
+                                  "frames": statsFrames,
+                                  "fps": (Double(statsFrames) / seconds * 10).rounded() / 10]
+        if !sharpSamples.isEmpty {
+            let sorted = sharpSamples.sorted()
+            log["sharpP10"] = (Double(sorted[max(0, sorted.count / 10)]) * 1000).rounded() / 1000
+            log["sharpP50"] = (Double(sorted[sorted.count / 2]) * 1000).rounded() / 1000
+            log["faceFrames"] = sorted.count
+        }
+        SpeedLog.record(log)
+        frameSizes.removeAll(); statsFrames = 0; sharpSamples.removeAll(); statsFrom = now
+    }
+
+    /// A pushed `streamRes`/`streamFps` only takes effect on a new camera, so swap one in.
+    /// This is what makes resolution a 0.3 s tuning push instead of a build.
+    func restreamIfSettingsChanged() {
+        guard connected, let live = liveStreamSettings, live != streamSettings else { return }
+        SpeedLog.record(["event": "restream", "from": live, "to": streamSettings])
+        rebuildCamera()
+    }
+
     // MARK: - Auto-identify
 
     /// True when a watch scan should run on this frame, and claims the slot if so.
@@ -778,61 +840,89 @@ enum Identification {
         guard watching, connected, !identifying, !autoBusy, store != nil else { return false }
         // A live conversation answer owns the lens; never fight it for the frame.
         guard answer == nil else { return false }
-        // Someone is already on the card. Leave them there for a bit, then allow a new person.
-        if case .known = result, Date().timeIntervalSince(resultAt) < cardHolds { return false }
+        // NOTE: a card being up no longer stops the scan. It used to return false for the whole
+        // 20 s `cardHolds`, so turning to a new person meant waiting out the old one with the
+        // camera effectively off. `cardHolds` now gates only the *display* (see mayShow), and the
+        // tracker keeps accumulating evidence about whoever you turned to in the meantime.
         guard Date().timeIntervalSince(lastAutoScan) >= autoInterval else { return false }
         autoBusy = true
         lastAutoScan = Date()
         return true
     }
 
+    /// Whether a new person may take the lens right now.
+    private func mayShow(_ id: String) -> Bool {
+        guard answer == nil, !identifying else { return false }
+        if let last = lastShown[id], Date().timeIntervalSince(last) < reannounceAfter { return false }
+        // Someone else is on the card; leave them there for a beat before swapping.
+        if case .known(let current, _) = result, current.person.id != id,
+           Date().timeIntervalSince(resultAt) < cardHolds { return false }
+        return true
+    }
+
     /// Scan a watch frame. Quiet by design: this path only ever writes the lens for a confident,
     /// stable, not-just-shown match. A miss leaves whatever is on the lens exactly as it was —
     /// no "No face found" appearing while nobody asked for anything.
+    ///
+    /// What changed: a frame is no longer a verdict, it is a vote. Faces are followed between
+    /// frames and their embeddings fused, so a blurry look adds information instead of resetting
+    /// the state machine. Expected time to a correct auto-identify goes from ~43 s to a couple of
+    /// frames, and the blur gate means the frames that would have produced a *wrong* name are
+    /// rejected before they are even embedded.
     private func autoScan(_ image: CIImage) async {
         defer { autoBusy = false }
         let start = CFAbsoluteTimeGetCurrent()
         let scan = await scanFaces(image)
-        guard let store, !scan.hits.isEmpty else { pending = nil; return }
+        guard let store else { return }
+        for hit in scan.hits where hit.sharpness > 0 { sharpSamples.append(hit.sharpness) }
+        let live = tracker.update(scan.hits)
+        guard !live.isEmpty else { return }
 
-        var best: (hit: FaceHit, match: Match)?
-        for hit in scan.hits {
-            guard let match = store.confidentMatch(hit.embedding) else { continue }
-            if let current = best, match.score <= current.match.score { continue }
-            best = (hit, match)
+        // Strongest evidence first; the first track that clears the bar and is allowed on screen wins.
+        var chosen: (track: FaceTracker.Track, match: Match)?
+        for track in live where track.weight >= minEvidence && !announced.contains(track.id) {
+            guard let match = store.confidentMatch(track.probe) else { continue }
+            if let current = chosen, match.score <= current.match.score { continue }
+            chosen = (track, match)
         }
-        guard let best else { pending = nil; return }
-
-        // Two consecutive scans (~0.5 s apart) on the same person before we commit.
-        let person = best.match.person.id
-        guard let seen = pending, seen.id == person, Date().timeIntervalSince(seen.at) < 2 else {
-            pending = (person, Date())
+        guard let chosen, mayShow(chosen.match.person.id) else {
+            if scan.timing.gated > 0, scan.timing.faces > 0, Int.random(in: 0..<10) == 0 {
+                SpeedLog.record(["event": "autoBlurred", "faces": scan.timing.faces,
+                                 "gated": scan.timing.gated,
+                                 "sharpness": (Double(scan.timing.bestSharpness) * 1000).rounded() / 1000])
+            }
             return
         }
-        pending = nil
-        if let last = lastShown[person], Date().timeIntervalSince(last) < reannounceAfter { return }
-        // Re-check: a press or an answer may have taken the lens while we were embedding.
-        guard answer == nil, !identifying else { return }
 
-        result = .known(best.match, best.hit)
+        announced.insert(chosen.track.id)
+        result = .known(chosen.match, chosen.track.best)
         recordSeen()
+        let ranked = store.ranked(chosen.track.probe)
         var log: [String: Any] = ["event": "autoIdentify", "source": "watch",
-                                  "person": person,
-                                  "score": (Double(best.match.score) * 1000).rounded() / 1000,
-                                  "faces": scan.timing.faces, "embedded": scan.hits.count,
+                                  "person": chosen.match.person.id,
+                                  "score": (Double(chosen.match.score) * 1000).rounded() / 1000,
+                                  "looks": chosen.track.looks,
+                                  "evidence": (Double(chosen.track.weight) * 100).rounded() / 100,
+                                  "sharpness": (Double(chosen.track.best.sharpness) * 1000).rounded() / 1000,
+                                  "aligned": chosen.track.best.aligned,
+                                  "ttidMs": ms(since: chosen.track.firstSeen.timeIntervalSinceReferenceDate),
+                                  "faces": scan.timing.faces, "embedded": scan.hits.filter(\.usable).count,
+                                  "gated": scan.timing.gated,
                                   "detectMs": (scan.timing.detectMs * 10).rounded() / 10,
                                   "embedMs": (scan.timing.embedMs * 10).rounded() / 10,
                                   "scanMs": ms(since: start)]
-        log["runnerUp"] = store.ranked(best.hit.embedding).dropFirst().first
-            .map { (Double($0.score) * 1000).rounded() / 1000 }
+        log["runnerUp"] = ranked.dropFirst().first.map { (Double($0.score) * 1000).rounded() / 1000 }
         let lensStart = CFAbsoluteTimeGetCurrent()
         if await sendLens() { log["lensMs"] = ms(since: lensStart) }
         log["totalMs"] = ms(since: start)
         SpeedLog.record(log)
     }
 
-    /// Detect every face, embed the four largest. An embedding is ~8 ms, so the extra candidates
-    /// are nearly free, and they are what makes a second person in the frame matchable at all.
+    /// Detect every face, crop the four largest, embed the ones sharp enough to be evidence.
+    /// An embedding is ~6 ms, so the extra candidates are nearly free, and they are what makes a
+    /// second person in the frame matchable at all. The blur gate inside `scan` pays for itself
+    /// twice: it skips the embed on frames that could never produce a right answer, and it stops
+    /// those frames producing a *wrong* one.
     private func scanFaces(_ image: CIImage) async -> (hits: [FaceHit], timing: FaceTiming) {
         await withCheckedContinuation { done in
             worker.async {
