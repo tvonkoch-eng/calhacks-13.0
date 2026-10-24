@@ -128,6 +128,14 @@ let runs: [(String, Script, (([Turn]) -> String?))] = [
         guard t.count == 1 else { return "\(t.count) turns: \(t.map(\.question))" }
         return t[0].question == "how tall is the eiffel tower" && t[0].state == .done ? nil : "\"\(t[0].question)\" \(t[0].state)"
      }),
+    ("recognizer closes \"Who painted?\" at a pause → still one question",
+     [(0.0, "Wait, who", false), (0.12, "Wait, who painted", false), (0.5, "Wait, who painted?", true),
+      (1.2, "Mona", false), (1.3, "Mona Lisa", false), (1.7, "Mona Lisa.", true)],
+     { t in
+        guard let last = t.last, last.question.contains("mona lisa"), last.state == .done else {
+            return "\(t.map { "\($0.question) \($0.state)" })" }
+        return nil
+     }),
     ("model WAIT on a fragment → re-asked with the full question",
      [(0.0, "Who", false), (0.1, "Who wrote?", false), (0.6, "Who wrote Dune?", true)],
      { t in t.count == 1 && t[0].state == .done && t[0].fires == 2 ? nil : "\(t.map { "\($0.question) \($0.state) fires=\($0.fires)" })" }),

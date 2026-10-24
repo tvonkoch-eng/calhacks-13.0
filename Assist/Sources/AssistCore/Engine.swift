@@ -79,6 +79,9 @@ public struct Turn: Identifiable, Sendable {
     public private(set) var transcript = ""
     public weak var display: AnswerDisplay?
     public var onChange: (() -> Void)?
+    /// A sentence was closed and dealt with: (final text, sentences said just before, turn it
+    /// produced if any). For grading every sentence, including questions the gate missed.
+    public var onSentence: ((_ text: String, _ before: [String], _ turn: UUID?) -> Void)?
     public let log: EventLog
 
     public var refireGrowth = 2
@@ -188,7 +191,7 @@ public struct Turn: Identifiable, Sendable {
 
         // "How tall is the." — a pause mid-question. Hold it and glue on whatever comes next.
         if let candidate, candidate.unfinished, carry.isEmpty {
-            carry = text.trimmingCharacters(in: CharacterSet(charactersIn: ".,!… ").union(.whitespaces))
+            carry = text.trimmingCharacters(in: CharacterSet(charactersIn: ".,!?… ").union(.whitespaces))
             log(.carry, "\"\(carry)\" ends mid-phrase; waiting \(carryWindow)s for the rest")
             carryTask = Task { [weak self] in
                 guard let self else { return }
@@ -206,6 +209,7 @@ public struct Turn: Identifiable, Sendable {
 
     private func finish(_ text: String, candidate: Candidate?, audioEnd: Double?) {
         defer {
+            onSentence?(text, history, currentTurn)
             currentTurn = nil
             firedText = ""
             history.append(text)

@@ -5,13 +5,15 @@ import Foundation
 public final class EventLog: @unchecked Sendable {
     public enum Kind: String, Sendable {
         case hear, final, gate, fire, token, answer, personal, incomplete, commit, carry, abandon,
-             lens, error, info
+             lens, judge, error, info
     }
 
     public var now: @Sendable () -> Double
     /// Print every partial hypothesis, not just the decisions.
     public var verbose: Bool
     public var echo: Bool
+    /// Sees every event (live UI). Called on whatever thread logged it.
+    public var observer: (@Sendable (_ t: Double, _ kind: Kind, _ message: String) -> Void)?
     private let file: FileHandle?
     private let lock = NSLock()
     private let color = isatty(fileno(stdout)) != 0
@@ -32,6 +34,7 @@ public final class EventLog: @unchecked Sendable {
 
     public func callAsFunction(_ kind: Kind, _ message: String, _ fields: [String: String] = [:]) {
         let t = now()
+        observer?(t, kind, message)
         lock.lock()
         defer { lock.unlock() }
         if let file {
@@ -58,6 +61,7 @@ public final class EventLog: @unchecked Sendable {
         case .fire: "33;1"
         case .token, .answer: "32;1"
         case .lens: "36;1"
+        case .judge: "34;1"
         case .personal, .incomplete, .abandon: "35"
         case .error: "31;1"
         default: "0"

@@ -28,7 +28,20 @@ All the logic is a Swift package in `Assist/`, shared by the iPhone app and a Ma
 | `AssistCore/Answerer.swift` | Local tier (math, time, date, no network). Otherwise streams Groq `qwen/qwen3.8-27b`. Model replies SKIP (personal) or WAIT (too cut off); neither is ever shown. |
 | `AssistCore/EventLog.swift` | Every decision, timestamped, to the console and to `Assist/logs/*.jsonl`. |
 
-### The Mac loop (start here)
+### Live, with a grader (start here)
+
+```
+cd Assist && swift run assist live
+```
+
+Opens http://localhost:8765. Talk to your Mac. The page shows a simulated lens, the transcript as
+it is heard, every pipeline decision with timestamps, and one card per sentence you finish: what
+the assistant did, how early, and a grade from a second model (`openai/gpt-oss-120b` on Groq). That
+model judges intent: should this have been answered, was it heard right, was the answer correct.
+Ctrl-C prints a scorecard (missed questions, wrong answers, answered-when-it-shouldn't, misheard).
+`--judge` and `--ui` also work on `say`, `file` and `suite`.
+
+### The Mac loop
 
 Needs macOS 26 and Swift 6.2+ (Xcode or just the Command Line Tools).
 

@@ -11,9 +11,13 @@ assist: the glasses conversation assistant, on the Mac, with a full event log.
   assist file <audio>            replay a recording in real time (--fast: as fast as possible)
   assist suite                   spoken scenarios with expected outcomes; exits 1 on failure
   assist text "<text>"           skip speech recognition; feed words at speaking pace
+  assist live                    mic + live page in your browser + every sentence graded by a
+                                 second model (= assist mic --ui --judge)
 
   -v        print every partial hypothesis, not just decisions
   --local   no network: only the on-device answers (math, time, date)
+  --ui      serve the live page at http://localhost:8765 (--port N to change)
+  --judge   grade every sentence with openai/gpt-oss-120b on Groq; scorecard at the end
 
 Logs: each run appends JSON lines to Assist/logs/<timestamp>.jsonl.
 Key:  $ANSWER_API_KEY, else ANSWER_API_KEY in the repo's Secrets.xcconfig.
@@ -35,7 +39,12 @@ let verbose = flag("-v")
 let offline = flag("--local")
 let fast = flag("--fast")
 let voice = option("--voice")
-guard let mode = args.first else { print(usage); exit(2) }
+let port = option("--port").flatMap(UInt16.init) ?? 8765
+var wantUI = flag("--ui")
+var judging = flag("--judge")
+let noOpen = flag("--no-open")
+guard var mode = args.first else { print(usage); exit(2) }
+if mode == "live" { mode = "mic"; wantUI = true; judging = true }
 let rest = Array(args.dropFirst())
 
 // MARK: - Setup
@@ -62,6 +71,109 @@ let source: AnswerSource = offline ? Offline() : answerer
 let logDir = root.appendingPathComponent("Assist/logs")
 let runStamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
 
+// MARK: - Live page and grading
+
+let server: LiveServer? = {
+    guard wantUI else { return nil }
+    do { return try LiveServer(port: port) } catch {
+        print("could not start the live page on port \(port): \(error)"); exit(1)
+    }
+}()
+if server != nil {
+    print("live page: http://localhost:\(port)")
+    if !noOpen {
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = ["http://localhost:\(port)"]
+        try? open.run()
+    }
+}
+let judge = Judge(key: answerer.key)
+
+/// Every graded sentence of the whole process, for the scorecard.
+struct Graded {
+    let sentence: Sentence
+    let verdict: Verdict?
+    let error: String?
+}
+@MainActor final class Grades {
+    static var all: [Graded] = []
+    static var pending = 0
+}
+
+@MainActor final class PageDisplay: AnswerDisplay {
+    func show(_ card: AnswerCard?) {
+        server?.publish(["type": "lens", "card": card.map {
+            ["headline": $0.headline, "echo": $0.echo, "thinking": $0.thinking] as [String: Any]
+        } ?? NSNull()])
+    }
+}
+
+func snapshot(_ t: Turn) -> [String: Any] {
+    let state: String = switch t.state {
+    case .thinking: "thinking"
+    case .answering: "answering"
+    case .done: "done"
+    case .personal: "personal"
+    case .incomplete: "incomplete"
+    case .abandoned: "abandoned"
+    case .failed: "failed"
+    }
+    var d: [String: Any] = ["id": t.id.uuidString, "question": t.question, "heard": t.heard,
+                            "answer": t.answer, "state": state, "fires": t.fires]
+    if let x = t.firstTokenAfter { d["firstTokenMs"] = x * 1000 }
+    if let x = t.lead { d["lead"] = x }
+    return d
+}
+
+/// Wait for the sentence's answer to finish arriving, then have the second model grade it.
+@MainActor func grade(_ text: String, before: [String], turn id: UUID?, engine: Engine, log: EventLog, sid: Int) {
+    Grades.pending += 1
+    Task { @MainActor in
+        defer { Grades.pending -= 1 }
+        for _ in 0..<60 {
+            guard let id, let t = engine.turns.first(where: { $0.id == id }), t.live else { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let sentence = Sentence(text: text, before: before, turn: id.flatMap { id in engine.turns.first { $0.id == id } })
+        do {
+            let v = try await judge.grade(sentence)
+            let outcome = v.outcome(shown: sentence.shown)
+            Grades.all.append(Graded(sentence: sentence, verdict: v, error: nil))
+            log(.judge, "\(v.score)/5 \(outcome)\(v.heard_right ? "" : " (misheard)") · \(v.note)\((v.better_answer ?? "").isEmpty || outcome == "answered" ? "" : " · ideal: \(v.better_answer!)")")
+            var verdict: [String: Any] = ["kind": v.kind, "should_answer": v.should_answer, "heard_right": v.heard_right,
+                                          "score": v.score, "note": v.note, "better_answer": v.better_answer ?? ""]
+            verdict["answer_correct"] = v.answer_correct ?? NSNull()
+            server?.publish(["type": "verdict", "sid": sid, "outcome": outcome, "verdict": verdict, "did": sentence.did])
+        } catch {
+            Grades.all.append(Graded(sentence: sentence, verdict: nil, error: error.localizedDescription))
+            log(.error, "grader failed: \(error.localizedDescription)")
+            server?.publish(["type": "verdict", "sid": sid, "error": error.localizedDescription])
+        }
+    }
+}
+
+func scorecard() -> String {
+    MainActor.assumeIsolated {
+        let ok = Grades.all.compactMap { g in g.verdict.map { (g.sentence, $0) } }
+        guard !ok.isEmpty else { return "" }
+        var out = "\n  grade  outcome                    sentence → shown\n"
+        for (s, v) in ok {
+            let shown = s.shown ? s.did.replacingOccurrences(of: "showed ", with: "") : "–"
+            out += String(format: "  %d/5    %@ \"%@\" → %@\n", v.score,
+                          v.outcome(shown: s.shown).padding(toLength: 26, withPad: " ", startingAt: 0),
+                          String(s.text.prefix(60)), shown)
+            if v.score < 5 { out += "                                    \(v.note)\n" }
+        }
+        let avg = Double(ok.map(\.1.score).reduce(0, +)) / Double(ok.count)
+        func count(_ o: String) -> Int { ok.filter { $0.1.outcome(shown: $0.0.shown) == o }.count }
+        out += String(format: "\n  %d sentences · avg %.1f/5 · %d answered · %d correctly quiet · %d missed · %d wrong · %d answered when it should not · %d misheard\n",
+                      ok.count, avg, count("answered"), count("correctly quiet"), count("missed"),
+                      count("wrong answer"), count("should have stayed quiet"), ok.filter { !$0.1.heard_right }.count)
+        return out
+    }
+}
+
 // MARK: - One run through the pipeline
 
 @MainActor
@@ -70,6 +182,25 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
     let log = EventLog(path: logDir.appendingPathComponent("\(runStamp)-\(label).jsonl"),
                        verbose: verbose, echo: echo, now: { clock.now() })
     let engine = Engine(source: source, log: log, now: { clock.now() })
+    let page = PageDisplay()
+    if let server {
+        log.observer = { t, kind, msg in server.publish(["type": "log", "t": t, "kind": kind.rawValue, "msg": msg]) }
+        engine.display = page
+        engine.onChange = { [weak engine] in
+            guard let engine else { return }
+            server.publish(["type": "transcript", "text": engine.transcript])
+            server.publish(["type": "turns", "turns": engine.turns.prefix(5).map(snapshot)])
+        }
+        server.publish(["type": "status", "text": "\(label) · \(offline ? "offline" : answerer.provider.model)\(judging ? " · graded by \(judge.model)" : "")"])
+    }
+    var sid = 0
+    engine.onSentence = { [weak engine] text, before, turn in
+        guard let engine else { return }
+        sid += 1
+        let sentence = Sentence(text: text, before: before, turn: turn.flatMap { id in engine.turns.first { $0.id == id } })
+        server?.publish(["type": "sentence", "sid": sid, "text": text, "turn": turn?.uuidString ?? NSNull(), "did": sentence.did])
+        if judging { grade(text, before: before, turn: turn, engine: engine, log: log, sid: sid) }
+    }
     if !offline, answerer.key == nil { log(.error, "no API key found; model answers will fail (try --local)") }
     log(.info, "model \(offline ? "offline" : answerer.provider.model) · \(label)")
 
@@ -90,6 +221,14 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
     } else if let input {
         let transcriber = Transcriber()
         transcriber.status = { log(.info, $0) }
+        if let server {
+            let last = SessionClock()
+            transcriber.level = { v in
+                guard last.now() > 0.08 else { return }
+                last.zero = Date()
+                server.publish(["type": "level", "v": v])
+            }
+        }
         let work = Task { @MainActor in
             try await transcriber.run(input, onStart: { clock.zero = Date() }) { text, final, end in
                 engine.heard(text, final: final, audioEnd: end)
@@ -110,6 +249,9 @@ func run(_ input: AudioInput?, text: String? = nil, label: String, echo: Bool = 
 
     // Let in-flight answers land.
     for _ in 0..<60 where engine.turns.contains(where: \.live) {
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+    for _ in 0..<150 where Grades.pending > 0 {
         try? await Task.sleep(for: .milliseconds(100))
     }
     return engine.turns.reversed()
@@ -135,6 +277,7 @@ func summarize(_ turns: [Turn]) {
     }
     if turns.isEmpty { print("  (no questions)") }
     print("  lead = how long the answer was up before the speaker finished (negative: after)\n")
+    if judging { print(scorecard()) }
 }
 
 @MainActor
@@ -219,6 +362,7 @@ case "suite":
             for t in turns { print("        turn: heard \"\(t.heard)\" asked \"\(t.question)\" → \(t.state) \"\(t.answer)\" fires=\(t.fires)") }
         }
     }
+    if judging { print(scorecard()) }
     print("\n\(scenarios.count - failures)/\(scenarios.count) scenarios passed · logs in \(logDir.path)")
     exit(failures == 0 ? 0 : 1)
 
