@@ -19,7 +19,27 @@ All shared files are pure Foundation, so the phone and the Mac tool run the same
 | `tools/live-mac.sh` | The aid on the Mac mic, lens drawn in the terminal. `--file x.wav` replays, `--trace x.jsonl` records. |
 | `tools/eval.sh` | Renders `Tests/conversations/network/*.txt` (make-convo.py), replays, and has gpt-5.5 judge every lens item (evaluate.py). |
 
-`sh Tests/run.sh` runs the offline tests (gate, speculation, lens rules, roles, coach JSON).
+| `App/Tools.swift` | Tier 2, things only the device knows or can do: `nearby` (Apple Maps search + distance), `weather` (Open-Meteo), `remind` and `next_event` (EventKit). All keyless. gpt-oss picks the tool with native tool calling; the result goes straight onto an answer card with an icon, no second model call. |
+
+`sh Tests/run.sh` runs the offline tests (gate, speculation, lens rules, roles, coach JSON, tools).
+
+## Tools: how they're asked for
+
+- **Commands** start with the wake word: "Lens, how far is the nearest Target?", "Lens, remind me to
+  email Maya at 6". Only from the wearer; handled the moment the sentence closes. Actions (reminders)
+  only ever come from a command.
+- **Questions that need the device** (where, weather, calendar), from either person, go to the
+  tools at the end of the sentence, never speculatively ("how far is the nearest" would search
+  before "Target" is said). Other questions keep the fast streaming lane.
+- A command shows "Finding Target nearby…" if the tool takes over 0.3 s; an overheard question
+  only shows the result. Requests run side by side, each on its own card.
+- Measured on the Mac (pinned to Union Square, SF): nearest Target 0.76 s, nearest pharmacy
+  0.82 s, weather 0.62 s, a plain question through the same path 0.2 s, time 0 s.
+- Mac: `sh tools/live-mac.sh --type` takes typed lines ("them: …" for the other person), and
+  typing works during a mic session too. `TEST_LOCATION` pins the location.
+- iOS needs Info.plist strings: `NSLocationWhenInUseUsageDescription`,
+  `NSRemindersFullAccessUsageDescription`, `NSCalendarsFullAccessUsageDescription`. The location
+  comes from the phone (the glasses have no GPS).
 
 ## Keys (Secrets.xcconfig, never committed)
 

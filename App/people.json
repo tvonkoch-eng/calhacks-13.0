@@ -46,6 +46,7 @@
   },
   {
     "id": "toby",
+    "isMe": true,
     "name": "Toby von Koch",
     "role": "CalHacks 13 teammate · iOS & device plumbing",
     "tags": [

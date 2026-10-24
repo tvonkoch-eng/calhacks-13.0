@@ -6,8 +6,10 @@ import Foundation
 //
 //   sh tools/live-mac.sh                 talk to it (mic)
 //   sh tools/live-mac.sh --file x.wav    replay a recording at real time (never played aloud)
+//   sh tools/live-mac.sh --type          no audio: type what's said ("them: …" for the other person)
 //
-// While it runs: type m + Enter if the last line was you, q + Enter to stop.
+// While it runs: m + Enter if the last line was you, q + Enter to stop; any other line is said by
+// you, e.g. "Lens, how far is the nearest Target?".
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 func option(_ name: String) -> String? {
@@ -16,6 +18,8 @@ func option(_ name: String) -> String? {
     return arguments[i + 1]
 }
 let file = option("--file").map { URL(fileURLWithPath: $0) }
+let typing = arguments.contains("--type")
+arguments.removeAll { $0 == "--type" }
 /// --trace x.jsonl: every line, event and lens state with its time in the recording, for
 /// tools/evaluate.py.
 let trace = option("--trace").flatMap { path -> FileHandle? in
@@ -56,7 +60,8 @@ func drawLens(_ view: LensView) {
     if let header = view.header, !view.isEmpty { rows.append(Style.dim + header.uppercased() + Style.reset) }
     if let card = view.card {
         let mark = card.kind == .answer ? "A" : card.kind == .definition ? "i" : "?"
-        let title = card.title + (card.live && card.title != "\u{2026}" ? " \u{2026}" : "")
+        let title = card.title + (card.live && !card.title.hasSuffix("\u{2026}") ? " \u{2026}" : "")
+            + (card.icon.map { "  " + Style.dim + "[\($0)]" + Style.reset } ?? "")
         for (i, line) in wrap(title, width - 4).enumerated() { rows.append((i == 0 ? "\(mark)  " : "   ") + Style.bold + line + Style.reset) }
         for line in wrap(card.detail, width - 4) { rows.append("   " + Style.dim + line + Style.reset) }
     }
@@ -85,7 +90,7 @@ func drawLens(_ view: LensView) {
             .first { $0["isMe"] as? Bool == true }
         let wearer = (me?["name"] as? String)?.split(separator: " ").first.map(String.init) ?? "the wearer"
         aid = Aid(config: .fromBundle(wearer: wearer))
-        listener.keywords = [wearer]
+        listener.keywords = [wearer, "Lens"]
         listener.file = file
 
         listener.onPartial = { [weak self] text in
@@ -131,6 +136,11 @@ func drawLens(_ view: LensView) {
         func lane(_ model: Aid.Model?) -> String { model.map { "\($0.provider.rawValue) \($0.model)" } ?? "off" }
         out("\(Style.bold)Conversation aid\(Style.reset)  speech: Muse (who-said-what) · answers: \(lane(config.answers))"
             + " · coach: \(lane(config.coach)) · backup: \(lane(config.backup)) · research: \(config.researcher?.name ?? "off")")
+        if typing {
+            aid.markWearer("B")
+            out("Type what's said: plain lines are you, \"them: …\" is the other person. q to stop.")
+            return
+        }
         out(file == nil ? "Talk normally. Type m + Enter if the last line was you, q + Enter to stop."
                         : "Replaying \(file!.lastPathComponent) at real time (not played aloud).")
         await listener.start()
@@ -189,6 +199,14 @@ func drawLens(_ view: LensView) {
         }
     }
 
+    /// A typed line, as if heard: "them: …" from the other person, anything else from the wearer.
+    func type(_ text: String) {
+        let them = text.lowercased().hasPrefix("them:")
+        let said = them ? String(text.dropFirst(5)).trimmingCharacters(in: .whitespaces) : text
+        let wearer = aid.roles.wearer ?? "B"
+        aid.heard(line: said, speaker: them ? (wearer == "A" ? "B" : "A") : wearer)
+    }
+
     func finish() {
         listener.stop()
         func median(_ xs: [Int]?) -> String {
@@ -201,7 +219,8 @@ func drawLens(_ view: LensView) {
         out("")
         out("\(Style.bold)Summary\(Style.reset)  \(aid.lines.count) lines · \(count(.answer)) answers · \(count(.define)) definitions · "
             + "\(followups) follow-ups · \(count(.research)) lookups (\(count(.lookup)) asked for)")
-        out("         answer first word median \(median(aid.timings["answer"])) · coach call median \(median(aid.timings["coach"]))"
+        out("         answer first word median \(median(aid.timings["answer"])) · tool median \(median(aid.timings["tool"]))"
+            + " · coach call median \(median(aid.timings["coach"]))"
             + (aid.timings["research"] == nil ? "" : " · research median \(median(aid.timings["research"]))"))
         if let header = aid.them.header {
             out("         them: \(header)" + (aid.them.facts.isEmpty ? "" : "; " + aid.them.facts.joined(separator: "; ")))
@@ -227,17 +246,21 @@ let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 interrupt.setEventHandler { MainActor.assumeIsolated { session.finish() } }
 interrupt.resume()
 
-// m = the last line was me, q = stop.
+// m = the last line was me, q = stop, anything else is said by the wearer.
 Thread.detachNewThread {
     while let line = readLine() {
         let command = line.trimmingCharacters(in: .whitespaces).lowercased()
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 if command == "m" { session.aid.lastLineWasMe() }
-                if command == "q" { session.finish() }
+                else if command == "q" { session.finish() }
+                else if !command.isEmpty { session.type(line.trimmingCharacters(in: .whitespaces)) }
             }
         }
     }
+    // Typed input ran out (a piped script): let the last requests land, then stop.
+    guard typing else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { MainActor.assumeIsolated { session.finish() } }
 }
 
 Task { @MainActor in

@@ -15,12 +15,12 @@ for test in QuestionGate Speculation; do
 done
 mkdir -p "$out/Aid"
 cp Tests/AidTests.swift "$out/Aid/main.swift"
-swiftc -O "$out/Aid/main.swift" App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift -o "$out/Aid/run"
+swiftc -O "$out/Aid/main.swift" App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift App/Tools.swift -o "$out/Aid/run"
 printf 'Aid: '
 "$out/Aid/run"
 mkdir -p "$out/LensPolicy"
 cp Tests/LensPolicyTests.swift "$out/LensPolicy/main.swift"
-swiftc -O "$out/LensPolicy/main.swift" App/LensPolicy.swift App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift -o "$out/LensPolicy/run"
+swiftc -O "$out/LensPolicy/main.swift" App/LensPolicy.swift App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift App/Tools.swift -o "$out/LensPolicy/run"
 printf 'LensPolicy: '
 "$out/LensPolicy/run"
 rm -rf "$out"

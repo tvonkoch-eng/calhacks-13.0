@@ -23,8 +23,8 @@ struct CalHacksApp: App {
                 .onOpenURL { glasses.handle($0) }
                 .task {
                     glasses.store = store
-                    assistant.store = store
                     assistant.glasses = glasses
+                    assistant.store = store
                     // Knobs that are read once rather than per use have to be re-applied by hand
                     // when a push lands; Store re-reads the roster on the same notification.
                     NotificationCenter.default.addObserver(forName: Tuning.changed, object: nil, queue: .main) { _ in
@@ -850,7 +850,10 @@ struct LensMirror: View {
                 }
                 if let title = shot.answer {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(title).font(.system(size: m.heading, weight: .semibold))
+                        HStack(spacing: 10) {
+                            if let icon = shot.cardIcon { Image(systemName: LensCards.symbol(lensIcon: icon)).font(.system(size: m.glyph)) }
+                            Text(title).font(.system(size: m.heading, weight: .semibold))
+                        }
                         if let detail = shot.echo {
                             Text(detail).font(.system(size: m.body)).foregroundStyle(secondary)
                         }

@@ -23,6 +23,8 @@ struct LensShot: Equatable {
     var answer: String?
     var echo: String?
     var followup: String?
+    /// The aid card's icon (a lens IconName raw value), for tool results: cart, cloud, calendar…
+    var cardIcon: String?
     var name: String?
     var headline: String?
     /// Person id, so the mirror can look the avatar up the same way the card did.
@@ -62,7 +64,14 @@ enum LensCards {
             }
             if let title = shot.answer {
                 FlexBox(direction: .column, spacing: 4) {
-                    Text(title, style: .heading).flexShrink(1)
+                    if let icon = shot.cardIcon.flatMap(IconName.init(rawValue:)) {
+                        FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                            Icon(name: icon, style: .outline)
+                            Text(title, style: .heading).flexShrink(1)
+                        }
+                    } else {
+                        Text(title, style: .heading).flexShrink(1)
+                    }
                     if let detail = shot.echo { Text(detail, style: .body, color: .secondary).flexShrink(1) }
                 }
             }
@@ -215,6 +224,7 @@ enum LensCards {
         if let card = view.card {
             shot.answer = card.title
             shot.echo = card.detail.isEmpty ? nil : card.detail
+            shot.cardIcon = card.icon
         }
         shot.followup = view.followup
         return shot
@@ -228,6 +238,30 @@ enum LensCards {
         shot.connected = connected
         shot.button = identifying ? "Identifying" : "Identify"
         return shot
+    }
+
+    /// The phone's stand-in for an aid card's lens icon.
+    static func symbol(lensIcon: String) -> String {
+        switch lensIcon {
+        case "cart": "cart"
+        case "forkKnife": "fork.knife"
+        case "coffeeCup": "cup.and.saucer"
+        case "cloud", "cloudLightning", "cloudFiveDashes": "cloud"
+        case "bell": "bell"
+        case "calendar": "calendar"
+        case "clock": "clock"
+        case "exclamationCircle": "exclamationmark.circle"
+        case "globeWesternHemisphere": "globe.americas"
+        case "airplane": "airplane"
+        case "cocktailGlass": "wineglass"
+        case "crossBriefcase": "cross.case"
+        case "house": "house"
+        case "museumBuilding": "building.columns"
+        case "stadium": "sportscourt"
+        case "train": "tram"
+        case "tree": "tree"
+        default: lensIcon.hasPrefix("cloud") ? "cloud" : "circle"
+        }
     }
 
     /// The SF Symbol that stands in for a lens icon on the phone. The lens icon set is Meta's own;

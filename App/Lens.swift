@@ -29,6 +29,8 @@ struct Card: Equatable {
     var live = false
     /// An answer updating in place keeps its id; everything else gets a fresh one.
     var id = 0
+    /// A lens icon name for tool results: cart, forkKnife, cloud, bell, calendar…
+    var icon: String?
 }
 
 /// Decides what is on the lens and for how long. Pure: the caller passes the clock in, so every

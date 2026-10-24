@@ -14,20 +14,31 @@ import Observation
     @ObservationIgnored weak var glasses: Glasses? {
         didSet { glasses?.onFacing = { [weak self] id in self?.facingChanged(id) } }
     }
-    @ObservationIgnored weak var store: Store?
-    let aid: Aid
+    /// Setting the roster names the wearer: the aid is rebuilt with the isMe person's first name.
+    @ObservationIgnored weak var store: Store? {
+        didSet {
+            let me = store?.people.first(where: { $0.isMe == true })?.name.split(separator: " ").first.map(String.init)
+            if let me, me != aid.config.wearer { aid = Self.makeAid(wearer: me) }
+        }
+    }
+    private(set) var aid: Aid {
+        didSet { aid.onLens = { [weak self] view in self?.glasses?.showAid(view) } }
+    }
 
     /// The person the face side last handed the aid, so a glance away and back doesn't re-seed it.
     @ObservationIgnored private var met: String?
 
     init() {
+        // Until the roster is in, the bundle's WearerName (WEARER_NAME), else Toby.
         let wearer = (Bundle.main.object(forInfoDictionaryKey: "WearerName") as? String)
             .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 } ?? "Toby"
-        aid = Aid(config: .fromBundle(wearer: wearer))
+        aid = Self.makeAid(wearer: wearer)
         listener.onPartial = { [weak self] text in self?.aid.heard(partial: text) }
         listener.onLine = { [weak self] text, speaker, level in self?.aid.heard(line: text, speaker: speaker, level: level) }
         aid.onLens = { [weak self] view in self?.glasses?.showAid(view) }
     }
+
+    private static func makeAid(wearer: String) -> Aid { Aid(config: .fromBundle(wearer: wearer)) }
 
     var status: String { armed ? (aid.status.isEmpty ? listener.status : aid.status) : "Off" }
     var level: Float { listener.level }
@@ -37,6 +48,9 @@ import Observation
     func arm() async {
         guard !armed else { return }
         armed = true
+        // A new conversation starts clean; the last one stays readable on the phone until then.
+        aid.reset()
+        met = nil
         glasses?.aidArmed = true
         note = aid.config.answers == nil
             ? "No answer API key yet — add one to Secrets.xcconfig."
@@ -53,8 +67,6 @@ import Observation
     func disarm() {
         armed = false
         listener.stop()
-        aid.reset()
-        met = nil
         glasses?.aidArmed = false
         glasses?.showAid(LensView())
     }

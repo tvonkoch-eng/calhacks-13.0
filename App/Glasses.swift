@@ -218,7 +218,7 @@ enum Identification {
     @ObservationIgnored private var cardHolds: TimeInterval { TimeInterval(Tuning.float("cardHolds", 3)) }
     /// How long a fresh identification owns the whole lens, over any aid card, before the aid may
     /// take it back. Long enough to read a name, a headline and three lines.
-    @ObservationIgnored private var bioHolds: TimeInterval { TimeInterval(Tuning.float("bioHolds", 6)) }
+    @ObservationIgnored private var bioHolds: TimeInterval { TimeInterval(Tuning.float("bioHolds", 10)) }
     @ObservationIgnored private var bioTask: Task<Void, Never>?
     /// A single look this confident is enough on its own: ArcFace puts the same person at ~0.6-0.7
     /// on a sharp frame and everyone else near 0.
@@ -1181,7 +1181,7 @@ enum Identification {
     private func currentMode() -> LensMode {
         let person = knownPerson
         let around = person.map { facing == $0.id || present.contains($0.id) } ?? false
-        return LensPolicy.mode(identifying: identifying, known: person != nil, around: around,
+        return LensPolicy.mode(identifying: identifying, confirming: confirming, known: person != nil, around: around,
                                sinceIdentified: Date().timeIntervalSince(resultAt), bioHolds: bioHolds,
                                aidArmed: aidArmed, aidEmpty: aidLens.isEmpty)
     }

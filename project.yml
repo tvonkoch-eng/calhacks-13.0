@@ -61,6 +61,11 @@ targets:
         ResearchModel: $(RESEARCH_MODEL)
         WearerBackground: $(WEARER_BACKGROUND)
         WearerName: $(WEARER_NAME)
+        Tools: $(TOOLS)
+        TestLocation: $(TEST_LOCATION)
+        NSLocationWhenInUseUsageDescription: Finds places near you when you ask.
+        NSRemindersFullAccessUsageDescription: Sets reminders when you ask.
+        NSCalendarsFullAccessUsageDescription: Tells you what is next on your calendar.
         NSBluetoothAlwaysUsageDescription: Connects to your Meta glasses.
         NSLocalNetworkUsageDescription: Lets your phone find and connect to your glasses over Wi-Fi.
         NSBonjourServices: [_bonjour._tcp]

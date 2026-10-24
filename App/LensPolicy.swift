@@ -4,8 +4,8 @@ import Foundation
 /// said). Pure, so the rules are testable without glasses (Tests/AidTests.swift).
 ///
 /// The rules, in order:
-/// 1. A press of Identify shows its progress and result. The wearer asked.
-/// 2. A fresh identification wins: the full background card stays up for `bioHolds` seconds,
+/// 1. A press of Identify (identifying, or asking "Are you sure?") shows its progress and result.
+/// 2. A fresh identification wins: the full background card stays up for `bioHolds` (10) seconds,
 ///    even over an aid card. It is the one moment the wearer needs to read who this is.
 /// 3. After that the aid takes over whenever it has something (an answer, a definition, a line to
 ///    say). If the person you're talking to is known and still in view, a small strip on top of
@@ -23,9 +23,9 @@ enum LensMode: Equatable {
 }
 
 enum LensPolicy {
-    static func mode(identifying: Bool, known: Bool, around: Bool, sinceIdentified: TimeInterval,
+    static func mode(identifying: Bool, confirming: Bool = false, known: Bool, around: Bool, sinceIdentified: TimeInterval,
                      bioHolds: TimeInterval, aidArmed: Bool, aidEmpty: Bool) -> LensMode {
-        if identifying { return .identity }
+        if identifying || confirming { return .identity }
         if known, sinceIdentified < bioHolds { return .identity }
         let partner = known && around
         if !aidEmpty { return partner ? .both : .aid }

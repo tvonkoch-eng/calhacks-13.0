@@ -72,18 +72,28 @@
 	<array>
 		<string>_bonjour._tcp</string>
 	</array>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Tells you what is next on your calendar.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Recognizes your teammates' faces on device.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Lets your phone find and connect to your glasses over Wi-Fi.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Finds places near you when you ask.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Listens for questions so answers can appear on your glasses. Audio is transcribed by Meta's Muse Voice Transcribe.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Sets reminders when you ask.</string>
 	<key>ResearchAPIKey</key>
 	<string>$(RESEARCH_API_KEY)</string>
 	<key>ResearchModel</key>
 	<string>$(RESEARCH_MODEL)</string>
 	<key>ResearchProvider</key>
 	<string>$(RESEARCH_PROVIDER)</string>
+	<key>TestLocation</key>
+	<string>$(TEST_LOCATION)</string>
+	<key>Tools</key>
+	<string>$(TOOLS)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

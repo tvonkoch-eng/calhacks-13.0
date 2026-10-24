@@ -16,6 +16,8 @@ struct Person: Codable, Identifiable, Hashable {
     var interests: String?
     /// Short labels for chips: school, company, city.
     var tags: [String]?
+    /// The wearer. The conversation aid takes its first name to tell "I'm Toby" from "I'm Priya".
+    var isMe: Bool?
 
     /// How you know them. The highest-value line on the lens after the name, because it is not a
     /// fact about them -- it is a fact about the two of you.
