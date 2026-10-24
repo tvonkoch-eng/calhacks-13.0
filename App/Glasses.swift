@@ -452,7 +452,14 @@ enum Identification {
                 return first
             }
             guard let found else {
-                SpeedLog.record(["event": "connectError", "error": "noGlassesFound", "waitedS": 15])
+                // What the SDK does know: an empty list means Meta AI isn't handing us the glasses at
+                // all; a listed pair says which state (link, hinge, worn) kept it from being active.
+                let known = wearables.devices.map { id -> String in
+                    guard let d = wearables.deviceForIdentifier(id) else { return "\(id): gone" }
+                    return "\(d.nameOrId()): link=\(d.linkState) hinge=\(d.hingeState) don=\(d.donState) compat=\(d.compatibility())"
+                }
+                SpeedLog.record(["event": "connectError", "error": "noGlassesFound", "waitedS": 15,
+                                 "registration": "\(wearables.registrationState)", "devices": known])
                 scheduleRecovery(reason: "noGlassesFound")
                 status = "Can't find your glasses — are they on and connected in Meta AI?"
                 return
