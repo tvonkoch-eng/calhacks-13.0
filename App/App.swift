@@ -903,6 +903,41 @@ private struct LensCardBackground: ViewModifier {
     }
 }
 
+/// Ground truth, pulled off the phone.
+///
+/// While a simulated pair is up, both renderers are alive at once: MockDeviceKit's preview view is
+/// the SDK drawing the very `FlexBox` the glass would get, and `LensMirror` is our redraw of the
+/// same card. With `SnapLens` set (a live knob, no rebuild) this writes both to the app's Documents
+/// at the same size, so `devicectl device copy from` can pull them and the mirror can be trued
+/// against the real thing from a laptop, with nobody squinting at a phone.
+enum LensSnapshot {
+    private static var last = Date.distantPast
+
+    @MainActor static func capture(real: UIView?, shot: LensShot?, avatar: @escaping (String) -> UIImage?) {
+        guard Tuning.bool("SnapLens", false), Date().timeIntervalSince(last) > 1 else { return }
+        last = Date()
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        var size = CGSize(width: LensMetrics.canvas, height: LensMetrics.canvas)
+        if let real, real.bounds.width > 1 {
+            size = real.bounds.size
+            let image = UIGraphicsImageRenderer(bounds: real.bounds).image { _ in
+                real.drawHierarchy(in: real.bounds, afterScreenUpdates: false)
+            }
+            try? image.pngData()?.write(to: docs.appendingPathComponent("lens-real.png"))
+        }
+        guard let shot else { return }
+        // Same pixel size as the real capture, so the two PNGs diff directly.
+        let renderer = ImageRenderer(content:
+            LensMirror(shot: shot, avatar: avatar)
+                .frame(width: size.width, height: size.height)
+                .background(Color.black))
+        renderer.scale = 1
+        if let image = renderer.uiImage {
+            try? image.pngData()?.write(to: docs.appendingPathComponent("lens-mirror.png"))
+        }
+    }
+}
+
 /// Always-present frame around the lens, so anyone looking at the phone knows exactly what the
 /// wearer sees and on which rig. Both tiles are live with real glasses: the camera tile is the
 /// actual stream off the pair (5 fps, the Bluetooth budget), and the lens tile is a mirror —
@@ -974,6 +1009,7 @@ struct LensPanel: View {
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 2)
+        .task(id: shot) { LensSnapshot.capture(real: lens, shot: shot, avatar: avatar) }
     }
 
     static let comparing = ProcessInfo.processInfo.environment["MIRROR_COMPARE"] == "1"
