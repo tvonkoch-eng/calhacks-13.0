@@ -274,9 +274,9 @@ enum Talk {
         var background = ""
         var answers: Model?
         var coach: Model?
-        /// What to say next and openers when face ID recognises someone: the one output the wearer
-        /// reads word for word, written in a pause, so it gets the strongest model (Claude Sonnet
-        /// 5.5) rather than the fastest. Unset: the coach's model.
+        /// What to say next and openers when face ID recognises someone, if they should run on a
+        /// different model from the coach. Unset (the default): the coach's model. Big models
+        /// weren't worth it: the lines were no better and a second late.
         var suggest: Model?
         /// Used while `answers` or `coach` is rate-limited, or past `perMinute`.
         var backup: Model?

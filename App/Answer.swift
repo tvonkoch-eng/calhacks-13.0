@@ -37,8 +37,8 @@ enum Provider: String {
         // 1.1 over 1.3: both 20/20 on answer-vs-SKIP, 1.1 median first token 1.17 s vs 1.87 s
         // (2026-10-23, Tests/muse-latency.py). Override with ANSWER_MODEL.
         case .muse: "muse-spark-1.1"
-        // Sonnet 5.5 for the lanes where quality beats a second: suggestions and openers.
-        case .anthropic: "claude-sonnet-5-5"
+        // Haiku with thinking off: the quickest Claude, if a lane is pointed at it.
+        case .anthropic: "claude-haiku-5-5"
         }
     }
 

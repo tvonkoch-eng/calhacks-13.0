@@ -43,11 +43,12 @@ the World Series this year" SKIP rather than WEB).
 From the research on open conversation copilots (Merge/Convoscope on Mentra, Natively, Omi) and
 model/provider benchmarks:
 
-- **A suggest lane** (`SUGGEST_PROVIDER/API_KEY/MODEL`): suggestions and openers are the one thing
-  the wearer reads word for word, and they're written in a pause, so they get the strongest model,
-  not the fastest. `anthropic` = Claude through the raw Messages API (`Claude` in Coach.swift
-  translates the OpenAI-shaped bodies every lane builds, tools included, so any lane can run on
-  it). Default `claude-sonnet-5-5`; unset, the coach's model as before.
+- **Fast models everywhere.** Big models (Sonnet-class) weren't noticeably better on these short
+  lines and cost a second or more, so every lane stays on Cerebras. An optional suggest lane
+  (`SUGGEST_PROVIDER/API_KEY/MODEL`, unset by default = the coach's model) can move suggestions
+  elsewhere. `anthropic` = Claude through the raw Messages API (`Claude` in Coach.swift translates
+  the OpenAI-shaped bodies every lane builds, tools included), default `claude-haiku-5-5` with
+  thinking off.
 - **Ranked suggestions.** The coach returns up to three lines, best first, each scored 1-5. A
   lull shows the best only at 3 or more (a line anyone could say isn't worth breaking a silence);
   asked for or a face just recognised, the best always goes up. The runners-up wait: the next
