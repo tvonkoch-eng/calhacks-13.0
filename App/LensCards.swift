@@ -43,6 +43,9 @@ struct LensShot: Equatable {
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
 /// who they are and three lines of background.
 enum LensCards {
+    /// One line from the CRM for a person's card ("You said: Send Avi the deck"). Set by Assistant.
+    nonisolated(unsafe) static var recall: ((String) -> String?)?
+
     /// The conversation aid's card. With `person` (the face you're talking to is known) a small
     /// strip on top says who; without, the aid's own header (a name they said) as meta. Then the
     /// passing card, title as heading and detail as body, and the pinned line to say next behind
@@ -195,7 +198,8 @@ enum LensCards {
             if let tie = person.tie, !tie.isEmpty { primary.append(tie) }
             primary += highlights.map { "\u{2014} " + $0 }
             shot.primary = primary
-            shot.secondary = [person.personal, person.source].compactMap { $0 }.filter { !$0.isEmpty }
+            // What you owe them, or talked about last (the CRM), before the background lines.
+            shot.secondary = [recall?(person.id), person.personal, person.source].compactMap { $0 }.filter { !$0.isEmpty }
             shot.details = primary.isEmpty
                 ? person.details.prefix(3).map { LensShot.Row(icon: symbol($0.kind), text: $0.text) }
                 : []

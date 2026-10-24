@@ -1,6 +1,6 @@
 #!/bin/sh
 # Offline checks: the question gate, the speculative fire/refire policy, and the conversation aid's
-# pure rules (lens slots, roles, text rules, coach JSON). No Xcode target, no simulator, no network.
+# pure rules (lens slots, roles, text rules, coach JSON), and the personal CRM. No Xcode target, no simulator, no network.
 #   sh Tests/run.sh
 set -e
 cd "$(dirname "$0")/.."
@@ -23,4 +23,9 @@ cp Tests/LensPolicyTests.swift "$out/LensPolicy/main.swift"
 swiftc -O "$out/LensPolicy/main.swift" App/LensPolicy.swift App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift App/Tools.swift -o "$out/LensPolicy/run"
 printf 'LensPolicy: '
 "$out/LensPolicy/run"
+mkdir -p "$out/CRM"
+cp Tests/CRMTests.swift "$out/CRM/main.swift"
+swiftc -O "$out/CRM/main.swift" App/CRM.swift App/Question.swift App/Answer.swift App/Coach.swift App/Lens.swift App/Aid.swift App/Tools.swift -o "$out/CRM/run"
+printf 'CRM: '
+"$out/CRM/run"
 rm -rf "$out"

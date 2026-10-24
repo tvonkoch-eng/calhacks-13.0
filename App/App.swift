@@ -6,6 +6,7 @@ struct CalHacksApp: App {
     @State private var store = Store()
     @State private var glasses = Glasses()
     @State private var assistant = Assistant()
+    @State private var crm = CRM()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -21,6 +22,7 @@ struct CalHacksApp: App {
                 .environment(store)
                 .environment(glasses)
                 .environment(assistant)
+                .environment(crm)
                 .onOpenURL { glasses.handle($0) }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { Task { await assistant.ensureListening() } }
@@ -29,6 +31,12 @@ struct CalHacksApp: App {
                     glasses.store = store
                     assistant.glasses = glasses
                     assistant.store = store
+                    assistant.crm = crm
+                    crm.onScheduled = { reminder in
+                        Nudges.schedule(reminder, title: crm.name(reminder.person))
+                    }
+                    crm.onCancelled = { Nudges.cancel($0) }
+                    crm.onSaved = { kept in store.saved = kept.map { crm.person($0) } }
                     // Listening is on from launch; the mic pill turns it off.
                     Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
@@ -41,7 +49,8 @@ struct CalHacksApp: App {
                         glasses.restreamIfSettingsChanged()
                     }
                     // First names spelled right in the transcript, e.g. "Joaquin" not "Wakeen".
-                    assistant.listener.keywords = store.people.flatMap { $0.name.split(separator: " ").map(String.init) }
+                    // Plus anyone met today or kept (the CRM); refreshed on every arm.
+                    assistant.listener.keywords = crm.keywords(roster: store.people.map(\.name))
                     #if DEBUG
                     let env = ProcessInfo.processInfo.environment
                     if Glasses.prefersMock {
@@ -157,6 +166,7 @@ struct HomeView: View {
                         }
                         TimelineView(.periodic(from: .now, by: 30)) { context in
                             VStack(spacing: 0) {
+                                if query.isEmpty { FollowUps(now: context.date) }
                                 ForEach(items(now: context.date)) { item in
                                     switch item {
                                     case .section(let title):
@@ -437,6 +447,7 @@ struct CurrentCard: View {
 
 struct ContactRow: View {
     @Environment(Store.self) private var store
+    @Environment(CRM.self) private var crm
     let person: Person
     let seen: Date?
     let now: Date
@@ -448,7 +459,7 @@ struct ContactRow: View {
                     Avatar(person: person, size: 46)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(person.name).font(.body.weight(.medium))
-                        Text(person.tags?.prefix(2).joined(separator: " · ") ?? person.role)
+                        Text(subtitle)
                             .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 8)
@@ -467,6 +478,17 @@ struct ContactRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+extension ContactRow {
+    /// What you talked about last, once there's a conversation; until then who they are.
+    private var subtitle: String {
+        if let topics = crm.conversations(with: person.id).first?.topics, !topics.isEmpty {
+            return "Talked about " + topics.prefix(2).joined(separator: ", ")
+        }
+        if let label = crm.label(person.id) { return label }
+        return person.tags?.prefix(2).joined(separator: " · ") ?? person.role
     }
 }
 
@@ -577,6 +599,7 @@ struct Avatar: View {
 /// A contact's record: who they are, how often you've met, your notes, and every encounter.
 struct PersonView: View {
     @Environment(Store.self) private var store
+    @Environment(CRM.self) private var crm
     let person: Person
     @State private var note = ""
     @FocusState private var editingNote: Bool
@@ -588,10 +611,12 @@ struct PersonView: View {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 stats.padding(.top, 22)
+                PersonCRM(person: person)
                 section("Details") { details }
                 section("Notes") { notes }
                 section("Activity") { activity }
-                section("Recognition") { recognition }
+                // Consent: someone met but not kept can't be recognized, so no face photos.
+                if crm.consent(person.id) != .pending { section("Recognition") { recognition } }
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 40)

@@ -33,10 +33,47 @@ import Observation
         didSet {
             let me = store?.people.first(where: { $0.isMe == true })?.name.split(separator: " ").first.map(String.init)
             if let me, me != aid.config.wearer { aid = Self.makeAid(wearer: me) }
+            crm?.rosterIDs = store?.people.filter { $0.isMe != true }.map(\.id) ?? []
         }
     }
     private(set) var aid: Aid {
-        didSet { aid.onLens = { [weak self] view in self?.glasses?.showAid(view) } }
+        didSet {
+            aid.onLens = { [weak self] view in self?.glasses?.showAid(view) }
+            crm?.wearer = aid.config.wearer
+            crm?.models = Self.recapModels(aid.config)
+        }
+    }
+    /// The personal CRM keeps every conversation the aid hears (App/CRM.swift).
+    @ObservationIgnored weak var crm: CRM? {
+        didSet {
+            guard let crm else { return }
+            crm.wearer = aid.config.wearer
+            crm.models = Self.recapModels(aid.config)
+            crm.retag = { [weak self] label in self?.aid.tag(label) ?? label ?? "?" }
+            crm.heardAboutThem = { [weak self] in (self?.aid.them.name, self?.aid.them.facts ?? []) }
+            crm.roster = { [weak self] id in
+                self?.store?.people.first(where: { $0.id == id }).map { CRM.Known(name: $0.name, about: $0.headline) }
+            }
+            crm.rosterIDs = store?.people.filter { $0.isMe != true }.map(\.id) ?? []
+            // The card already has the name: under it, the label and the line from last time.
+            LensCards.recall = { [weak crm] id in
+                MainActor.assumeIsolated {
+                    guard let crm else { return nil }
+                    let parts = [crm.label(id), crm.lastLine(id)].compactMap { $0 }
+                    return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
+                }
+            }
+        }
+    }
+
+    /// A recap is one call per conversation and quality matters more than speed: the coach's
+    /// model first, then the backup (a 429 on the coach is common), then the answer model.
+    private static func recapModels(_ config: Aid.Config) -> [Aid.Model] {
+        var models: [Aid.Model] = []
+        for model in [config.coach, config.backup, config.answers].compactMap(\.self) where !models.contains(model) {
+            models.append(model)
+        }
+        return models
     }
 
     /// The person the face side last handed the aid, so a glance away and back doesn't re-seed it.
@@ -51,7 +88,11 @@ import Observation
         listener.mic = Listener.Mic(rawValue: UserDefaults.standard.string(forKey: "mic") ?? "") ?? .phone
         listener.onLog = { SpeedLog.record($0) }
         listener.onPartial = { [weak self] text in self?.aid.heard(partial: text) }
-        listener.onLine = { [weak self] text, speaker, level in self?.aid.heard(line: text, speaker: speaker, level: level) }
+        listener.onLine = { [weak self] text, speaker, level in
+            guard let self else { return }
+            self.aid.heard(line: text, speaker: speaker, level: level)
+            self.crm?.heard(text, speaker: speaker, command: Tools.command(in: text) != nil)
+        }
         aid.onLens = { [weak self] view in self?.glasses?.showAid(view) }
     }
 
@@ -74,6 +115,8 @@ import Observation
             : Listener.key == nil ? "No Muse key yet — add MUSE_API_KEY to Secrets.xcconfig." : ""
         // Whoever is in front of you right now is who you're about to talk to.
         if let id = glasses?.facing { facingChanged(id) }
+        // Names of people likely here, so speech recognition spells them right.
+        if let crm { listener.keywords = crm.keywords(roster: store?.people.map(\.name) ?? []) }
         await listener.start()
         if !listener.listening {
             armed = false
@@ -83,6 +126,8 @@ import Observation
 
     func disarm() {
         armed = false
+        // Mic off ends the conversation: save it and recap it now, not two minutes from now.
+        crm?.tick(force: true)
         listener.stop()
         glasses?.aidArmed = false
         glasses?.showAid(LensView())
@@ -124,10 +169,11 @@ import Observation
     /// profile of the other person, so the coach knows who they are before they introduce
     /// themselves. Looking away (nil) keeps the profile: people glance off mid-conversation.
     private func facingChanged(_ id: String?) {
-        guard armed, let id, id != met, let person = store?.people.first(where: { $0.id == id }),
+        if id == nil || store?.contacts.first(where: { $0.id == id })?.isMe != true { crm?.facing(id) }
+        guard armed, let id, id != met, let person = store?.contacts.first(where: { $0.id == id }),
               person.name.split(separator: " ").first.map(String.init) != aid.config.wearer else { return }
         met = id
         aid.met(name: person.name, label: person.headline,
-                facts: person.details.map(\.text))
+                facts: person.details.map(\.text) + (crm?.record(id).briefing ?? []))
     }
 }
