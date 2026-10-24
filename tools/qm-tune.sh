@@ -90,14 +90,16 @@ for id in $DEVS; do
   fi
 
   if [ "$NPAIRS" != "0" ]; then
-    python3 - "$FILE" < "$PAIRFILE" <<'PY' || exit 1
+    # The pairs go in by PATH, not on stdin: `python3 -` already reads its program from stdin,
+    # so a heredoc'd script and piped data cannot share it — the data silently comes back empty.
+    python3 - "$FILE" "$PAIRFILE" <<'PY' || exit 1
 import json, sys
-path = sys.argv[1]
+path, pairfile = sys.argv[1], sys.argv[2]
 try:
     state = json.load(open(path))
 except Exception:
     state = {}
-for line in sys.stdin.read().splitlines():
+for line in open(pairfile).read().splitlines():
     if not line.strip():
         continue
     key, _, raw = line.partition("=")
