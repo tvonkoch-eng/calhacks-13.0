@@ -17,7 +17,9 @@ targets:
   CalHacks:
     type: application
     platform: iOS
-    sources: [App]
+    sources:
+      - path: App
+        excludes: [Faces/**]
     dependencies:
       - package: MWDAT
         product: MWDATCore

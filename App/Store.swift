@@ -50,16 +50,36 @@ struct Match {
         }
         for person in people {
             if let image = UIImage(contentsOfFile: avatarURL(person.id).path) { avatars[person.id] = image }
-            if samples(person.id) == 0 { seed(person.id) }
+            if avatars[person.id] == nil { seedAvatar(person.id) }
+            loadReferences(person.id)
         }
     }
 
-    /// First-run sample + avatar from a bundled App/Faces/<id>.jpg|png, if there is one.
-    private func seed(_ id: String) {
+    /// Bundled App/References/<id>/*.jpg are match examples, loaded once per person (flag in UserDefaults).
+    private func loadReferences(_ id: String) {
+        let key = "refsLoaded.\(id)"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        // Xcode flattens bundled files, so references are named <id>_NN.jpg.
+        let urls = (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("\(id)_") }
+        guard !urls.isEmpty else { return }
+        for url in urls {
+            guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
+                  let face = FaceEngine.faces(in: image).first else { continue }
+            gallery[id, default: []].append(face.embedding)
+        }
+        save()
+        UserDefaults.standard.set(true, forKey: key)
+    }
+
+    /// Headshot from a bundled App/Faces/<id>.jpg|png becomes the avatar only; match examples come from the photo library.
+    private func seedAvatar(_ id: String) {
         guard let url = ["jpg", "jpeg", "png"].lazy.compactMap({ Bundle.main.url(forResource: id, withExtension: $0) }).first,
               let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]),
               let face = FaceEngine.faces(in: image).first else { return }
-        enroll(id, face)
+        let avatar = UIImage(cgImage: face.crop)
+        avatars[id] = avatar
+        try? avatar.jpegData(compressionQuality: 0.8)?.write(to: avatarURL(id))
     }
 
     var me: Person? { people.first { $0.isMe == true } }
