@@ -118,7 +118,7 @@ enum Tools {
         // Reasoning models think first; Cerebras' Qwen thinks unless told not to.
         if model.contains("gpt-oss") {
             body.merge(["max_tokens": 500, "reasoning_effort": "low"]) { _, new in new }
-        } else if provider == .cerebras, model.contains("qwen") {
+        } else if provider == .cerebras || provider == .openrouter, model.contains("qwen") {
             body.merge(["max_tokens": 200, "reasoning_effort": "none"]) { _, new in new }
         } else {
             body["max_tokens"] = 200
@@ -184,13 +184,15 @@ enum Tools {
                 ["role": "system", "content": """
                     Turn research notes into one card for smart glasses. Reply with JSON only: \
                     {"title": "the answer itself, at most 6 words", "detail": "the single most useful \
-                    supporting fact, at most 14 words"}. No links, no citations, no preamble.
+                    supporting fact, at most 14 words"}. The title answers the task: lead with the \
+                    number, name or date ("3,000+ hackers", not "Cal Hacks attendance"); never the \
+                    topic restated. No links, no citations, no preamble.
                     """],
                 ["role": "user", "content": "Task: \(task)\n\nNotes:\n\(finding.prefix(4000))"],
             ],
         ]
         if model.contains("gpt-oss") { body.merge(["max_tokens": 400, "reasoning_effort": "low"]) { _, new in new } }
-        else if provider == .cerebras, model.contains("qwen") { body.merge(["max_tokens": 120, "reasoning_effort": "none"]) { _, new in new } }
+        else if provider == .cerebras || provider == .openrouter, model.contains("qwen") { body.merge(["max_tokens": 120, "reasoning_effort": "none"]) { _, new in new } }
         else { body["max_tokens"] = 120 }
         let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 8)
         if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,

@@ -262,5 +262,73 @@ do {
     check(!Talk.asksForSuggestion("how far is the nearest Target?"), "a place question is a question")
 }
 
+// Ranked suggestions: the best goes up, the runners-up wait for the next lull.
+do {
+    let ranked = Coach.parse(#"{"define": [], "suggest": [{"say": "How did the Transpac go?", "score": 5}, {"say": "Who crewed with you?", "score": 3}, {"say": "Racing next year?", "score": 2}], "ask": null}"#)
+    check(ranked?.suggest == "How did the Transpac go?" && ranked?.score == 5, "best suggestion and its score")
+    check(ranked?.alternatives.map(\.say) == ["Who crewed with you?", "Racing next year?"]
+          && ranked?.alternatives.map(\.score) == [3, 2], "runners-up in order, with scores")
+    let strings = Coach.parse(#"{"suggest": ["What's next for Rillet?", "Hiring?"]}"#)
+    check(strings?.suggest == "What's next for Rillet?" && strings?.score == nil && strings?.alternatives.map(\.say) == ["Hiring?"], "a plain list of lines")
+    let none = Coach.parse(#"{"suggest": [], "define": []}"#)
+    check(none?.suggest == nil && none?.alternatives.isEmpty == true, "an empty list is no suggestion")
+}
+
+// Claude behind the OpenAI-shaped requests every lane builds.
+do {
+    let body = Claude.body([
+        "model": "claude-sonnet-5-5", "temperature": 0.3, "max_tokens": 220,
+        "response_format": ["type": "json_object"],
+        "messages": [["role": "system", "content": "rules"], ["role": "user", "content": "transcript"]],
+    ])
+    check(body["system"] as? String == "rules", "system message moves to system")
+    check((body["messages"] as? [[String: String]])?.map { $0["role"] ?? "" } == ["user"], "only user turns stay in messages")
+    check(body["temperature"] == nil && body["response_format"] == nil, "sampling and JSON mode are dropped")
+    check((body["output_config"] as? [String: String])?["effort"] == "low", "no effort asked means low")
+    check(body["max_tokens"] as? Int == 2048, "thinking gets room above a lane's tiny budget")
+
+    let quick = Claude.body(["model": "claude-sonnet-5-5", "max_tokens": 48, "reasoning_effort": "none", "stream": true,
+                             "messages": [["role": "user", "content": "q"]]])
+    check((quick["thinking"] as? [String: String])?["type"] == "between_tools", "Sonnet 5.5 turns thinking off with between_tools")
+    check(quick["max_tokens"] as? Int == 64 && quick["stream"] as? Bool == true, "no thinking keeps the budget small; streaming kept")
+    let opus = Claude.body(["model": "claude-opus-5-5", "reasoning_effort": "none", "messages": []])
+    check(opus["thinking"] == nil && (opus["output_config"] as? [String: String])?["effort"] == "low", "Opus can't stop thinking: low effort")
+
+    let tools = Claude.body(["model": "claude-sonnet-5-5", "tool_choice": "auto", "messages": [],
+                             "tools": [["type": "function", "function": ["name": "weather", "description": "the weather",
+                                                                         "parameters": ["type": "object", "properties": [String: Any]()]]]]])
+    let tool = (tools["tools"] as? [[String: Any]])?.first
+    check(tool?["name"] as? String == "weather" && tool?["input_schema"] != nil, "function tools become Claude tools")
+    check((tools["tool_choice"] as? [String: String])?["type"] == "auto", "tool choice auto")
+
+    let reply = Claude.reply(["content": [["type": "thinking", "thinking": ""], ["type": "text", "text": "Sunny"],
+                                          ["type": "tool_use", "name": "nearby", "input": ["query": "Target"]]]])
+    check(reply.content == "Sunny", "text blocks are the content; thinking is skipped")
+    check(reply.calls.first?.name == "nearby" && reply.calls.first?.arguments.contains("Target") == true, "tool_use becomes a call")
+    check(Claude.delta(#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"391"}}"#) == "391", "stream text delta")
+    check(Claude.delta(#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hm"}}"#) == nil, "thinking deltas never reach the lens")
+}
+
+// OpenRouter: Cerebras first, Qwen's thinking off unless a lane asks for some.
+do {
+    let qwen = OpenRouter.adjust(["model": "qwen/qwen3.8-27b", "reasoning_effort": "none", "messages": []])
+    check(qwen["reasoning_effort"] == nil && (qwen["reasoning"] as? [String: Bool])?["enabled"] == false, "no reasoning for a quick answer")
+    check(((qwen["provider"] as? [String: Any])?["order"] as? [String])?.first == "cerebras", "Cerebras first")
+    let oss = OpenRouter.adjust(["model": "openai/gpt-oss-120b", "reasoning_effort": "low"])
+    check((oss["reasoning"] as? [String: String])?["effort"] == "low", "reasoning effort carried over")
+    check((OpenRouter.adjust(["model": "qwen/qwen3.8-27b"])["reasoning"] as? [String: Bool])?["enabled"] == false, "Qwen defaults to no thinking")
+}
+
+// Exa: what needs the conversation to search, and findings as lines.
+do {
+    check(Exa.leans("how much did they raise"), "a pronoun needs the conversation")
+    check(!Exa.leans("how much did Figure AI raise"), "a named subject searches as is")
+    let lines = Exa.findings(["results": [
+        ["title": "Figure raises $1B", "publishedDate": "2026-09-30T00:00:00Z", "highlights": ["Figure AI raised $1B at a $39B valuation."]],
+        ["title": "Empty"],
+    ]])
+    check(lines == "- Figure raises $1B (2026-09-30): Figure AI raised $1B at a $39B valuation.", "one line per result with text")
+}
+
 print(failures == 0 ? "AID OK" : "\(failures) failures")
 exit(failures == 0 ? 0 : 1)
