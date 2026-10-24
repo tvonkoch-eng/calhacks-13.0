@@ -1083,6 +1083,46 @@ private struct LensCardBackground: ViewModifier {
     }
 }
 
+/// Where the lens lands in a camera frame, from the two devices' optics.
+///
+/// Published figures, each a live knob so a real capture can true them up with no rebuild:
+/// - The display is 600 x 600 at 42 pixels per degree (`lensPPD`): ~14.3° a side, the "20°
+///   diagonal" Meta quotes.
+/// - The camera is a 12 MP ultra-wide with a 100° field (`cameraFov`), taken here as the diagonal
+///   of its 3:4 sensor. The stream is a 9:16 centre crop of that sensor, so the focal length in
+///   stream pixels follows from the frame's long side alone: 671 px at 1280.
+/// - The display sits in the right lens slightly below and right of straight ahead (UploadVR,
+///   Tom's Guide). No one publishes the angle, so `lensRightDeg` / `lensDownDeg` default to a
+///   few degrees and are the numbers to measure.
+/// The camera is on the left of the frame and the eye behind the right lens, ~6 cm apart, which
+/// is under a degree beyond 4 m and is ignored. A pinhole model: fine near the centre, where the
+/// lens is; the ultra-wide's barrel distortion would only matter at the frame's edges.
+struct LensOptics {
+    let frame: CGSize
+
+    var cameraFov: CGFloat { CGFloat(Tuning.float("cameraFov", 100)) }
+    var ppd: CGFloat { CGFloat(Tuning.float("lensPPD", 42)) }
+    var rightDeg: CGFloat { CGFloat(Tuning.float("lensRightDeg", 4)) }
+    var downDeg: CGFloat { CGFloat(Tuning.float("lensDownDeg", 3)) }
+
+    /// Focal length in frame pixels. Half the 3:4 sensor's diagonal is 0.625 of its long side.
+    var focal: CGFloat {
+        let long = max(frame.width, frame.height)
+        return 0.625 * long / tan(cameraFov / 2 * .pi / 180)
+    }
+
+    /// How wide the 600 px panel is, as an angle.
+    var lensDegrees: CGFloat { LensMetrics.canvas / ppd }
+
+    /// The panel's side in frame pixels.
+    var side: CGFloat { 2 * focal * tan(lensDegrees / 2 * .pi / 180) }
+
+    var center: CGPoint {
+        CGPoint(x: frame.width / 2 + focal * tan(rightDeg * .pi / 180),
+                y: frame.height / 2 + focal * tan(downDeg * .pi / 180))
+    }
+}
+
 /// Ground truth, pulled off the phone.
 ///
 /// While a simulated pair is up, both renderers are alive at once: MockDeviceKit's preview view is
@@ -1187,20 +1227,18 @@ struct LensPanel: View {
 
     /// What the wearer sees: the camera frame, with the lens composited on top of it.
     ///
-    /// Everything is authored in camera pixels — the frame at the size it actually arrives, the
-    /// lens at its own 600 x 600 — and the finished picture is shrunk to fit the phone, so the
-    /// two keep their true relative size. The display is additive: it can only add light, so
-    /// its black is see-through. Screen-blending it onto the frame does the same thing, and the
-    /// card's slate fill lifts the scene behind it the way it does on glass.
+    /// Everything is authored in camera pixels and the finished picture is shrunk to fit the
+    /// phone. The display is additive: it can only add light, so its black is see-through.
+    /// Screen-blending it onto the frame does the same thing, and the card's slate fill lifts the
+    /// scene behind it the way it does on glass.
     ///
-    /// Where the lens sits and how big it reads are knobs, because the camera and the display
-    /// do not share an optical axis or a field of view: `lensOverlayScale` (1 = pixel for
-    /// pixel), `lensOverlayX` / `lensOverlayY` (offset from centre, camera pixels).
+    /// The lens is placed by angle, not by pixel, because that is what the eye sees: the camera
+    /// and the display share a direction of view, not a pixel grid. See `LensOptics`.
     private var wearerView: some View {
         let frame = frameSize ?? Self.defaultFrame
-        let side = LensMetrics.canvas * CGFloat(Tuning.float("lensOverlayScale", 1))
-        let center = CGPoint(x: frame.width / 2 + CGFloat(Tuning.float("lensOverlayX", 0)),
-                             y: frame.height / 2 + CGFloat(Tuning.float("lensOverlayY", 0)))
+        let optics = LensOptics(frame: frame)
+        let side = optics.side
+        let center = optics.center
         return GeometryReader { geo in
             ZStack(alignment: .topLeading) {
                 Color.black
@@ -1212,6 +1250,7 @@ struct LensPanel: View {
                         .font(.system(size: 40)).foregroundStyle(Color(.systemGray))
                         .frame(width: frame.width, height: frame.height * 0.3)
                 }
+                // Laid out at the lens's own 600 and shrunk, so line breaks land where they do on glass.
                 Group {
                     if let lens {
                         MockLens(view: lens)
@@ -1219,6 +1258,8 @@ struct LensPanel: View {
                         LensMirror(shot: shot, avatar: avatar)
                     }
                 }
+                .frame(width: LensMetrics.canvas, height: LensMetrics.canvas)
+                .scaleEffect(side / LensMetrics.canvas)
                 .frame(width: side, height: side)
                 .blendMode(.screen)
                 .position(center)
@@ -1238,8 +1279,8 @@ struct LensPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(.separator)))
         .overlay(alignment: .bottomTrailing) {
-            Text(verbatim: "\(Int(frame.width))×\(Int(frame.height)) · lens \(Int(side))")
-                .lineLimit(1)
+            Text(verbatim: "\(Int(frame.width))×\(Int(frame.height)) · lens \(Int(side)) px · \(Int(optics.lensDegrees.rounded()))°")
+                .lineLimit(1).minimumScaleFactor(0.6)
                 .font(.caption2.monospacedDigit()).foregroundStyle(.white.opacity(0.8))
                 .padding(.horizontal, 6).padding(.vertical, 3)
                 .background(.black.opacity(0.45), in: Capsule())
