@@ -5,6 +5,7 @@ import SwiftUI
 struct CalHacksApp: App {
     @State private var store = Store()
     @State private var glasses = Glasses()
+    @State private var assistant = Assistant()
 
     init() {
         Glasses.configure()
@@ -16,9 +17,11 @@ struct CalHacksApp: App {
             HomeView()
                 .environment(store)
                 .environment(glasses)
+                .environment(assistant)
                 .onOpenURL { glasses.handle($0) }
                 .task {
                     glasses.store = store
+                    assistant.glasses = glasses
                     #if DEBUG
                     // PREVIEW_SEEN="joaquin:7200,mirabelle:900" = seen that many seconds ago.
                     for entry in (ProcessInfo.processInfo.environment["PREVIEW_SEEN"] ?? "").split(separator: ",") {
@@ -42,6 +45,7 @@ struct CalHacksApp: App {
 struct HomeView: View {
     @Environment(Store.self) private var store
     @Environment(Glasses.self) private var glasses
+    @Environment(Assistant.self) private var assistant
 
     var body: some View {
         NavigationStack {
@@ -57,6 +61,11 @@ struct HomeView: View {
                         notice
                             .padding(.horizontal, 20)
                             .padding(.bottom, 10)
+                        if assistant.armed, let turn = assistant.current, turn.live || !turn.answer.isEmpty {
+                            AnswerStrip(turn: turn)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 10)
+                        }
                         TimelineView(.periodic(from: .now, by: 30)) { context in
                             VStack(spacing: 0) {
                                 ForEach(Array(store.recents.enumerated()), id: \.element.id) { index, person in
@@ -107,7 +116,26 @@ struct HomeView: View {
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(Color(.secondarySystemBackground), in: Capsule())
             }
+            Button {
+                if assistant.armed { assistant.disarm() } else { Task { await assistant.arm() } }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: assistant.armed ? "mic.fill" : "mic.slash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(assistant.armed ? Color.red : Color.secondary)
+                    Text(assistant.armed ? "Listening" : "Mic off")
+                        .font(.footnote.weight(.medium))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Color(.secondarySystemBackground), in: Capsule())
+            }
             Spacer()
+            NavigationLink { ConversationView() } label: {
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 34, height: 34)
+                    .background(Color(.secondarySystemBackground), in: Circle())
+            }
         }
         .tint(.primary)
         .padding(.horizontal, 20)
@@ -156,6 +184,23 @@ struct HomeView: View {
         if glasses.connecting { return "Connecting" }
         if glasses.identifying { return "Recognizing" }
         return glasses.connected ? "Identify" : "Connect glasses"
+    }
+}
+
+/// The question just heard and the answer that went to the lens.
+struct AnswerStrip: View {
+    let turn: Turn
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(turn.question).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            Text(turn.answer.isEmpty ? "\u{2026}" : turn.answer)
+                .font(.system(.body, design: .serif, weight: .medium))
+                .lineLimit(2)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color(.separator)))
     }
 }
 

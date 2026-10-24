@@ -13,6 +13,18 @@ enum LensCards {
         .background(.card)
     }
 
+    /// A conversation answer: the answer big, the question it answers small underneath.
+    static func answer(_ card: AnswerCard) -> FlexBox {
+        let headline = card.answer.isEmpty ? "\u{2026}" : card.answer
+        let echo = card.echo
+        return FlexBox(direction: .column, spacing: 8) {
+            Text(headline, style: .heading)
+            Text(echo, style: .meta, color: .secondary)
+        }
+        .padding(24)
+        .background(.card)
+    }
+
     static func card(
         for result: Identification,
         avatar: (String) -> UIImage?,

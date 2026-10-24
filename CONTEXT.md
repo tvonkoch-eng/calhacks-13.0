@@ -30,7 +30,7 @@ Cleaned up from the team's Granola notes (Cal Hacks 13.0).
 
 1. Headshot + name, preloaded. *(v1 in this repo: on-device face match, CRM of the team, lens card on Display glasses)*
 2. Background info from LinkedIn scraping (Apify).
-3. TBD once 1 and 2 are solid (likely real-time conversation assist).
+3. Real-time conversation assist. *(v1 in this repo: phone mic → question detection → answer on the lens, speculated mid-sentence. See "Conversation assist" in the README.)*
 
 ## Data for the demo
 
@@ -44,4 +44,8 @@ Cleaned up from the team's Granola notes (Cal Hacks 13.0).
 - [ ] Build the consent sign-up form (photo + LinkedIn).
 - [ ] Apify LinkedIn scrape → profile JSON in the app's format (`App/people.json`: name, role, facts).
 - [x] Press to identify on the glasses (phone button, lens button, capture button via Inputs).
+- [x] Spot a factual question in live speech and put the answer on the lens, answering speculatively from the partial transcript so the latency lands inside the question.
+- [ ] Mic on the glasses instead of the phone (MWDAT audio) — phone mic first because it is one less SDK surface to fight during the hack.
+- [ ] Speaker attribution: right now it answers any question it hears, including the wearer's own.
+- [ ] Fold the person being identified into the answer context, so "where does she work" resolves.
 - [ ] Note: Meta's developer terms (checked Oct 19) prohibit face identification on the glasses without Meta's prior approval. Confirm how this affects the Meta prize demo.

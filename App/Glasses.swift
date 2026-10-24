@@ -6,6 +6,20 @@ import MWDATInputs
 import Observation
 import UIKit
 
+/// What the lens shows during a conversation: the question we heard and the answer so far.
+struct AnswerCard: Equatable {
+    let question: String
+    let answer: String
+    let thinking: Bool
+
+    /// The lens is small. Echo just enough of the question to make the answer legible.
+    var echo: String {
+        let words = question.split(separator: " ")
+        guard words.count > 7 else { return question }
+        return words.prefix(7).joined(separator: " ") + "\u{2026}"
+    }
+}
+
 enum Identification {
     case ready
     case noFace
@@ -21,6 +35,8 @@ enum Identification {
     var connecting = false
     var identifying = false
     var result: Identification = .ready
+    /// Takes over the lens while it is set; the identity card comes back when it clears.
+    var answer: AnswerCard?
 
     @ObservationIgnored var store: Store?
     /// The last automatic "seen" mark, so correcting a wrong match restores the wrong person's time.
@@ -35,6 +51,10 @@ enum Identification {
     @ObservationIgnored private var frameWaiter: CheckedContinuation<CIImage?, Never>?
     @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces", qos: .userInitiated)
     @ObservationIgnored private var photoBytes = 0
+    @ObservationIgnored private var lastSend = Date.distantPast
+    @ObservationIgnored private var pendingSend: Task<Void, Never>?
+    /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
+    @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
     static func configure() {
         do { try Wearables.configure() } catch { print("Wearables.configure failed: \(error)") }
@@ -240,6 +260,13 @@ enum Identification {
         renderLens()
     }
 
+    /// Put a conversation answer on the lens, or clear it and fall back to the identity card.
+    func showAnswer(_ card: AnswerCard?) {
+        guard card != answer else { return }
+        answer = card
+        renderLens()
+    }
+
     private func classify(_ face: FaceHit) -> Identification {
         guard let store else { return .noFace }
         return store.match(face.embedding).map { .known($0, face) } ?? .unknown(face)
@@ -254,6 +281,9 @@ enum Identification {
         displayReady = false
         session = nil
         connected = false
+        pendingSend?.cancel()
+        pendingSend = nil
+        answer = nil
         result = .ready
         resumePhoto(nil)
         resumeFrame(nil)
@@ -330,7 +360,12 @@ enum Identification {
     // MARK: - Lens
 
     private func renderLens() {
-        guard let display, displayReady else { return }
+        guard displayReady else { return }
+        // A live answer owns the lens. It is the thing the wearer needs in the next half second.
+        if let card = answer {
+            send(LensCards.answer(card))
+            return
+        }
         let view = identifying ? LensCards.working() : LensCards.card(
             for: result,
             avatar: { [store] in store?.avatars[$0] },
@@ -338,12 +373,31 @@ enum Identification {
             identify: { [weak self] in Task { @MainActor in await self?.identify(source: "lens") } },
             dismiss: { [weak self] in Task { @MainActor in self?.dismiss() } }
         )
-        Task { try? await display.send(view) }
+        send(view)
     }
 
-    /// Sends the current card and waits for it; false when there's no lens.
+    /// Rate-limited lens write. The first frame of an answer goes out immediately; the stream of
+    /// token updates behind it collapses into one frame every `minSendInterval`, last value wins.
+    private func send(_ view: FlexBox) {
+        pendingSend?.cancel()
+        let wait = minSendInterval - Date().timeIntervalSince(lastSend)
+        guard wait > 0 else {
+            lastSend = Date()
+            Task { try? await display?.send(view) }
+            return
+        }
+        pendingSend = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled, let self, let display = self.display else { return }
+            self.lastSend = Date()
+            try? await display.send(view)
+        }
+    }
+
+    /// Sends the identity card and waits for it (timed in the speed log); false when there's no
+    /// lens or a conversation answer currently owns it.
     private func sendLens() async -> Bool {
-        guard let display, displayReady else { return false }
+        guard let display, displayReady, answer == nil else { return false }
         let view = LensCards.card(
             for: result,
             avatar: { [store] in store?.avatars[$0] },
@@ -351,6 +405,8 @@ enum Identification {
             identify: { [weak self] in Task { @MainActor in await self?.identify(source: "lens") } },
             dismiss: { [weak self] in Task { @MainActor in self?.dismiss() } }
         )
+        pendingSend?.cancel()
+        lastSend = Date()
         do { try await display.send(view) } catch { return false }
         return true
     }
