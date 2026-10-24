@@ -1945,7 +1945,7 @@ enum Identification {
     /// writes are what push the stream off 720p, which card shape is cheap enough, and whether a
     /// lower rate holds full resolution. ~3 minutes; logged as `linkTest`.
     func linkTest() async -> [String] {
-        guard connected, let display, displayReady, !benching, !replaying, let store, store.people.count >= 2 else {
+        guard connected, display != nil, displayReady, !benching, !replaying, let store, store.people.count >= 2 else {
             return ["Connect the glasses first."]
         }
         benching = true
@@ -1975,9 +1975,12 @@ enum Identification {
         ]
         var lines: [String] = []
         for fps in [15, 7] {
-            UserDefaults.standard.set(fps, forKey: "streamFps")
-            linkProgress = "Restarting the stream at \(fps) fps…"
-            await restartCamera()
+            // Restart only to change rate: a camera restart can end the stream and cost a session.
+            if streamFps != fps || liveStreamSettings != streamSettings {
+                UserDefaults.standard.set(fps, forKey: "streamFps")
+                linkProgress = "Restarting the stream at \(fps) fps…"
+                await restartCamera()
+            }
             let ready = Date().addingTimeInterval(20)
             while (!streamLive || Date().timeIntervalSince(lastFrameAt) > 1), Date() < ready {
                 try? await Task.sleep(for: .milliseconds(200))
@@ -1988,13 +1991,19 @@ enum Identification {
                 linkProgress = "\(fps) fps · \(name)"
                 linkSizes = [:]
                 var times: [Double] = []
+                var failed = 0
                 let start = Date()
                 var tick = 0
                 while Date().timeIntervalSince(start) < 12 {
+                    // The display is read fresh every time: a session recovery mid-test replaces it, and
+                    // writing to the old one failed silently in the first run.
                     if let make {
-                        let view = make(people[tick % 2])
-                        let t0 = CFAbsoluteTimeGetCurrent()
-                        if (try? await display.send(view)) != nil { times.append(ms(since: t0)) }
+                        if let display, displayReady {
+                            let t0 = CFAbsoluteTimeGetCurrent()
+                            do { try await display.send(make(people[tick % 2])); times.append(ms(since: t0)) } catch { failed += 1 }
+                        } else {
+                            failed += 1
+                        }
                     }
                     tick += 1
                     let wait = start.addingTimeInterval(Double(tick)).timeIntervalSinceNow
@@ -2011,9 +2020,9 @@ enum Identification {
                 SpeedLog.record(["event": "linkTest", "fps": fps, "payload": name,
                                  "sizes": sizes.map { "\($0.key)x\($0.value)" }.sorted().joined(separator: ","),
                                  "deliveredFps": (delivered * 10).rounded() / 10, "full720": (full * 100).rounded() / 100,
-                                 "writeP50": p50.rounded(), "writeP90": p90.rounded(), "writes": sorted.count])
+                                 "writeP50": p50.rounded(), "writeP90": p90.rounded(), "writes": sorted.count, "failed": failed])
                 lines.append("\(fps) fps · \(name): \(Int((full * 100).rounded()))% at 720p, \(String(format: "%.1f", delivered)) fps"
-                             + (make == nil ? "" : ", write \(Int(p50.rounded())) ms (p90 \(Int(p90.rounded())))"))
+                             + (make == nil ? "" : ", write \(Int(p50.rounded())) ms (p90 \(Int(p90.rounded()))), \(failed) failed"))
             }
         }
         return lines
