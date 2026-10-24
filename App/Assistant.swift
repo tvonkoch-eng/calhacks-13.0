@@ -36,7 +36,19 @@ import Observation
         }
     }
     private(set) var aid: Aid {
-        didSet { aid.onLens = { [weak self] view in self?.glasses?.showAid(view) } }
+        didSet { wire(aid) }
+    }
+
+    /// Lens to the glasses; every aid event into speed.jsonl, so "why didn't it answer?" has an
+    /// answer afterwards (the line with its ME/THEM tag, the answer or the skip, rate limits).
+    private func wire(_ aid: Aid) {
+        aid.onLens = { [weak self] view in self?.glasses?.showAid(view) }
+        aid.onEvent = { [weak aid] event in
+            var entry: [String: Any] = ["event": "aid", "kind": "\(event.kind)", "text": String(event.text.prefix(160))]
+            if !event.detail.isEmpty { entry["detail"] = String(event.detail.prefix(160)) }
+            if let speaker = event.speaker { entry["speaker"] = speaker; entry["tag"] = aid?.tag(speaker) ?? speaker }
+            SpeedLog.record(entry)
+        }
     }
 
     /// The person the face side last handed the aid, so a glance away and back doesn't re-seed it.
@@ -51,8 +63,15 @@ import Observation
         listener.mic = Listener.Mic(rawValue: UserDefaults.standard.string(forKey: "mic") ?? "") ?? .phone
         listener.onLog = { SpeedLog.record($0) }
         listener.onPartial = { [weak self] text in self?.aid.heard(partial: text) }
-        listener.onLine = { [weak self] text, speaker, level in self?.aid.heard(line: text, speaker: speaker, level: level) }
-        aid.onLens = { [weak self] view in self?.glasses?.showAid(view) }
+        listener.onLine = { [weak self] text, speaker, level in
+            guard let self else { return }
+            // Loudness says "closest to the mic = the wearer". True for a mic at your face (glasses,
+            // Mac), false for a phone on the table: Avi came out louder, was tagged ME, and his
+            // "what's the capital of Germany?" was ignored as the wearer's own question. With the
+            // phone mic, roles come only from introductions and "That was me".
+            self.aid.heard(line: text, speaker: speaker, level: self.listener.mic == .glasses ? level : nil)
+        }
+        wire(aid)
     }
 
     private static func makeAid(wearer: String) -> Aid { Aid(config: .fromBundle(wearer: wearer)) }
