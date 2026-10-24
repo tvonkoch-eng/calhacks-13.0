@@ -240,6 +240,12 @@ struct HomeView: View {
                 .background(Color(.secondarySystemBackground), in: Capsule())
             }
             Spacer()
+            NavigationLink { StreamLabView() } label: {
+                Image(systemName: "camera.aperture")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 34, height: 34)
+                    .background(Color(.secondarySystemBackground), in: Circle())
+            }
             NavigationLink { ConversationView() } label: {
                 Image(systemName: "text.bubble")
                     .font(.system(size: 15, weight: .medium))

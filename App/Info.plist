@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>AnswerAPIKey</key>
+	<string>$(ANSWER_API_KEY)</string>
+	<key>AnswerProvider</key>
+	<string>$(ANSWER_PROVIDER)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -33,6 +37,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
@@ -50,18 +56,14 @@
 	<array>
 		<string>_bonjour._tcp</string>
 	</array>
-	<key>AnswerAPIKey</key>
-	<string>$(ANSWER_API_KEY)</string>
-	<key>AnswerProvider</key>
-	<string>$(ANSWER_PROVIDER)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Recognizes your teammates' faces on device.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Lets your phone find and connect to your glasses over Wi-Fi.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Listens for questions so answers can appear on your glasses.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Transcribes speech on device to spot questions as they are asked.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Lets your phone find and connect to your glasses over Wi-Fi.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
@@ -70,6 +72,8 @@
 		<string>bluetooth-peripheral</string>
 		<string>external-accessory</string>
 	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedExternalAccessoryProtocols</key>

@@ -41,6 +41,9 @@ targets:
       properties:
         CFBundleDisplayName: CalHacks
         UILaunchScreen: {}
+        # Recorded stream frames (Documents/frames) show up in the Files app.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: Recognizes your teammates' faces on device.
         NSMicrophoneUsageDescription: Listens for questions so answers can appear on your glasses.

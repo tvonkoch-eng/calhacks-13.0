@@ -66,6 +66,19 @@ enum Identification {
     @ObservationIgnored private var sharpSamples: [Float] = []
     @ObservationIgnored private var lastStats = Date.distantPast
     @ObservationIgnored private var povWatch: Task<Void, Never>?
+    /// What the link delivered over the last second, for the stream lab: the request is not the result.
+    var delivered: Delivered?
+    struct Delivered { let size: String; let fps: Double }
+    @ObservationIgnored private var secFrom = Date()
+    @ObservationIgnored private var secFrames = 0
+    /// When on, every frame is written to `Documents/frames` (see `FrameRecorder`), a new run per camera.
+    var recordFrames = false {
+        didSet {
+            guard recordFrames != oldValue else { return }
+            if recordFrames, camera != nil { FrameRecorder.shared.start(label: streamLabel) }
+            if !recordFrames { FrameRecorder.shared.stop() }
+        }
+    }
 
     @ObservationIgnored var store: Store?
     /// The last automatic "seen" mark, so correcting a wrong match restores the wrong person's time.
@@ -101,15 +114,35 @@ enum Identification {
     /// `streamRes`/`streamFps` can notice it needs a new camera. The SDK fixes resolution and
     /// frame rate at addCamera time; changing the defaults alone does nothing until then.
     @ObservationIgnored private var liveStreamSettings: String?
-    private var streamSettings: String { "\(Tuning.int("streamFps", 7))/\(UserDefaults.standard.string(forKey: "streamRes") ?? "low")" }
+    private var streamSettings: String { "\(streamFps)/\(streamRes)" }
+    var streamRes: String { UserDefaults.standard.string(forKey: "streamRes") ?? "low" }
+    var streamFps: Int { Tuning.int("streamFps", 7) }
+    /// Names a recorded run. A simulated pair ignores the knobs (see `streamConfig`), so say so.
+    private var streamLabel: String {
+        #if DEBUG
+        if mocking { return "sim-medium-24" }
+        #endif
+        return "\(streamRes)-\(streamFps)"
+    }
+
+    /// Sets resolution and frame rate from the phone. The SDK fixes both when the camera is added,
+    /// and swapping the camera live is the path that failed on Toby's phone (`restreamIfSettingsChanged`),
+    /// so this restarts the whole session instead: ~3 s with no video, but it is the reset the SDK honours.
+    func setStream(res: String, fps: Int) {
+        UserDefaults.standard.set(res, forKey: "streamRes")
+        UserDefaults.standard.set(fps, forKey: "streamFps")
+        guard connected, let live = liveStreamSettings, live != streamSettings else { return }
+        SpeedLog.record(["event": "restream", "from": live, "to": streamSettings, "via": "session"])
+        restartSession(reason: "streamSettings", status: "Applying \(res) at \(fps) fps…")
+    }
 
     private var streamConfig: StreamConfiguration {
         #if DEBUG
         // A simulated pair is a local AVCaptureSession with no radio at all.
         if mocking { return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24) }
         #endif
-        let fps = UInt(Tuning.int("streamFps", 7))
-        switch UserDefaults.standard.string(forKey: "streamRes") {
+        let fps = UInt(streamFps)
+        switch streamRes {
         case "high": return StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: fps)
         case "medium": return StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: fps)
         default: return StreamConfiguration(videoCodec: .raw, resolution: .low, frameRate: fps)
@@ -602,6 +635,8 @@ enum Identification {
         displayReady = false
         session = nil
         connected = false
+        delivered = nil
+        FrameRecorder.shared.stop()
         pendingSend?.cancel()
         pendingSend = nil
         answer = nil
@@ -677,10 +712,14 @@ enum Identification {
     private func recoverSession(reason: String) {
         guard !userDisconnected, Date().timeIntervalSince(lastSessionRecovery) > 20 else { return }
         lastSessionRecovery = Date()
+        restartSession(reason: reason, status: "Reconnecting to your glasses…")
+    }
+
+    private func restartSession(reason: String, status: String) {
         SpeedLog.record(["event": "sessionRecover", "reason": reason])
         display?.stop()
         session?.stop()
-        teardown(status: "Reconnecting to your glasses…")
+        teardown(status: status)
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             await self?.connect()
@@ -747,11 +786,14 @@ enum Identification {
         liveStreamSettings = streamSettings
         frameSizes.removeAll()
         statsFrom = Date()
+        if recordFrames { FrameRecorder.shared.start(label: streamLabel) }
+        let recorder = FrameRecorder.shared
         cameraTokens.append(camera.stream.videoFramePublisher.listen { [weak self] frame in
             // Decode on the publisher's own thread. Hopping to the main actor first and calling
             // makeUIImage() there is what made the POV tile stutter: the decode was spending the
             // UI's frame budget. The main actor only ever receives finished images.
             let image = frame.makeUIImage()
+            if let image, recorder.isRecording { recorder.save(image) }
             let small = image?.fitted(to: 360)
             Task { @MainActor in
                 guard let self else { return }
@@ -809,7 +851,14 @@ enum Identification {
         let key = "\(Int(image.size.width * scale))x\(Int(image.size.height * scale))"
         frameSizes[key, default: 0] += 1
         statsFrames += 1
+        secFrames += 1
         let now = Date()
+        let second = now.timeIntervalSince(secFrom)
+        if second >= 1 {
+            delivered = Delivered(size: key, fps: (Double(secFrames) / second * 10).rounded() / 10)
+            secFrames = 0
+            secFrom = now
+        }
         guard now.timeIntervalSince(lastStats) >= 10 else { return }
         lastStats = now
         let seconds = max(now.timeIntervalSince(statsFrom), 0.001)
