@@ -1,0 +1,27 @@
+# Hackathon mixer. Maya runs an LLM evals startup; fast, talks over Toby, jargon mid-monologue.
+RATE: 200
+GAP: 0.15
+NOISE: -30
+VOICES: ME=Daniel THEM=Samantha
+THEM: Hey, sorry, is anyone sitting here?
+ME: No, no, go for it.
+THEM: Thanks. I'm Maya, by the way.
+ME: Toby. Nice to meet you.
+THEM: Are you here for the hackathon or just the free pizza?
+ME: Honestly both. We're building a, uh, conversation thing for smart glasses.
+THEM: Oh, no way, like live captions?
+ME: Kind of, it listens and kind of helps you out in real time.
+THEM@-0.3: Oh that's sick. Okay so I'm at a startup doing eval infrastructure for agents, so we basically run red teaming plus regression suites, and right now we're moving everything to LLM as a judge with pairwise comparisons, because the Elo stuff gets so noisy.
+ME@-0.4: Mm-hmm.
+THEM: But the hard part is calibration. Like, do you know what Cohen's kappa is?
+ME: Uh, vaguely?
+THEM: It's agreement beyond chance, basically. We're at like point four between the judge and our human raters, which, yeah.
+ME: Is that bad?
+THEM@-0.2: It's not great. Anyway, where are you guys from? Like school wise.
+ME: UCSB, mostly.
+THEM: Oh nice, my brother went there! Did you ever do Freebirds at like two a.m.?
+ME: Every week, honestly.
+THEM@-0.3: Ha! Okay wait, how many people are at this thing, do you know? It feels way bigger than last year.
+ME: No idea, it's packed though.
+THEM: Yeah. Oh, and we just closed our seed, Lux led it, so we're hiring like crazy if you know anyone.
+PAUSE: 3

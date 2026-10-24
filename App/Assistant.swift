@@ -1,262 +1,161 @@
 import Foundation
 import Observation
 
-/// One question we heard and what we did about it.
-struct Turn: Identifiable {
-    let id = UUID()
-    var question: String
-    var answer = ""
-    var state: State = .thinking
-    var fires = 0
-
-    var firedAt = Date()
-    var shownAt: Date?
-    var committedAt: Date?
-
-    enum State: Equatable { case thinking, answering, done, skipped, failed(String) }
-
-    /// How far ahead of the end of the question the first words hit the lens.
-    /// Positive means the answer was already up there before they stopped talking.
-    var lead: TimeInterval? {
-        guard let shownAt, let committedAt else { return nil }
-        return committedAt.timeIntervalSince(shownAt)
-    }
-
-    var live: Bool { state == .thinking || state == .answering }
-}
-
-/// Ties the mic to the lens.
+/// Ties the phone mic to the conversation aid, and the aid to the glasses.
 ///
-/// The whole design is about hiding latency inside the question rather than after it. A question
-/// takes a human one to three seconds to say, and we know what it is well before the last word:
-/// as soon as four words of a question clause exist we fire a speculative answer request on the
-/// partial transcript. The model's time-to-first-token then overlaps the rest of the sentence, so
-/// in the common case the answer is already on the lens when they stop talking.
-///
-/// Three guards keep that from being wasteful or wrong:
-/// - Refire only when the question grew by `refireGrowth` words, and at most `maxFires` times.
-/// - Ignore answers from a superseded fire (generation counter).
-/// - The model returns SKIP for anything personal or social, and nothing ever reaches the lens.
+/// All the thinking lives in `Aid` (App/Aid.swift), the same code `tools/live-mac.sh` runs on the
+/// Mac: diarized lines in, a `LensView` out. This class only owns the plumbing: one `Listener`
+/// (Muse realtime ASR), one `Aid`, the arm/disarm switch, and who the face side says THEM is.
 @MainActor @Observable final class Assistant {
-    var turns: [Turn] = []
-    var transcript = ""
     var armed = false
     var note = ""
+    /// The wearer turned listening off; until they turn it on again, don't re-arm on our own.
+    var mutedByUser = false
 
     @ObservationIgnored let listener = Listener()
-    @ObservationIgnored weak var glasses: Glasses?
+    @ObservationIgnored weak var glasses: Glasses? {
+        didSet {
+            glasses?.onFacing = { [weak self] id in self?.facingChanged(id) }
+            let listener = self.listener
+            glasses?.audioSink.handler = { buffer in listener.feed(buffer) }
+            glasses?.setStreamAudio(listener.mic == .glasses)
+            glasses?.onStreamAudioLost = { [weak self] reason in
+                guard let self else { return }
+                self.mic = .phone
+                self.note = reason == "micPermissionDenied"
+                    ? "Glasses mic needs microphone access in Meta AI. Using the iPhone mic."
+                    : "The glasses wouldn't stream audio. Using the iPhone mic."
+            }
+        }
+    }
+    /// Setting the roster names the wearer: the aid is rebuilt with the isMe person's first name.
+    @ObservationIgnored weak var store: Store? {
+        didSet {
+            let me = store?.people.first(where: { $0.isMe == true })?.name.split(separator: " ").first.map(String.init)
+            if let me, me != aid.config.wearer { aid = Self.makeAid(wearer: me) }
+        }
+    }
+    private(set) var aid: Aid {
+        didSet { wire(aid) }
+    }
 
-    /// Words of growth that justify spending a second request on the same question. One extra word
-    /// is almost always the noun that completes a phrase we already guessed right; two is new content.
-    private let refireGrowth = 2
-    private let maxFires = 3
-    private let refireInterval: TimeInterval = 0.4
-    /// How long an answer stays on the lens once it stops changing.
-    private let holdFor: TimeInterval = 14
-
-    @ObservationIgnored private var generation = 0
-    @ObservationIgnored private var firedText = ""
-    @ObservationIgnored private var lastFireAt = Date.distantPast
-    @ObservationIgnored private var answerTask: Task<Void, Never>?
-    @ObservationIgnored private var clearTask: Task<Void, Never>?
-
-    init() {
-        listener.onUpdate = { [weak self] text, endpointed in
-            self?.heard(text, endpointed: endpointed)
+    /// Lens to the glasses; every aid event into speed.jsonl, so "why didn't it answer?" has an
+    /// answer afterwards (the line with its ME/THEM tag, the answer or the skip, rate limits).
+    private func wire(_ aid: Aid) {
+        aid.onLens = { [weak self] view in self?.glasses?.showAid(view) }
+        aid.onEvent = { [weak aid] event in
+            var entry: [String: Any] = ["event": "aid", "kind": "\(event.kind)", "text": String(event.text.prefix(160))]
+            if !event.detail.isEmpty { entry["detail"] = String(event.detail.prefix(160)) }
+            if let speaker = event.speaker { entry["speaker"] = speaker; entry["tag"] = aid?.tag(speaker) ?? speaker }
+            SpeedLog.record(entry)
         }
     }
 
-    var status: String { armed ? listener.status : "Off" }
+    /// The person the face side last handed the aid, so a glance away and back doesn't re-seed it.
+    @ObservationIgnored private var met: String?
+
+    init() {
+        // Until the roster is in, the bundle's WearerName (WEARER_NAME), else Toby.
+        let wearer = (Bundle.main.object(forInfoDictionaryKey: "WearerName") as? String)
+            .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 } ?? "Toby"
+        aid = Self.makeAid(wearer: wearer)
+        // New key on purpose: the glasses default of the last build shouldn't carry over.
+        listener.mic = Listener.Mic(rawValue: UserDefaults.standard.string(forKey: "mic") ?? "") ?? .phone
+        listener.onLog = { SpeedLog.record($0) }
+        listener.onPartial = { [weak self] text in self?.aid.heard(partial: text) }
+        listener.onLine = { [weak self] text, speaker, level in
+            guard let self else { return }
+            // Loudness says "closest to the mic = the wearer". True for a mic at your face (glasses,
+            // Mac), false for a phone on the table: Avi came out louder, was tagged ME, and his
+            // "what's the capital of Germany?" was ignored as the wearer's own question. With the
+            // phone mic, roles come only from introductions and "That was me".
+            self.aid.heard(line: text, speaker: speaker, level: self.listener.mic == .glasses ? level : nil)
+        }
+        wire(aid)
+    }
+
+    /// Quiet by default (tuning knobs, no rebuild): explicit questions only, and no coach. The coach
+    /// (definitions, lines to say, its own lookups) misfired in a real conversation about our own
+    /// product: it researched "Meta AR glasses frame rate", decided a person mentioned was the one
+    /// talking, and its calls used up the rate limit the answers needed.
+    private static func makeAid(wearer: String) -> Aid {
+        var config = Aid.Config.fromBundle(wearer: wearer)
+        config.explicitOnly = Tuning.bool("aidExplicitOnly", true)
+        if !Tuning.bool("aidCoach", false) { config.coach = nil }
+        return Aid(config: config)
+    }
+
+    var status: String { armed ? (aid.status.isEmpty ? listener.status : aid.status) : "Off" }
     var level: Float { listener.level }
-    var current: Turn? { turns.first }
+    var transcript: String { aid.partial }
+    var current: Turn? { aid.current }
 
     func arm() async {
         guard !armed else { return }
         armed = true
-        note = Answerer.configured ? "" : "No answer API key yet — add one to Secrets.xcconfig."
+        // A new conversation starts clean; the last one stays readable on the phone until then.
+        aid.reset()
+        met = nil
+        glasses?.aidArmed = true
+        note = aid.config.answers == nil
+            ? "No answer API key yet — add one to Secrets.xcconfig."
+            : Listener.key == nil ? "No Muse key yet — add MUSE_API_KEY to Secrets.xcconfig." : ""
+        // Whoever is in front of you right now is who you're about to talk to.
+        if let id = glasses?.facing { facingChanged(id) }
         await listener.start()
-        if !listener.listening { armed = false }
+        if !listener.listening {
+            armed = false
+            glasses?.aidArmed = false
+        }
     }
 
     func disarm() {
         armed = false
         listener.stop()
-        answerTask?.cancel()
-        clearTask?.cancel()
-        reset()
-        glasses?.showAnswer(nil)
+        glasses?.aidArmed = false
+        glasses?.showAid(LensView())
     }
 
-    // MARK: - The hot path
+    /// The mic pill: off is a choice that sticks; on is the default.
+    func toggle() async {
+        if armed { mutedByUser = true; disarm() } else { mutedByUser = false; await arm() }
+    }
 
-    private func heard(_ text: String, endpointed: Bool) {
-        transcript = text
-        guard let candidate = QuestionGate.candidate(in: text) else {
-            if endpointed { commit(nil) }
-            return
-        }
+    /// Listening is on unless the wearer turned it off: called at launch and on every return to
+    /// the foreground, so a failed start (no route yet, permission sheet) gets another go.
+    func ensureListening() async {
+        guard !armed, !mutedByUser else { return }
+        await arm()
+    }
 
-        if endpointed {
-            commit(candidate)
-            return
-        }
-
-        guard candidate.confidence == .strong else { return }
-
-        if firedText.isEmpty {
-            fire(candidate.text)                       // first shot, mid-sentence
-        } else if shouldRefire(candidate.text) {
-            fire(candidate.text)                       // they said more than we guessed
+    /// iPhone mic (default) or the glasses'. Remembered across launches; switches live.
+    var mic: Listener.Mic {
+        get { listener.mic }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "mic")
+            listener.use(newValue)
+            glasses?.setStreamAudio(newValue == .glasses)
         }
     }
 
-    private func shouldRefire(_ text: String) -> Bool {
-        guard let turn = turns.first, turn.fires < maxFires, text != firedText else { return false }
-        guard Date().timeIntervalSince(lastFireAt) > refireInterval else { return false }
-        let grew = words(text) - words(firedText)
-        // The model already told us our guess was too fragmentary to answer; any new word is a
-        // reason to try again.
-        if turn.state == .skipped { return grew >= 1 }
-        // Growth that merely extends what we asked is cheap to ignore until it is substantial; a
-        // question that changed shape entirely means we guessed wrong and should start over.
-        if text.hasPrefix(firedText) { return grew >= refireGrowth }
-        return grew >= 1 || !firedText.hasPrefix(text)
+    /// What it heard last, for the phone: the turn in progress, else the last finished line.
+    var heard: (tag: String, text: String)? {
+        if !aid.partial.isEmpty { return ("…", aid.partial) }
+        guard let line = aid.lines.last else { return nil }
+        return (aid.tag(line.speaker), line.text)
     }
 
-    /// The utterance ended. Lock in the real question and make sure that is what we answered.
-    private func commit(_ candidate: Candidate?) {
-        defer { firedText = "" }
-        guard let candidate else {
-            // Not a question after all, or they trailed off. Abandon a speculation that has nothing
-            // to show; leave a partial answer up, since they did ask for it.
-            if let turn = turns.first, turn.live, turn.answer.isEmpty {
-                answerTask?.cancel()
-                generation += 1
-                turns[0].state = .skipped
-                drop()
-            }
-            return
-        }
-        guard var turn = turns.first, !firedText.isEmpty else {
-            fire(candidate.text, committed: true)
-            return
-        }
-        turn.committedAt = Date()
-        turns[0] = turn
-        let grew = words(candidate.text) - words(firedText)
-        // Substantially more question than we guessed, or a guess the model refused: ask properly.
-        // Otherwise let the in-flight answer stand — re-asking here costs the full round trip and
-        // one trailing noun almost never changes the answer.
-        let refused: Bool
-        switch turn.state {
-        case .skipped, .failed: refused = true
-        default: refused = false
-        }
-        if candidate.text != firedText, grew >= refireGrowth || refused {
-            fire(candidate.text, committed: true)
-        } else {
-            turns[0].question = candidate.text
-            render()
-        }
-    }
+    /// The wearer says the last line was theirs: fixes who's who when loudness guessed wrong.
+    func lastLineWasMe() { aid.lastLineWasMe() }
 
-    private func fire(_ question: String, committed: Bool = false) {
-        answerTask?.cancel()
-        clearTask?.cancel()
-        generation += 1
-        let generation = self.generation
-        firedText = question
-        lastFireAt = Date()
-
-        if var turn = turns.first, turn.live {
-            turn.question = question
-            turn.fires += 1
-            if committed { turn.committedAt = Date() }
-            turns[0] = turn
-        } else {
-            var turn = Turn(question: question)
-            turn.fires = 1
-            if committed { turn.committedAt = Date() }
-            turns.insert(turn, at: 0)
-            if turns.count > 20 { turns.removeLast() }
-        }
-
-        // The local tier can finish before the network one starts.
-        if let instant = Answerer.local(question) {
-            update(generation) { $0.answer = instant; $0.state = .done; $0.shownAt = Date() }
-            render()
-            scheduleClear()
-            return
-        }
-
-        render()   // puts "…" on the lens right now, while they are still talking
-
-        answerTask = Task { [weak self] in
-            do {
-                var any = false
-                for try await partial in Answerer.stream(question) {
-                    guard !Task.isCancelled else { return }
-                    any = true
-                    self?.update(generation) {
-                        if $0.shownAt == nil { $0.shownAt = Date() }
-                        $0.answer = partial
-                        $0.state = .answering
-                    }
-                    self?.render()
-                }
-                guard !Task.isCancelled else { return }
-                self?.update(generation) { $0.state = any ? .done : .skipped }
-                if any { self?.render() } else { self?.drop() }
-                self?.scheduleClear()
-            } catch {
-                guard !Task.isCancelled else { return }
-                self?.update(generation) { $0.state = .failed(error.localizedDescription) }
-                self?.drop()
-            }
-        }
-    }
-
-    /// Only touch the turn if it still belongs to the fire that is talking.
-    private func update(_ generation: Int, _ change: (inout Turn) -> Void) {
-        guard generation == self.generation, var turn = turns.first else { return }
-        change(&turn)
-        turns[0] = turn
-    }
-
-    private func render() {
-        guard let turn = turns.first else { return }
-        switch turn.state {
-        case .thinking:
-            glasses?.showAnswer(AnswerCard(question: turn.question, answer: "", thinking: true))
-        case .answering, .done:
-            glasses?.showAnswer(AnswerCard(question: turn.question, answer: turn.answer,
-                                           thinking: turn.state == .answering))
-        case .skipped, .failed:
-            glasses?.showAnswer(nil)
-        }
-    }
-
-    private func drop() {
-        glasses?.showAnswer(nil)
-    }
-
-    private func scheduleClear() {
-        clearTask?.cancel()
-        let generation = self.generation
-        clearTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(holdFor))
-            guard !Task.isCancelled, let self, generation == self.generation else { return }
-            self.drop()
-        }
-    }
-
-    private func reset() {
-        firedText = ""
-        transcript = ""
-        generation += 1
-    }
-
-    private func words(_ s: String) -> Int {
-        s.split(separator: " ").count
+    /// The face side's "who is THEM": the known face the wearer is looking at. Seeds the aid's
+    /// profile of the other person, so the coach knows who they are before they introduce
+    /// themselves. Looking away (nil) keeps the profile: people glance off mid-conversation.
+    private func facingChanged(_ id: String?) {
+        guard armed, let id, id != met, let person = store?.people.first(where: { $0.id == id }),
+              person.name.split(separator: " ").first.map(String.init) != aid.config.wearer else { return }
+        met = id
+        aid.met(name: person.name, label: person.headline,
+                facts: person.details.map(\.text))
     }
 }

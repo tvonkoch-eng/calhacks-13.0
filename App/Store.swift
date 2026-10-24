@@ -16,6 +16,8 @@ struct Person: Codable, Identifiable, Hashable {
     var interests: String?
     /// Short labels for chips: school, company, city.
     var tags: [String]?
+    /// The wearer. The conversation aid takes its first name to tell "I'm Toby" from "I'm Priya".
+    var isMe: Bool?
 
     /// How you know them. The highest-value line on the lens after the name, because it is not a
     /// fact about them -- it is a fact about the two of you.
@@ -61,7 +63,7 @@ struct Match {
     /// Samples saved in an older space are not comparable with new ones, and mixing them flattens
     /// every score — which is exactly the failure this guards against. v3 = eye-aligned canonical
     /// crops; everything enrolled before that was in the roll-corrected-square space.
-    private static let galleryVersion = 4
+    private static let galleryVersion = 5   // 5: SCRFD keypoints for alignment
     private static let versionKey = "galleryVersion"
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

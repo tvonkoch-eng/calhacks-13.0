@@ -1,0 +1,339 @@
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+/// The slow lane. After each of the other person's turns, one call decides what the wearer should
+/// see beyond answers: a term to define, the best thing to say next, who they're talking to, and
+/// whether anything deserves a deeper look. Answers to questions stay in the fast lane (Answer.swift)
+/// because they are useless late; this lane can take half a second.
+enum Coach {
+    /// What the coach sees on each call.
+    struct Input {
+        var wearer: String
+        /// What the wearer already knows, so obvious terms aren't defined ("CS student, knows ML").
+        var background = ""
+        var known: String          // "Priya · Berkeley CS student; paralegal for two years"
+        var defined: [String]
+        var researched: [String]
+        var suggestion: String?
+        /// Whether an interjection may be offered now; Aid rations them.
+        var interject = false
+        var transcript: [String]   // "THEM: …", oldest first; the last one is new
+    }
+
+    enum Followup: Equatable { case keep, clear, say(String) }
+
+    struct Advice: Equatable {
+        var define: [(term: String, meaning: String)] = []
+        var followup: Followup = .keep
+        var name: String?
+        var label: String?
+        var facts: [String] = []
+        var research: String?
+
+        static func == (a: Advice, b: Advice) -> Bool {
+            a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
+                && a.followup == b.followup && a.name == b.name && a.label == b.label
+                && a.facts == b.facts && a.research == b.research
+        }
+    }
+
+    // Tuned on four scripted conversations (Tests/conversations) on 2026-10-23/24. Toby's verdict
+    // on the first live run: far too chatty. So the bar is high and the default is silence: terms
+    // only when genuinely obscure, interjections only when allowed (Aid gates them) and earned.
+    static let prompt = """
+    You are a quiet conversation aid inside AR glasses. The wearer is in a live, in-person \
+    conversation with one other person and should stay present in it, so you stay silent unless \
+    something clearly earns a glance at the display. Nearly every line needs nothing.
+
+    Lines are tagged ME (the wearer) and THEM (the other person). The transcript comes from live \
+    speech recognition, so expect misheard words. Questions asked out loud are answered by a \
+    separate system; never handle them here.
+
+    Reply with one JSON object with exactly these keys:
+
+    "define": [{"term": "...", "meaning": "..."}]
+      At most one: the single least familiar term in the newest line that the wearer, given their \
+    background, would probably not know: specialist jargon, a technical method, a niche name, a \
+    foreign phrase. Anything in the wearer's own field is never defined (a finance student knows \
+    the Greeks, Sharpe ratio, market making; a CS student knows APIs, latency, LLMs). Never common \
+    business, tech, academic or everyday words (Series A, startup, latency, API, ICU). Skip a term \
+    the speaker explains in the same breath ("CAR T, so engineered T cells") and pick the next \
+    least familiar one instead. Speech recognition mangles jargon: if a term looks misheard, define what \
+    was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
+    unsure. "meaning" is at most 8 plain words. Usually [].
+
+    "followup": "..." or "" or null
+      A tasteful interjection: a line the wearer could say next, at most 12 words, in their own \
+    voice, no greeting, no name. Offer one only when "Interjection allowed" is yes and the moment \
+    is one of these:
+      - an opening the wearer can act on: they're hiring, an invitation, an offer to introduce, a \
+    next step ("you should apply" → ask how, or for a contact);
+      - news or feeling THEM just shared that the wearer hasn't responded to yet;
+      - the conversation stalled: revive a thread THEM mentioned earlier.
+      It is something the wearer asks or says to THEM, about THEM or the moment. You know nothing \
+    about the wearer, so never answer a question for them and never state anything about their \
+    life, plans or work. Never a generic or technical quiz question about what they just said, \
+    never something the wearer would obviously say anyway, never about something already asked or \
+    answered. When in doubt, null. null also keeps the current one; "" clears it once it no \
+    longer fits.
+
+    "them": {"name": "..."} or null
+      THEM's first name, once they say it.
+
+    "facts": ["..."]
+      New facts THEM revealed about themselves, at most 8 words each, not already in "Known about \
+    them". Often [].
+
+    "research": "..." or null
+      A web search query, only when THEM names a specific company, product, paper or person the \
+    wearer would benefit from knowing more about. Include context words to find the right thing \
+    despite misheard names. At most once per topic; never repeat "Already researched"; null for \
+    small talk.
+    """
+
+    static func message(_ input: Input) -> String {
+        func list(_ items: [String]) -> String { items.isEmpty ? "none" : items.joined(separator: ", ") }
+        let suggestion = input.suggestion.map { "\"\($0)\"" } ?? "none"
+        return """
+        Wearer: \(input.wearer)\(input.background.isEmpty ? "" : " (\(input.background)); never define what they would know")
+        Known about them: \(input.known.isEmpty ? "nothing yet" : input.known)
+        Already defined: \(list(input.defined))
+        Already researched: \(list(input.researched))
+        Current suggestion: \(suggestion)
+        Interjection allowed: \(input.interject ? "yes" : "no")
+
+        Transcript (oldest first; the last line is new):
+        \(input.transcript.joined(separator: "\n"))
+        """
+    }
+
+    static func ask(_ input: Input, provider: Provider, key: String, model: String) async throws -> Advice {
+        var body: [String: Any] = [
+            "model": model,
+            "temperature": 0.3,
+            "response_format": ["type": "json_object"],
+            "messages": [
+                ["role": "system", "content": prompt],
+                ["role": "user", "content": message(input)],
+            ],
+        ]
+        // JSON is short, but reasoning models (gpt-oss, Muse Spark) think before writing any of it.
+        if model.contains("gpt-oss") {
+            body.merge(["max_tokens": 1200, "reasoning_effort": "low"]) { _, new in new }
+        } else if provider == .cerebras, model.contains("qwen") {
+            body.merge(["max_tokens": 220, "reasoning_effort": "none"]) { _, new in new }
+        } else if provider == .muse {
+            body.merge(["max_tokens": 900, "reasoning_effort": "minimal"]) { _, new in new }
+        } else {
+            body["max_tokens"] = 220
+        }
+        // Not every host takes JSON mode; the parser copes with prose around the object anyway.
+        if provider == .cerebras { body.removeValue(forKey: "response_format") }
+        let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 10)
+        guard let result = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
+        return result
+    }
+
+    /// Lenient on purpose: models wrap JSON in prose, return one definition as an object instead of
+    /// a list, or send null where we asked for []. Anything unusable is simply absent.
+    static func parse(_ text: String) -> Advice? {
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,
+              let object = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any]
+        else { return nil }
+
+        func clean(_ value: Any?) -> String? {
+            guard let s = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty,
+                  s.lowercased() != "null" else { return nil }
+            return s
+        }
+
+        var result = Advice()
+        let terms = (object["define"] as? [[String: Any]]) ?? ((object["define"] as? [String: Any]).map { [$0] } ?? [])
+        result.define = terms.prefix(1).compactMap { entry in
+            guard let term = clean(entry["term"]), let meaning = clean(entry["meaning"]) else { return nil }
+            return (term, meaning)
+        }
+        if let followup = object["followup"] as? String {
+            let text = followup.trimmingCharacters(in: .whitespacesAndNewlines)
+            result.followup = text.isEmpty ? .clear : .say(text)
+        }
+        if let them = object["them"] as? [String: Any] {
+            result.name = clean(them["name"])
+            result.label = clean(them["label"])
+        }
+        result.facts = ((object["facts"] as? [Any]) ?? []).compactMap(clean)
+        result.research = clean(object["research"])
+        return result
+    }
+}
+
+// MARK: - Research
+
+/// The deeper lane: turn a query into one glanceable line, taking seconds rather than milliseconds.
+/// Anything can sit behind this — a web-search model, a Fetch.ai agent on Agentverse, a company
+/// database. The coach decides *what* is worth looking up; this decides how.
+protocol Researcher: Sendable {
+    var name: String { get }
+    func research(_ query: String, context: String) async throws -> String
+}
+
+/// Fetch.ai's ASI:One, through its Responses endpoint with the web_search tool: measured on
+/// 2026-10-24, `asi1` searched and answered current questions in ~4.3 s ("OCC finalized its
+/// stablecoin rule Oct 21…"), twice as fast as OpenAI's search model. `asi1-mini` never searched
+/// (and was wrong); `asi1-ultra` took 9-18 s. The chat endpoint rejects `web_search` and 500s on
+/// it as a tool, so it has to be Responses.
+struct ASIOne: Researcher {
+    let key: String
+    var model = "asi1"
+    var name: String { "Fetch.ai ASI:One" }
+
+    func research(_ query: String, context: String) async throws -> String {
+        var request = URLRequest(url: URL(string: "https://api.asi1.ai/v1/responses")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": model,
+            "instructions": """
+                You look things up for someone mid-conversation who will glance at your reply on \
+                smart glasses. Reply with the single most useful thing to know, at most 18 words, \
+                plain text, no citations, no preamble.
+                """,
+            "input": context.isEmpty ? query : "Look up: \(query)\n\nConversation so far:\n\(context)",
+            "tools": [["type": "web_search"]],
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 429 { throw LLM.Failure.rateLimited(retryAfter: 20) }
+        guard code == 200, let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw LLM.Failure.http(code, String(decoding: data.prefix(160), as: UTF8.self))
+        }
+        // Output is reasoning, a search call, and messages; the answer is the last message's text.
+        let texts = ((json["output"] as? [[String: Any]]) ?? [])
+            .filter { $0["type"] as? String == "message" }
+            .flatMap { ($0["content"] as? [[String: Any]]) ?? [] }
+            .compactMap { $0["type"] as? String == "output_text" ? ($0["text"] as? String) : nil }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let answer = texts.last else { throw LLM.Failure.unreadable("no answer in ASI:One output") }
+        return answer
+    }
+}
+
+/// Any OpenAI-compatible chat endpoint with web search built in:
+/// - `groq`: gpt-oss-120b with Groq's browser_search tool (~3 s, but ~20k tokens a lookup, which
+///   is a tenth of Groq's free daily budget).
+/// - `openai`: gpt-5-search-api (~7-8 s, ~17k tokens).
+/// Search models ignore length limits, so findings are cut down to a card (`Tools.card`).
+struct WebResearcher: Researcher {
+    let name: String
+    let endpoint: URL
+    let key: String
+    let model: String
+    /// Provider-specific request fields, as JSON text so the struct stays Sendable.
+    let extra: String
+    var timeout: TimeInterval = 25
+
+    static func groq(key: String) -> WebResearcher {
+        WebResearcher(name: "Groq web search", endpoint: Provider.groq.endpoint, key: key,
+                      model: "openai/gpt-oss-120b",
+                      extra: #"{"tools":[{"type":"browser_search"}],"reasoning_effort":"low","max_tokens":2000}"#)
+    }
+
+    static func openai(key: String) -> WebResearcher {
+        WebResearcher(name: "OpenAI web search", endpoint: Provider.openai.endpoint, key: key,
+                      model: "gpt-5-search-api", extra: #"{"web_search_options":{}}"#)
+    }
+
+    func research(_ query: String, context: String) async throws -> String {
+        var body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": """
+                    You look things up for someone mid-conversation who will glance at your reply on \
+                    smart glasses. Reply with the single most useful thing to know, at most 18 words, \
+                    plain text, no citations, no preamble.
+                    """],
+                ["role": "user", "content": "Look up: \(query)\n\nConversation so far:\n\(context)"],
+            ],
+        ]
+        if let fields = try? JSONSerialization.jsonObject(with: Data(extra.utf8)) as? [String: Any] {
+            body.merge(fields) { _, new in new }
+        }
+        let text = try await LLM.complete(endpoint, key: key, body: body, timeout: timeout)
+        // Strip search citations (【1†L11-L13】) and markdown emphasis.
+        let plain = text.replacingOccurrences(of: #"【[^】]*】"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "**", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !plain.isEmpty else { throw LLM.Failure.unreadable("empty research reply") }
+        return plain
+    }
+}
+
+// MARK: - One non-streaming chat call
+
+enum LLM {
+    enum Failure: LocalizedError {
+        case rateLimited(retryAfter: TimeInterval)
+        case http(Int, String)
+        case unreadable(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .rateLimited(let wait): "rate limited, retrying in \(Int(wait.rounded())) s"
+            case .http(let code, let body): "HTTP \(code): \(body)"
+            case .unreadable(let text): "unreadable reply: \(text)"
+            }
+        }
+    }
+
+    /// Returns the first choice's message content.
+    static func complete(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval,
+                         headers: [String: String] = [:]) async throws -> String {
+        let reply = try await chat(endpoint, key: key, body: body, timeout: timeout, headers: headers)
+        guard let content = reply.content else { throw Failure.unreadable("no content") }
+        return content
+    }
+
+    struct Reply {
+        var content: String?
+        var calls: [(name: String, arguments: String)]
+    }
+
+    /// The first choice's message: its text and any tool calls.
+    static func chat(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval,
+                     headers: [String: String] = [:]) async throws -> Reply {
+        var request = URLRequest(url: endpoint)
+        for (field, value) in headers { request.setValue(value, forHTTPHeaderField: field) }
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeout
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("calhacks-aid/1.0", forHTTPHeaderField: "User-Agent")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 429 {
+            let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "retry-after")
+            throw Failure.rateLimited(retryAfter: header.flatMap(TimeInterval.init) ?? 20)
+        }
+        guard code == 200 else {
+            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+                .flatMap { ($0["error"] as? [String: Any])?["message"] as? String }
+            throw Failure.http(code, String((message ?? String(decoding: data, as: UTF8.self)).prefix(160)))
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any] else {
+            throw Failure.unreadable(String(decoding: data.prefix(120), as: UTF8.self))
+        }
+        let calls = ((message["tool_calls"] as? [[String: Any]]) ?? []).compactMap { call -> (String, String)? in
+            guard let function = call["function"] as? [String: Any], let name = function["name"] as? String else { return nil }
+            return (name, function["arguments"] as? String ?? "{}")
+        }
+        return Reply(content: message["content"] as? String, calls: calls)
+    }
+}

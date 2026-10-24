@@ -1,0 +1,23 @@
+# House party. Lena is a cancer immunology postdoc; personal news, then a lull.
+RATE: 195
+GAP: 0.2
+NOISE: -28
+VOICES: ME=Daniel THEM=Moira
+THEM: Wait, so how do you know Sam?
+ME: We were roommates freshman year. You?
+THEM: We did a summer program together, ages ago. I'm Lena, by the way.
+ME: Toby.
+THEM: So what do you do?
+ME: Student, mostly building stuff. What about you?
+THEM: I'm a postdoc, I work on CAR T, so engineered T cells for solid tumors, which is, um, notoriously hard because of the tumor microenvironment.
+ME@-0.3: Oh wow.
+THEM: Yeah, but we just got a paper into Nature Biotech, so that was a big week.
+ME: Congrats! That's huge.
+THEM: Thanks! Honestly I'm still kind of in shock. We're trying to get it into a phase one trial next year.
+ME: How long does that usually take?
+THEM: Oh, years. The FDA side alone, you have to file an IND and it's a whole thing.
+ME: Wow.
+PAUSE: 6
+THEM: Anyway. Have you been to one of Sam's parties before?
+ME: No, first one.
+PAUSE: 3

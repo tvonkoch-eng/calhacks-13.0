@@ -1,0 +1,9 @@
+THEM: Hey, I'm Daniela. I'm a partner at a small seed fund in San Francisco.
+ME: Nice to meet you, I'm Toby. What kind of companies do you back?
+THEM: Mostly fintech infrastructure. We just led a round in a company doing stablecoin settlement for cross-border payroll.
+ME: Oh, interesting. How do you think about the regulation side?
+THEM: It's tricky. Everyone is watching how the GENIUS Act gets implemented. We usually invest on a post-money SAFE with pro rata rights.
+THEM: Honestly my real passion is sailing though. I did the Transpac race to Hawaii last summer.
+ME: No way.
+THEM: Yeah, it took us eleven days. Do you know how far it is from LA to Honolulu?
+PAUSE: 7

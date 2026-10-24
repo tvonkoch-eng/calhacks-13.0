@@ -45,6 +45,7 @@ enum QuestionGate {
     private static let fillers: Set<String> = [
         "so", "um", "uh", "er", "like", "well", "wait", "hey", "ok", "okay", "alright",
         "actually", "but", "and", "then", "hmm", "anyway", "yeah", "yo", "dude", "man", "right",
+        "oh", "ah", "interesting", "cool", "nice", "wow", "huh", "gotcha", "sure", "honestly", "basically",
     ]
 
     /// Lead-ins that wrap a real question. Stripped so the inner clause gets judged on its merits:
@@ -66,6 +67,16 @@ enum QuestionGate {
         "do you want", "do you wanna", "did you eat", "did you see", "did you get", "did you go",
         "can you pass", "can you help", "can you hand", "should we", "should i", "can we",
         "do you like", "do you feel", "how do you feel", "what time are we", "whos coming",
+        "what about you", "how about you", "and you", "what about yourself", "how did you end up",
+        "how did you get into", "what brings you", "what are you working on", "what are you up to",
+        "how was it", "how was that", "how did it go", "how did that go", "what was it like",
+        "what was that like", "how is that going", "hows that going", "how is it", "hows it",
+    ]
+
+    /// "how do you think about …", "what would you choose": asking for the listener's view.
+    private static let opinion: Set<String> = [
+        "think", "feel", "see", "view", "approach", "decide", "handle", "deal", "like", "find", "choose",
+        "pick", "recommend", "suggest", "rate", "rank", "manage", "prefer", "make",
     ]
 
     /// Find the question at the end of `transcript`, if there is one.
@@ -83,6 +94,15 @@ enum QuestionGate {
             break
         }
         guard !clause.isEmpty else { return nil }
+        // "congrats, how was it?": with a question mark, a few leading words before the question
+        // word are an interjection. Without one, "the guy who wrote it" is not a question.
+        if explicitMark, !peeled {
+            let words = clause.split(separator: " ").map(String.init)
+            if let first = words.first, !wh.contains(first), !aux.contains(first),
+               let at = words.prefix(4).firstIndex(where: { wh.contains($0) }), at > 0 {
+                clause = words[at...].joined(separator: " ")
+            }
+        }
         if personal.contains(where: { clause == $0 || clause.hasPrefix($0 + " ") }) { return nil }
 
         let words = clause.split(separator: " ").map(String.init)
@@ -95,8 +115,18 @@ enum QuestionGate {
             return nil
         }
 
+        // "how did you end up …", "where did you grow up": a past-tense question to the listener
+        // is about them. So is asking how they think, see or decide. (Present "how do you say X" is
+        // usually the generic you, so it stays.)
+        if !peeled, wh.contains(first), count > 2, ["you", "u", "ya"].contains(words[2]) {
+            if ["did", "have", "were", "had", "didnt"].contains(words[1]) { return nil }
+            if ["do", "would"].contains(words[1]), count > 3, opinion.contains(words[3]) { return nil }
+        }
+
+        // A question mark alone isn't enough: "like live captions?", "really?", "no way?" are the
+        // listener reacting, not asking anything the lens could answer.
         let interrogative = wh.contains(first) || aux.contains(first) || peeled
-        guard interrogative || explicitMark else { return nil }
+        guard interrogative else { return nil }
 
         // Strong once there is enough of the clause to guess the whole question *and* the clause
         // does not stop mid-phrase. An explicit "?" from the recognizer means it is definitely done.
@@ -124,6 +154,11 @@ enum QuestionGate {
 
     private static func normalize(_ s: String) -> String {
         s.lowercased()
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            // Expand before apostrophes go, or "we're doing" reads as the question "were doing".
+            .replacingOccurrences(of: "'re\\b", with: " are", options: .regularExpression)
+            .replacingOccurrences(of: "'ll\\b", with: " will", options: .regularExpression)
+            .replacingOccurrences(of: "'ve\\b", with: " have", options: .regularExpression)
             .replacingOccurrences(of: "'", with: "")
             .replacingOccurrences(of: "\u{2019}", with: "")
             .components(separatedBy: CharacterSet.alphanumerics.union(.whitespaces).inverted)
