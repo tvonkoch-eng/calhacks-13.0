@@ -15,7 +15,6 @@ struct Person: Codable, Identifiable, Hashable {
     var interests: String?
     /// Short labels for chips: school, company, city.
     var tags: [String]?
-    var isMe: Bool?
 
     /// Background lines in display order.
     var details: [(kind: Kind, text: String)] {
@@ -106,7 +105,14 @@ struct Match {
 
     /// Headshot from a bundled App/Faces/<id>.jpg|png becomes the avatar only; match examples come from the photo library.
     private func seedAvatar(_ id: String) {
-        guard let url = ["jpg", "jpeg", "png"].lazy.compactMap({ Bundle.main.url(forResource: id, withExtension: $0) }).first,
+        // Prefer a dedicated headshot, but fall back to the first bundled reference photo: someone
+        // who has References/<id>_NN.jpg but no Faces/<id> image would otherwise get a nameplate
+        // with no face on it.
+        let headshot = ["jpg", "jpeg", "png"].lazy.compactMap { Bundle.main.url(forResource: id, withExtension: $0) }.first
+        let firstReference = (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("\(id)_") }
+            .min { $0.lastPathComponent < $1.lastPathComponent }
+        guard let url = headshot ?? firstReference,
               let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return }
         // Face crop when Vision finds one, otherwise the headshot as is.
         guard let avatar = FaceEngine.faces(in: image).first.map({ UIImage(cgImage: $0.crop) })
@@ -115,8 +121,11 @@ struct Match {
         try? avatar.jpegData(compressionQuality: 0.8)?.write(to: avatarURL(id))
     }
 
-    var me: Person? { people.first { $0.isMe == true } }
-    var contacts: [Person] { people.filter { $0.isMe != true } }
+    /// Everyone in the roster is a candidate. There used to be a wearer flag on Person whose
+    /// holder was kept out of matching, but both phones ship the same people.json, so the flag
+    /// made whoever it named unrecognizable on every device at once. Per-device identity, if we
+    /// want it later, belongs in UserDefaults — not in a file identical for the whole team.
+    var contacts: [Person] { people }
 
     /// Contacts, most recently seen first; people you haven't met keep their file order.
     var recents: [Person] {
@@ -214,8 +223,7 @@ struct Match {
         return top
     }
 
-    /// Contacts, not `people`: the wearer is never in front of their own camera, and leaving them
-    /// in only ever supplied extra impostor scores (their samples reached 0.77 against others).
+    /// Every enrolled person is a candidate.
     func ranked(_ embedding: [Float]) -> [Match] {
         contacts.compactMap { person -> Match? in
             guard let samples = gallery[person.id], !samples.isEmpty else { return nil }

@@ -1,16 +1,10 @@
 [
   {
-    "id": "toby",
-    "name": "Toby von Koch",
-    "role": "You",
-    "isMe": true
-  },
-  {
     "id": "joaquin",
     "name": "Joaquin Del Pego",
     "role": "CS junior at UCSB",
-    "school": "UCSB \u00b7 Computer Science, Junior",
-    "work": "LegalTime AI \u00b7 timekeeping for lawyers",
+    "school": "UCSB · Computer Science, Junior",
+    "work": "LegalTime AI · timekeeping for lawyers",
     "from": "San Diego",
     "tags": [
       "UCSB",
@@ -22,7 +16,7 @@
     "id": "mirabelle",
     "name": "Mirabelle Brown",
     "role": "Financial Math & Stats junior at UCSB",
-    "school": "UCSB \u00b7 Honors Financial Math & Statistics, Junior",
+    "school": "UCSB · Honors Financial Math & Statistics, Junior",
     "from": "Gresham, New York",
     "interests": "Environmental studies",
     "tags": [
@@ -35,13 +29,22 @@
     "id": "avi",
     "name": "Avi Shah",
     "role": "LSE Economics, year abroad at UCSB",
-    "school": "LSE \u00b7 Economics (year abroad at UCSB)",
-    "work": "Summer Analyst, Investment Banking \u00b7 BofA London",
+    "school": "LSE · Economics (year abroad at UCSB)",
+    "work": "Summer Analyst, Investment Banking · BofA London",
     "from": "London",
     "tags": [
       "LSE",
       "BofA",
       "London"
+    ]
+  },
+  {
+    "id": "toby",
+    "name": "Toby von Koch",
+    "role": "CalHacks 13 teammate · iOS & device plumbing",
+    "tags": [
+      "CalHacks",
+      "iOS"
     ]
   }
 ]
