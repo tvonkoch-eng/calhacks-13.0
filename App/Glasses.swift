@@ -44,13 +44,17 @@ enum Identification {
     var result: Identification = .ready
     /// Takes over the lens while it is set; the identity card comes back when it clears.
     var answer: AnswerCard?
+    /// The content of the last card handed to the lens, so the phone can mirror it live. Nil when
+    /// there is no display to write to. A real pair cannot be read back; this is recorded as the
+    /// card is built, which is as close to the truth as the SDK allows.
+    var lensShot: LensShot?
     /// DEBUG: what simulated Display glasses are showing, in phone-sim mode.
     var mockLens: UIView?
     /// DEBUG: true while the session is running against a simulated pair driven by this phone.
     var mocking = false
-    /// DEBUG: the newest frame off the simulated stream — what the "glasses" camera is seeing.
-    /// The lens never shows this: the camera is input, the lens is output. In phone-sim mode
-    /// you want both on screen, so the panel can aim the phone.
+    /// The newest frame off the stream — what the glasses camera is seeing, real or simulated.
+    /// The lens never shows this: the camera is input, the lens is output. The phone shows both,
+    /// so the wearer's view and the wearer's display can be watched while a session runs.
     var pov: UIImage?
     @ObservationIgnored private var lastPov = Date.distantPast
     @ObservationIgnored private var povWatch: Task<Void, Never>?
@@ -541,11 +545,10 @@ enum Identification {
         answer = nil
         result = .ready
         streamLive = false
-        #if DEBUG
+        lensShot = nil
         povWatch?.cancel()
         povWatch = nil
         pov = nil
-        #endif
         autoBusy = false
         pending = nil
         resultAt = .distantPast
@@ -634,12 +637,13 @@ enum Identification {
             let small = image?.fitted(to: 360)
             Task { @MainActor in
                 guard let self else { return }
-                #if DEBUG
+                // Every frame is already decoded and downscaled above for the face path, whether
+                // or not anyone is looking at the phone, so showing it costs one texture upload
+                // and no extra radio time. Real glasses arrive at 5 fps: a slideshow, by budget.
                 if let small, Date().timeIntervalSince(self.lastPov) > 0.04 {
                     self.lastPov = Date()
                     self.pov = small
                 }
-                #endif
                 // A press parked on a continuation always wins the frame.
                 if self.frameWaiter != nil {
                     self.resumeFrame(image.flatMap { CIImage(image: $0) })
@@ -761,23 +765,28 @@ enum Identification {
     // MARK: - Lens
 
     private func renderLens() {
-        guard displayReady else { return }
+        guard displayReady else { lensShot = nil; return }
         // A live answer owns the lens. It is the thing the wearer needs in the next half second.
         if let card = answer {
+            lensShot = LensCards.shot(answer: card)
             send(LensCards.answer(card))
             return
         }
         send(hud())
     }
 
-    /// The identity HUD as it stands right now.
+    /// The identity HUD as it stands right now. Both lens writers go through here, so this is
+    /// also where the phone's mirror is updated — it cannot fall out of step with what was sent.
     private func hud() -> FlexBox {
-        LensCards.hud(
+        let connected = store?.connectedCount ?? 0
+        lensShot = LensCards.shot(result: result, identifying: identifying,
+                                  confirming: confirming, connected: connected)
+        return LensCards.hud(
             result: result,
             avatar: { [store] in store?.lensAvatar($0) },
             identifying: identifying,
             confirming: confirming,
-            connected: store?.connectedCount ?? 0,
+            connected: connected,
             identify: { [weak self] in Task { @MainActor in await self?.lensIdentify(source: "lens") } }
         )
     }
