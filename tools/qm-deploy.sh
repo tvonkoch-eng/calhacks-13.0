@@ -225,6 +225,35 @@ git push -q hub HEAD:integration >> "$LOG" 2>&1 || say "note: could not publish 
 SHA=$(git rev-parse --short HEAD)
 say "source: $SHA ($(git log -1 --pretty=%s | cut -c1-60))"
 
+# ---------- 3b. reference photos published on GitHub ----------
+# People add faces by pushing them to github.com/tvonkoch-eng/calhacks-13.0, which is NOT the hub
+# this Mac builds from — so photos landed in the repo and never reached a phone. Take the photo
+# directories from GitHub (public, read-only, no auth) and nothing else: that repo's Swift and its
+# people.json are older than ours, and merging the branch would roll the app back.
+# GHSYNC=0 skips it; a GitHub outage is never allowed to block a deploy.
+if [ "${GHSYNC:-1}" = "1" ]; then
+  git remote get-url github >/dev/null 2>&1 || \
+    git remote add github https://github.com/tvonkoch-eng/calhacks-13.0.git >> "$LOG" 2>&1
+  GHREF=${GHREF:-github/main}
+  if git fetch -q --depth=1 github main >> "$LOG" 2>&1; then
+    git checkout "$GHREF" -- App/References App/Faces >> "$LOG" 2>&1 || true
+    if [ -n "$(git status --porcelain App/References App/Faces)" ]; then
+      NEW=$(git status --porcelain App/References App/Faces | awk '{print $NF}' | xargs -n1 basename 2>/dev/null | tr '\n' ' ')
+      say "photos from GitHub: $NEW"
+      git add App/References App/Faces
+      git -c user.email=jdelpego@gmail.com -c user.name=jdelpego \
+        commit -q -m "photos: sync App/References+Faces from github/main ($AGENT $TS)" >> "$LOG" 2>&1
+      git push -q hub HEAD:integration >> "$LOG" 2>&1 || say "note: could not publish photo sync to hub"
+      SHA=$(git rev-parse --short HEAD)
+      say "source: $SHA (after GitHub photo sync)"
+    else
+      say "photos: already in step with github/main"
+    fi
+  else
+    say "note: could not reach GitHub for photos — building with the photos already here"
+  fi
+fi
+
 # ---------- 4. regenerate project only when project.yml moved ----------
 PYHASH=$(layout_fp)
 if [ "$PYHASH" != "$(cat $STATE/project.yml.sha 2>/dev/null)" ] || [ ! -d CalHacks.xcodeproj ]; then
@@ -276,6 +305,27 @@ if [ "${FORCE_BUILD:-0}" = "1" ] || [ ! -d "$APP" ] || [ "$FP" != "$(cat $FPFILE
   say "BUILD_OK ($(( $(date +%s) - T0 ))s)"
 else
   say "BUILD_SKIPPED — $SHA already built (use FORCE_BUILD=1 to override)"
+fi
+
+# ---------- 5b. every person on the roster must have their photos IN the bundle ----------
+# The whole chain is repo -> xcodegen -> bundle -> embedding, and the quiet failure is a photo
+# that exists in the repo and never makes it into CalHacks.app, which on the phone looks exactly
+# like "the face matcher is bad". Count both ends and say so out loud; refuse to install a build
+# that dropped someone's photos.
+PHOTOLINE=""
+MISSING=""
+for pid in $(sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' App/people.json); do
+  REPO=$(ls App/References 2>/dev/null | grep -c -iE "^${pid}_.*\.(jpg|jpeg|png|heic)$")
+  INAPP=$(ls "$APP" 2>/dev/null | grep -c -iE "^${pid}_.*\.(jpg|jpeg|png|heic)$")
+  PHOTOLINE="$PHOTOLINE $pid:$INAPP/$REPO"
+  [ "$INAPP" -lt "$REPO" ] && MISSING="$MISSING $pid"
+  [ "$REPO" -eq 0 ] && MISSING="$MISSING $pid(none-in-repo)"
+done
+say "photos in bundle (bundled/repo):$PHOTOLINE"
+if [ -n "$MISSING" ]; then
+  say "ASSETS_MISSING:$MISSING — the build does not carry every reference photo."
+  say "   Usually a stale CalHacks.xcodeproj: run ~/bin/xcodegen generate, then FORCE_BUILD=1."
+  exit 7
 fi
 
 # ---------- 6. snapshot the .app, then drop the build lock ----------

@@ -856,6 +856,14 @@ struct LensPanel: View {
                             .font(.caption2).foregroundStyle(Color(.systemGray))
                     }
                 }
+                // MIRROR_COMPARE=1 in the simulator puts the true renderer and the mirror side
+                // by side on the same card — the only way to tell whether the replica is honest.
+                if LensPanel.comparing, let lens {
+                    tile("Lens · real") { MockLens(view: lens) }
+                    tile("Lens · mirror") {
+                        if let shot { LensMirror(shot: shot, avatar: avatar) }
+                    }
+                } else {
                 tile(lens == nil ? "Lens · mirror" : "Lens") {
                     if let lens {
                         MockLens(view: lens)
@@ -867,12 +875,15 @@ struct LensPanel: View {
                             .font(.caption2).foregroundStyle(Color(.systemGray))
                     }
                 }
+                }
             }
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 2)
     }
+
+    static let comparing = ProcessInfo.processInfo.environment["MIRROR_COMPARE"] == "1"
 
     private func tile<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(spacing: 3) {

@@ -131,6 +131,23 @@ struct Match {
         hydrate()
     }
 
+    /// Every bundled reference photo for one person, in filename order.
+    ///
+    /// Xcode flattens bundled files, so `App/References/<id>_NN.<ext>` arrives as `<id>_NN.<ext>`
+    /// at the top of the bundle. This used to look for `jpg` alone, so a photo added straight off
+    /// a phone or out of a screenshot — `.jpeg`, `.png`, `.heic` — rode all the way from the repo
+    /// into the app bundle and was then silently never embedded. The failure looked exactly like
+    /// "I added photos and nothing happened".
+    private static let referenceExtensions = ["jpg", "JPG", "jpeg", "JPEG", "png", "PNG", "heic", "HEIC"]
+
+    private func referenceURLs(_ id: String) -> [URL] {
+        var seen = Set<String>()
+        return Self.referenceExtensions
+            .flatMap { Bundle.main.urls(forResourcesWithExtension: $0, subdirectory: nil) ?? [] }
+            .filter { $0.lastPathComponent.hasPrefix("\(id)_") && seen.insert($0.lastPathComponent).inserted }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
     /// Bundled App/References/<id>_NN.jpg are match examples. We remember the exact filenames that
     /// have been embedded, not just "done": the old one-shot Bool meant photos added to an existing
     /// install were silently ignored forever, which is the failure you hit the moment you try to
@@ -138,10 +155,7 @@ struct Match {
     private func loadReferences(_ id: String) {
         let key = "refsLoaded.\(id)"
         let defaults = UserDefaults.standard
-        // Xcode flattens bundled files, so references are named <id>_NN.jpg.
-        let urls = (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
-            .filter { $0.lastPathComponent.hasPrefix("\(id)_") }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let urls = referenceURLs(id)
         guard !urls.isEmpty else { return }
 
         var loaded: Set<String>
@@ -173,9 +187,7 @@ struct Match {
         // who has References/<id>_NN.jpg but no Faces/<id> image would otherwise get a nameplate
         // with no face on it.
         let headshot = ["jpg", "jpeg", "png"].lazy.compactMap { Bundle.main.url(forResource: id, withExtension: $0) }.first
-        let firstReference = (Bundle.main.urls(forResourcesWithExtension: "jpg", subdirectory: nil) ?? [])
-            .filter { $0.lastPathComponent.hasPrefix("\(id)_") }
-            .min { $0.lastPathComponent < $1.lastPathComponent }
+        let firstReference = referenceURLs(id).first
         guard let url = headshot ?? firstReference,
               let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else { return }
         // Face crop when Vision finds one, otherwise the headshot as is.
