@@ -38,6 +38,30 @@ looked up in 3.8-7.4 s; "where did you go to school" and "how long have you been
 quiet; qwen-3.8-27b 23/24 on answer/SKIP/WEB cases (`Tests/answer-latency.py`; it called "who won
 the World Series this year" SKIP rather than WEB).
 
+## Models per lane, ranked suggestions, groups (2026-10-24, branch `aid-brain`)
+
+From the research on open conversation copilots (Merge/Convoscope on Mentra, Natively, Omi) and
+model/provider benchmarks:
+
+- **A suggest lane** (`SUGGEST_PROVIDER/API_KEY/MODEL`): suggestions and openers are the one thing
+  the wearer reads word for word, and they're written in a pause, so they get the strongest model,
+  not the fastest. `anthropic` = Claude through the raw Messages API (`Claude` in Coach.swift
+  translates the OpenAI-shaped bodies every lane builds, tools included, so any lane can run on
+  it). Default `claude-sonnet-5-5`; unset, the coach's model as before.
+- **Ranked suggestions.** The coach returns up to three lines, best first, each scored 1-5. A
+  lull shows the best only at 3 or more (a line anyone could say isn't worth breaking a silence);
+  asked for or a face just recognised, the best always goes up. The runners-up wait: the next
+  lull within 90 s and 5 lines shows one **with no model call**, if it hasn't been said.
+- **Groups.** `Aid.nameFor` tags lines with the speaker's first name when face ID knows them, so
+  with three people the transcript says who said what instead of THEM twice. People the focus
+  leaves stay in every lane's context ("Also in this conversation: …"), and the recognised opener
+  fires once per person per conversation, not each time the focus comes back.
+- **Exa research** (`RESEARCH_PROVIDER = exa`): search in ~0.4-0.7 s instead of ASI:One's 4-8 s; a
+  question that leans on the conversation ("how much did they raise") is first made standalone by
+  the backup model, and the condenser cuts the findings to a card as before.
+- Measured: the ranked coach on a 3-person lull, qwen-3.8-27b 281 ms, gpt-oss-120b 251 ms, both
+  specific ("How do you handle judge drift?"). Claude and Exa are unmeasured here (no keys yet).
+
 ## On the phone when merging
 
 1. Turn the coach back on: `Assistant.makeAid` has `Tuning aidCoach` default **false** because of

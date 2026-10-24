@@ -8,7 +8,7 @@ import FoundationNetworking
 /// ~100-250 ms, which is the whole ballgame on a wearable. Muse is Meta's Muse Spark: always
 /// reasons first, so ~1.2 s to first token (see Tests/muse-latency.py).
 enum Provider: String {
-    case groq, cerebras, openai, muse
+    case groq, cerebras, openai, muse, anthropic
 
     var endpoint: URL {
         switch self {
@@ -16,6 +16,8 @@ enum Provider: String {
         case .cerebras: URL(string: "https://api.cerebras.ai/v1/chat/completions")!
         case .openai: URL(string: "https://api.openai.com/v1/chat/completions")!
         case .muse: URL(string: "https://api.meta.ai/v1/chat/completions")!
+        // Not OpenAI-compatible: requests are translated (`Claude.body`).
+        case .anthropic: Claude.endpoint
         }
     }
 
@@ -35,6 +37,8 @@ enum Provider: String {
         // 1.1 over 1.3: both 20/20 on answer-vs-SKIP, 1.1 median first token 1.17 s vs 1.87 s
         // (2026-10-23, Tests/muse-latency.py). Override with ANSWER_MODEL.
         case .muse: "muse-spark-1.1"
+        // Sonnet 5.5 for the lanes where quality beats a second: suggestions and openers.
+        case .anthropic: "claude-sonnet-5-5"
         }
     }
 
@@ -46,6 +50,7 @@ enum Provider: String {
         if self == .cerebras, model.contains("qwen") { return ["max_tokens": 48, "reasoning_effort": "none"] }
         switch self {
         case .muse: return ["max_tokens": 400, "reasoning_effort": "minimal"]
+        case .anthropic: return ["max_tokens": 64, "reasoning_effort": "none"]
         default: return ["max_tokens": 48]
         }
     }
@@ -159,11 +164,11 @@ struct Answerer {
                     guard let key else {
                         throw AnswerError.unconfigured
                     }
+                    let claude = provider == .anthropic
                     var request = URLRequest(url: provider.endpoint)
                     request.httpMethod = "POST"
                     request.timeoutInterval = 8
-                    request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    Claude.authorize(&request, key: key, claude: claude)
                     var body: [String: Any] = [
                         "model": model,
                         "stream": true,
@@ -178,7 +183,7 @@ struct Answerer {
                         ],
                     ]
                     body.merge(provider.extras(model: model)) { _, extra in extra }
-                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                    request.httpBody = try JSONSerialization.data(withJSONObject: claude ? Claude.body(body) : body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
@@ -190,11 +195,18 @@ struct Answerer {
                         guard line.hasPrefix("data: ") else { continue }
                         let payload = String(line.dropFirst(6))
                         if payload == "[DONE]" { break }
-                        guard let data = payload.data(using: .utf8),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let choices = json["choices"] as? [[String: Any]],
-                              let delta = choices.first?["delta"] as? [String: Any],
-                              let chunk = delta["content"] as? String, !chunk.isEmpty else { continue }
+                        let chunk: String
+                        if claude {
+                            guard let text = Claude.delta(payload), !text.isEmpty else { continue }
+                            chunk = text
+                        } else {
+                            guard let data = payload.data(using: .utf8),
+                                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                  let choices = json["choices"] as? [[String: Any]],
+                                  let delta = choices.first?["delta"] as? [String: Any],
+                                  let text = delta["content"] as? String, !text.isEmpty else { continue }
+                            chunk = text
+                        }
                         answer += chunk
                         // Bail the instant the model starts refusing; nothing reaches the lens. Some
                         // models stream "SKIP" as "SK" + "IP", so hold back anything that could still

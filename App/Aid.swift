@@ -274,6 +274,10 @@ enum Talk {
         var background = ""
         var answers: Model?
         var coach: Model?
+        /// What to say next and openers when face ID recognises someone: the one output the wearer
+        /// reads word for word, written in a pause, so it gets the strongest model (Claude Sonnet
+        /// 5.5) rather than the fastest. Unset: the coach's model.
+        var suggest: Model?
         /// Used while `answers` or `coach` is rate-limited, or past `perMinute`.
         var backup: Model?
         /// Look-ups and actions on this device (places, weather, reminders, calendar).
@@ -308,6 +312,9 @@ enum Talk {
     @ObservationIgnored var onEvent: ((Event) -> Void)?
     /// Whether the wearer is the one talking right now, if the host can tell (nil: it can't).
     @ObservationIgnored var liveWearer: (() -> Bool?)?
+    /// A speaker label's first name when the host knows who that is (face ID: "p:<id>"), so with
+    /// three people the transcript says who said what instead of THEM twice.
+    @ObservationIgnored var nameFor: ((String) -> String?)?
 
     @ObservationIgnored let config: Config
 
@@ -365,7 +372,7 @@ enum Talk {
         }
         let started = turnStarted ?? Date()
         turnStarted = nil
-        saying = "\(roles.tag(speaker)): \(text)"
+        saying = "\(speakerTag(speaker)): \(text)"
         let mine = roles.isWearer(speaker)
         let (closed, open) = Talk.sentences(text)
         if closed.count > closedInTurn {
@@ -450,18 +457,26 @@ enum Talk {
     /// (last conversation, promises both ways). Replaces the profile when it's someone new.
     func met(name: String, label: String?, facts: [String]) {
         guard !(them.recognised && them.name == name) else { return }
+        // In a group the focus moves between people; whoever it leaves stays known to every lane.
+        let before = others.first { $0.name == name }
+        if them.recognised { others.insert(them, at: 0) }
+        others = Array(others.filter { $0.name != name }.prefix(4))
         them = Them(name: name, label: label, facts: facts, recognised: true)
         log(.learned, "Talking to \(name)", detail: "face ID")
         compositor.setHeader(name)
         publish()
-        // Someone known: the moment for an opener from what we know (last time, a promise).
-        if !them.facts.isEmpty { offer(.recognised) }
+        // Someone known, met for the first time this conversation: the moment for an opener from
+        // what we know (last time, a promise). Not again each time the focus comes back to them.
+        if !them.facts.isEmpty, before == nil { offer(.recognised) }
     }
+
+    /// Everyone else face ID named in this conversation, most recent first.
+    private(set) var others: [Them] = []
 
     /// Start over for a new conversation.
     func reset() {
         answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel()
-        lines = []; turns = []; events = []; them = Them(); roles = Roles(); partial = ""; status = ""
+        lines = []; turns = []; events = []; them = Them(); others = []; ideas = []; roles = Roles(); partial = ""; status = ""
         compositor.clear(); defined = []; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
         coachPending = false; coachBlockedUntil = nil; closedInTurn = 0
         wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""
@@ -832,7 +847,8 @@ enum Talk {
         // Spend a capped primary on what the wearer will see: a suggestion for this moment gets it
         // (gpt-oss writes far better lines than the backup); the background calls after each
         // sentence (a definition) go to the backup. Uncapped, everything uses the primary.
-        let pick = moment == nil && config.perMinute != nil && config.backup != nil
+        let pick = moment != nil && config.suggest != nil ? config.suggest
+            : moment == nil && config.perMinute != nil && config.backup != nil
             ? config.backup : model(config.coach, blockedUntil: coachBlockedUntil, reserve: moment == nil ? 3 : 0)
         guard let coach = pick else {
             coachPending = true   // rate-limited with no backup: blockCoach retries when it lifts
@@ -917,7 +933,7 @@ enum Talk {
         case .recognised: "face ID just recognised THEM; pick up where you left off last time"
         case nil: nil
         }
-        return Coach.Input(wearer: config.wearer, background: config.background, known: them.summary,
+        return Coach.Input(wearer: config.wearer, background: config.background, known: known,
                            defined: defined, suggested: suggested, moment: why, transcript: transcript)
     }
 
@@ -948,8 +964,16 @@ enum Talk {
         }
         // Shown only while its moment lasts: speech ends a lull (`wanted` is cleared), so a line that
         // arrives after they started talking again stays off the lens.
-        if moment != nil, wanted != nil {
-            if let text = advice.suggest, usable(text) { suggest(text) } else if wanted == moment { wanted = nil }
+        if let moment, wanted != nil {
+            // A lull is optional: a line the coach itself rates as one anyone could say isn't worth
+            // breaking the silence for. Asked for, or a face just recognised, the best one goes up.
+            let good = moment != .lull || (advice.score ?? 3) >= 3
+            if let text = advice.suggest, good, usable(text) { suggest(text) } else if wanted == moment { wanted = nil }
+        }
+        // The runners-up wait for the next lull, which then needs no call at all.
+        if moment != nil {
+            let fresh = advice.alternatives.filter { text in usable(text) && !ideas.contains { Talk.same($0.text, text) } }
+            ideas = Array((fresh.map { (text: $0, at: now, line: lines.count) } + ideas).prefix(4))
         }
         if status.hasPrefix("Coach") { status = "" }
         publish()
@@ -984,7 +1008,24 @@ enum Talk {
     private func offer(_ moment: Moment) {
         guard config.coach != nil else { return }
         wanted = moment
+        // A line written at the last moment that still fits: up now, instead of a model call later.
+        if moment != .recognised, let idea = nextIdea() {
+            log(.followup, "from the last batch", detail: idea)
+            suggest(idea)
+            return
+        }
         coachSoon()
+    }
+
+    /// The coach's runners-up from the last suggestion it wrote, with when and how far into the
+    /// conversation, so a stale one is never shown.
+    @ObservationIgnored private var ideas: [(text: String, at: Date, line: Int)] = []
+
+    /// The best idea still current: under 90 s old, at most five lines ago, never said or shown.
+    private func nextIdea() -> String? {
+        let now = Date()
+        ideas.removeAll { now.timeIntervalSince($0.at) > 90 || lines.count - $0.line > 5 || !usable($0.text) }
+        return ideas.isEmpty ? nil : ideas.removeFirst().text
     }
 
     private func suggest(_ text: String) {
@@ -1097,7 +1138,14 @@ enum Talk {
     // MARK: - Transcript
 
     private func transcriptLines(last n: Int) -> [String] {
-        lines.filter { !$0.command }.suffix(n).map { "\(roles.tag($0.speaker)): \($0.text.count > 400 ? String($0.text.prefix(400)) + "…" : $0.text)" }
+        lines.filter { !$0.command }.suffix(n).map { "\(speakerTag($0.speaker)): \($0.text.count > 400 ? String($0.text.prefix(400)) + "…" : $0.text)" }
+    }
+
+    /// ME, the speaker's first name when the host knows them, else THEM.
+    private func speakerTag(_ label: String?) -> String {
+        let tag = roles.tag(label)
+        guard tag == "THEM", let label, let name = nameFor?(label) else { return tag }
+        return name
     }
 
     private func transcript(last n: Int) -> String {
@@ -1111,7 +1159,14 @@ enum Talk {
     /// What a model needs to make sense of a question: what's known about them, the last few lines,
     /// and the turn the question is in.
     private func context(last n: Int) -> String {
-        (them.summary.isEmpty ? "" : "About them: \(them.summary)\n") + transcript(last: n) + (saying.isEmpty ? "" : "\n" + saying)
+        (known.isEmpty ? "" : "About them: \(known)\n") + transcript(last: n) + (saying.isEmpty ? "" : "\n" + saying)
+    }
+
+    /// What's known about whoever the wearer is talking to, then anyone else in the conversation.
+    private var known: String {
+        let rest = others.map(\.summary).filter { !$0.isEmpty }
+        return ([them.summary].filter { !$0.isEmpty } + (rest.isEmpty ? [] : ["Also in this conversation: " + rest.joined(separator: " | ")]))
+            .joined(separator: "\n")
     }
 
     /// Diarized turns alternate, so the turn in progress is most likely the other speaker's.
@@ -1157,10 +1212,19 @@ extension Aid.Config {
         let coachProvider = Provider(rawValue: value("CoachProvider")?.lowercased() ?? "") ?? answerProvider
         let coachKey = value("CoachAPIKey") ?? (coachProvider == answerProvider ? answerKey : nil)
 
-        // Research (tier 3): Fetch.ai ASI:One by default; OpenAI or Groq web search if asked for.
+        let backupProvider = Provider(rawValue: value("BackupProvider")?.lowercased() ?? "") ?? .openai
+        let backup = value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) }
+        let answers = answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) }
+        // Cutting a finding down to a card wants a fast model with calls to spare: the backup.
+        let condenser = (backup ?? answers).map { (provider: $0.provider, key: $0.key, model: $0.model) }
+
+        // Research (tier 3): Exa (fast search, condensed by the backup), Fetch.ai ASI:One, or
+        // OpenAI or Groq web search.
         var researcher: (any Researcher)?
         let researchKey = value("ResearchAPIKey")
         switch value("ResearchProvider")?.lowercased() {
+        case "exa":
+            if let key = researchKey { researcher = Exa(key: key, type: value("ResearchModel") ?? "fast", resolver: condenser) }
         case "asi1", "fetch", "fetchai":
             if let key = researchKey { researcher = ASIOne(key: key, model: value("ResearchModel") ?? "asi1") }
         case "openai":
@@ -1170,11 +1234,10 @@ extension Aid.Config {
         default:
             break
         }
-        let backupProvider = Provider(rawValue: value("BackupProvider")?.lowercased() ?? "") ?? .openai
-        let backup = value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) }
-        let answers = answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) }
-        // Cutting a finding down to a card wants a fast model with calls to spare: the backup.
-        let condenser = (backup ?? answers).map { (provider: $0.provider, key: $0.key, model: $0.model) }
+        let suggestProvider = Provider(rawValue: value("SuggestProvider")?.lowercased() ?? "")
+        let suggest = suggestProvider.flatMap { provider in
+            value("SuggestAPIKey").map { Aid.Model(provider: provider, key: $0, model: value("SuggestModel") ?? provider.model) }
+        }
         // "37.7880,-122.4075": pretend to be there instead of asking Core Location (testing, or a
         // Mac command-line tool that can't get a fix).
         let test = (ProcessInfo.processInfo.environment["TEST_LOCATION"] ?? value("TestLocation"))?
@@ -1185,6 +1248,7 @@ extension Aid.Config {
             background: value("WearerBackground") ?? "",
             answers: answers,
             coach: coachKey.map { Aid.Model(provider: coachProvider, key: $0, model: value("CoachModel") ?? coachProvider.model) },
+            suggest: suggest,
             backup: backup,
             toolbox: value("Tools")?.lowercased() == "off" ? nil
                 : DeviceTools(pinned: pinned, researcher: researcher, condenser: condenser),

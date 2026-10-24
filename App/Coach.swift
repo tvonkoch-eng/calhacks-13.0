@@ -27,15 +27,19 @@ enum Coach {
 
     struct Advice: Equatable {
         var define: [(term: String, meaning: String)] = []
-        /// The best thing for the wearer to say next, when one was asked for.
+        /// The best thing for the wearer to say next, when one was asked for, and how good the
+        /// coach thinks it is (1-5; nil when it didn't say).
         var suggest: String?
+        var score: Int?
+        /// The runners-up, best first: kept for the next lull, so it needs no call.
+        var alternatives: [String] = []
         /// THEM asked for a fact or a task in words the recognizer mangled or left implicit: the
         /// request rebuilt as one clear question, for the answer lane to take.
         var ask: String?
 
         static func == (a: Advice, b: Advice) -> Bool {
             a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
-                && a.suggest == b.suggest && a.ask == b.ask
+                && a.suggest == b.suggest && a.score == b.score && a.alternatives == b.alternatives && a.ask == b.ask
         }
     }
 
@@ -47,8 +51,9 @@ enum Coach {
     // from questions someone asked.
     static let prompt = """
     You are a quiet conversation aid inside AR glasses. The wearer is in a live, in-person \
-    conversation with one other person and should stay present in it. Lines are tagged ME (the \
-    wearer) and THEM (the other person). The transcript comes from live speech recognition, so \
+    conversation with one or more other people and should stay present in it. Lines are tagged ME \
+    (the wearer), the speaker's first name when face ID knows them, or THEM (someone else); THEM \
+    below means whoever the wearer is talking with. The transcript comes from live speech recognition, so \
     expect misheard words. Questions asked out loud are answered by a separate system; never \
     answer them here.
 
@@ -75,9 +80,11 @@ enum Coach {
     was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
     unsure. "meaning" is at most 8 plain words. Usually [].
 
-    "suggest": "..." or null
-      Only when "Suggest now" is yes, otherwise null. The one thing the wearer could say next to \
-    keep the conversation going well: a question for THEM or something to bring up, at most 10 \
+    "suggest": [{"say": "...", "score": 1-5}] or null
+      Only when "Suggest now" is yes, otherwise null. Up to three different things the wearer \
+    could say next, best first, each scored: 5 = specific to this person and moment and clearly \
+    better than silence; 3 = good but could be said to anyone like them; 1 = generic. Each one: \
+    something to keep the conversation going well: a question for THEM or something to bring up, at most 10 \
     words, in the wearer's voice, no greeting, no name. It is about THEM (their work, what they \
     said, what they're after) or what the two share; never about the wearer's own interests, and \
     never answered already. Draw on, best first:
@@ -87,8 +94,9 @@ enum Coach {
       - when the conversation winds down: a concrete next step (swap contacts, an intro, a follow-up).
       Specific to this person and this conversation; a simple open question only when nothing is \
     known yet. Never a reply on the wearer's behalf or a claim about their life, never a quiz \
-    about a term, never a thread already covered, never one of "Already suggested". When the \
-    wearer asks, always give one.
+    about a term, never a thread already covered, never one of "Already suggested", never filler \
+    or praise ("That's awesome", "Tell me more"). With several people, aim it at whoever the \
+    moment is about and use what they share. When the wearer asks, always give one.
     """
 
     static func message(_ input: Input) -> String {
@@ -119,7 +127,8 @@ enum Coach {
         if model.contains("gpt-oss") {
             body.merge(["max_tokens": 1200, "reasoning_effort": "low"]) { _, new in new }
         } else if provider == .cerebras, model.contains("qwen") {
-            body.merge(["max_tokens": 220, "reasoning_effort": "none"]) { _, new in new }
+            // Room for three scored suggestions as well as a definition.
+            body.merge(["max_tokens": 320, "reasoning_effort": "none"]) { _, new in new }
         } else if provider == .muse {
             body.merge(["max_tokens": 900, "reasoning_effort": "minimal"]) { _, new in new }
         } else {
@@ -151,7 +160,19 @@ enum Coach {
             guard let term = clean(entry["term"]), let meaning = clean(entry["meaning"]) else { return nil }
             return (term, meaning)
         }
-        result.suggest = clean(object["suggest"])
+        // A list of {"say", "score"} best first; one string from a model that ignored the shape.
+        if let options = object["suggest"] as? [Any] {
+            let lines = options.compactMap { option -> (String, Int?)? in
+                if let say = clean(option) { return (say, nil) }
+                guard let entry = option as? [String: Any], let say = clean(entry["say"] ?? entry["text"]) else { return nil }
+                return (say, (entry["score"] as? NSNumber)?.intValue)
+            }
+            result.suggest = lines.first?.0
+            result.score = lines.first?.1
+            result.alternatives = lines.dropFirst().map(\.0)
+        } else {
+            result.suggest = clean(object["suggest"])
+        }
         result.ask = clean(object["ask"])
         return result
     }
@@ -295,17 +316,18 @@ enum LLM {
         var calls: [(name: String, arguments: String)]
     }
 
-    /// The first choice's message: its text and any tool calls.
+    /// The first choice's message: its text and any tool calls. Claude's endpoint gets the same
+    /// OpenAI-shaped body, translated (`Claude.body`), so every lane can run on it unchanged.
     static func chat(_ endpoint: URL, key: String, body: [String: Any], timeout: TimeInterval,
                      headers: [String: String] = [:]) async throws -> Reply {
+        let claude = endpoint == Claude.endpoint
         var request = URLRequest(url: endpoint)
         for (field, value) in headers { request.setValue(value, forHTTPHeaderField: field) }
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        Claude.authorize(&request, key: key, claude: claude)
         request.setValue("calhacks-aid/1.0", forHTTPHeaderField: "User-Agent")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: claude ? Claude.body(body) : body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -318,6 +340,12 @@ enum LLM {
                 .flatMap { ($0["error"] as? [String: Any])?["message"] as? String }
             throw Failure.http(code, String((message ?? String(decoding: data, as: UTF8.self)).prefix(160)))
         }
+        if claude {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw Failure.unreadable(String(decoding: data.prefix(120), as: UTF8.self))
+            }
+            return Claude.reply(json)
+        }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any] else {
             throw Failure.unreadable(String(decoding: data.prefix(120), as: UTF8.self))
@@ -327,5 +355,158 @@ enum LLM {
             return (name, function["arguments"] as? String ?? "{}")
         }
         return Reply(content: message["content"] as? String, calls: calls)
+    }
+}
+
+// MARK: - Claude
+
+/// Claude's Messages API behind the same OpenAI-shaped requests the lanes already build: the
+/// system message moves to `system`, `reasoning_effort` becomes `output_config.effort`, tools
+/// become Claude tools, and the reply comes back as an `LLM.Reply`. Sampling knobs (`temperature`)
+/// and JSON mode are dropped: this API version rejects the first, and the parsers cope without
+/// the second. Pure, so the request shape is tested offline (Tests/AidTests.swift).
+enum Claude {
+    static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
+    static let version = "2026-10-21"
+
+    static func authorize(_ request: inout URLRequest, key: String, claude: Bool) {
+        if claude {
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+            request.setValue(version, forHTTPHeaderField: "anthropic-version")
+        } else {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    }
+
+    static func body(_ chat: [String: Any]) -> [String: Any] {
+        let messages = (chat["messages"] as? [[String: Any]]) ?? []
+        let system = messages.filter { $0["role"] as? String == "system" }.compactMap { $0["content"] as? String }
+        let model = chat["model"] as? String ?? ""
+        var body: [String: Any] = [
+            "model": model,
+            "messages": messages.filter { $0["role"] as? String != "system" }
+                .map { ["role": $0["role"] as? String ?? "user", "content": $0["content"] as? String ?? ""] },
+        ]
+        if !system.isEmpty { body["system"] = system.joined(separator: "\n\n") }
+        if chat["stream"] as? Bool == true { body["stream"] = true }
+
+        // "none" is a lane asking for no thinking at all (a 12-word answer). Sonnet 5.5 turns it
+        // off with between_tools, Haiku with disabled; Opus and Fable always think, so they get
+        // the least. Thinking counts against max_tokens, so a lane's tiny budget gets room.
+        let asked = chat["reasoning_effort"] as? String ?? "low"
+        var thinking = true
+        if asked == "none" || asked == "minimal" {
+            if model.contains("sonnet-5-5") { body["thinking"] = ["type": "between_tools"]; thinking = false }
+            else if model.contains("haiku") { body["thinking"] = ["type": "disabled"]; thinking = false }
+        }
+        body["output_config"] = ["effort": ["low", "medium", "high"].contains(asked) ? asked : "low"]
+        let budget = chat["max_tokens"] as? Int ?? 1024
+        body["max_tokens"] = thinking ? max(budget, 2048) : max(budget, 64)
+
+        if let tools = chat["tools"] as? [[String: Any]] {
+            body["tools"] = tools.compactMap { tool -> [String: Any]? in
+                guard let function = tool["function"] as? [String: Any], let name = function["name"] as? String else { return nil }
+                return ["name": name, "description": function["description"] as? String ?? "",
+                        "input_schema": function["parameters"] ?? ["type": "object", "properties": [String: Any]()]]
+            }
+            body["tool_choice"] = ["type": "auto"]
+        }
+        return body
+    }
+
+    /// The text blocks joined, and any tool calls with their input as JSON text.
+    static func reply(_ json: [String: Any]) -> LLM.Reply {
+        let blocks = (json["content"] as? [[String: Any]]) ?? []
+        let text = blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
+        let calls = blocks.filter { $0["type"] as? String == "tool_use" }.compactMap { block -> (String, String)? in
+            guard let name = block["name"] as? String else { return nil }
+            let input = (try? JSONSerialization.data(withJSONObject: block["input"] ?? [String: Any]()))
+                .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            return (name, input)
+        }
+        return LLM.Reply(content: text.isEmpty ? nil : text, calls: calls)
+    }
+
+    /// One server-sent event's text, if it carries any (`content_block_delta` / `text_delta`).
+    static func delta(_ payload: String) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any],
+              json["type"] as? String == "content_block_delta",
+              let delta = json["delta"] as? [String: Any], delta["type"] as? String == "text_delta" else { return nil }
+        return delta["text"] as? String
+    }
+}
+
+// MARK: - Exa
+
+/// Exa's search API: ranked pages with the sentences that matter, in well under a second
+/// (an independent benchmark on 2026-10-21 put Exa's fast modes at 0.4-0.65 s mean against
+/// 4-8 s for ASI:One here). Exa only searches, so the question is first made self-contained
+/// from the conversation ("how much did they raise" → "Figure AI latest funding round") by the
+/// fast model, and Aid's condenser cuts the findings to a card as it does for every researcher.
+struct Exa: Researcher {
+    let key: String
+    /// Exa's search type: "fast" by default; "instant" or "auto" via RESEARCH_MODEL.
+    var type = "fast"
+    /// Rewrites a question that leans on the conversation into a standalone query.
+    var resolver: (provider: Provider, key: String, model: String)?
+    var name: String { "Exa" }
+
+    func research(_ query: String, context: String) async throws -> String {
+        var search = query
+        if let resolver, !context.isEmpty, Self.leans(query) {
+            search = (try? await LLM.complete(resolver.provider.endpoint, key: resolver.key, body: [
+                "model": resolver.model,
+                "max_tokens": 40,
+                "reasoning_effort": resolver.model.contains("gpt-oss") ? "low" : "none",
+                "messages": [
+                    ["role": "system", "content": """
+                        Rewrite the question as one standalone web search query, resolving "it", "they" \
+                        or "that" from the conversation. Public subjects only, never the people talking. \
+                        Reply with the query alone.
+                        """],
+                    ["role": "user", "content": "Conversation:\n\(context)\n\nQuestion: \(query)"],
+                ],
+            ], timeout: 3))?.trimmingCharacters(in: CharacterSet(charactersIn: "\" \n")) ?? query
+            if search.isEmpty { search = query }
+        }
+        var request = URLRequest(url: URL(string: "https://api.exa.ai/search")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 6
+        request.setValue(key, forHTTPHeaderField: "x-api-key")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "query": search,
+            "type": type,
+            "numResults": 4,
+            "contents": ["highlights": ["numSentences": 2, "highlightsPerUrl": 2]],
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 429 { throw LLM.Failure.rateLimited(retryAfter: 10) }
+        guard code == 200, let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw LLM.Failure.http(code, String(decoding: data.prefix(160), as: UTF8.self))
+        }
+        let findings = Self.findings(json)
+        guard !findings.isEmpty else { throw LLM.Failure.unreadable("no Exa results for \(search)") }
+        return "Search: \(search)\n" + findings
+    }
+
+    /// "how much did they raise", "when does it ship": a question that needs the conversation.
+    static func leans(_ query: String) -> Bool {
+        let words = Set(Talk.normalized(query).split(separator: " ").map(String.init))
+        return !words.isDisjoint(with: ["it", "its", "they", "their", "them", "that", "this", "those", "these",
+                                        "he", "she", "his", "her", "there", "one"])
+    }
+
+    /// One line per result: title, date, highlights.
+    static func findings(_ json: [String: Any]) -> String {
+        ((json["results"] as? [[String: Any]]) ?? []).prefix(4).compactMap { result -> String? in
+            let highlights = ((result["highlights"] as? [String]) ?? []).joined(separator: " … ")
+            let text = highlights.isEmpty ? String((result["text"] as? String ?? "").prefix(400)) : highlights
+            guard !text.isEmpty else { return nil }
+            let date = (result["publishedDate"] as? String).map { " (\($0.prefix(10)))" } ?? ""
+            return "- \(result["title"] as? String ?? "")\(date): \(text)"
+        }.joined(separator: "\n")
     }
 }
