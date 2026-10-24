@@ -57,6 +57,12 @@ struct CalHacksApp: App {
                             store.markSeen(String(parts[0]), at: .now.addingTimeInterval(-seconds))
                         }
                     }
+                    // PREVIEW_POV=<image path>: a still standing in for the camera, at its own pixel
+                    // size, so the lens overlay can be checked in the Simulator, which has no camera.
+                    if let path = env["PREVIEW_POV"], let still = UIImage(contentsOfFile: path) {
+                        glasses.pov = still
+                        glasses.frameSize = CGSize(width: still.size.width * still.scale, height: still.size.height * still.scale)
+                    }
                     // REPLAY_RUN=<folder in Documents/frames> plays a recorded run through the matcher.
                     if let name = env["REPLAY_RUN"],
                        let run = FrameRun.load(FrameRecorder.root.appendingPathComponent(name)) {
@@ -808,7 +814,13 @@ struct EnrollView: View {
 /// The simulated glasses' lens, mirrored into the app (phone-sim mode).
 struct MockLens: UIViewRepresentable {
     let view: UIView
-    func makeUIView(context: Context) -> UIView { view }
+    func makeUIView(context: Context) -> UIView {
+        // SwiftUI's blend mode cannot reach into a UIKit view, so the lens's black is cleared
+        // here instead: over the camera it has to be glass, not a black square.
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        return view
+    }
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
@@ -1104,11 +1116,11 @@ enum LensSnapshot {
 }
 
 /// Always-present frame around the lens, so anyone looking at the phone knows exactly what the
-/// wearer sees and on which rig. Both tiles are live with real glasses: the camera tile is the
-/// actual stream off the pair (5 fps, the Bluetooth budget), and the lens tile is a mirror —
+/// wearer sees and on which rig: the camera stream with the lens laid over it. Both are live with
+/// real glasses: the picture is the actual stream off the pair, and the lens is a mirror —
 /// the SDK offers a true preview view only for a simulated pair, so with real hardware the phone
 /// redraws the same `LensShot` the card was sent from. Never a stale or invented card: when
-/// nothing has been written to a lens, the tile says so.
+/// nothing has been written to a lens, only its outline shows.
 struct LensPanel: View {
     let lens: UIView?
     let pov: UIImage?
@@ -1120,6 +1132,8 @@ struct LensPanel: View {
     /// What was last written to the lens, for the mirror. Nil when nothing is on it.
     let shot: LensShot?
     let avatar: (String) -> UIImage?
+    /// The pixel size of the frames off the camera; nil until the first one lands.
+    var frameSize: CGSize? = nil
 
     private var state: (String, Color) {
         if identifying { return ("Looking", .orange) }
@@ -1139,39 +1153,17 @@ struct LensPanel: View {
             }
             .foregroundStyle(.secondary)
 
-            // Camera on the left, lens on the right. They are different things: the camera is
-            // what the glasses SEE, the lens is what they SHOW. Only ever showing the lens made
-            // a correctly-black display look like a broken camera.
-            HStack(spacing: 8) {
-                tile("Camera") {
-                    if let pov {
-                        Image(uiImage: pov).resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        Text(cameraNote.isEmpty ? (connected ? "Starting camera…" : "Not connected") : cameraNote)
-                            .multilineTextAlignment(.center).padding(.horizontal, 8)
-                            .font(.caption2).foregroundStyle(Color(.systemGray))
-                    }
-                }
-                // MIRROR_COMPARE=1 in the simulator puts the true renderer and the mirror side
-                // by side on the same card — the only way to tell whether the replica is honest.
-                if LensPanel.comparing, let lens {
+            // MIRROR_COMPARE=1 in the simulator puts the true renderer and the mirror side by
+            // side on the same card — the only way to tell whether the replica is honest.
+            if LensPanel.comparing, let lens {
+                HStack(spacing: 8) {
                     tile("Lens · real") { MockLens(view: lens) }
                     tile("Lens · mirror") {
                         if let shot { LensMirror(shot: shot, avatar: avatar) }
                     }
-                } else {
-                tile(lens == nil ? "Lens · mirror" : "Lens") {
-                    if let lens {
-                        MockLens(view: lens)
-                    } else if let shot {
-                        LensMirror(shot: shot, avatar: avatar)
-                    } else {
-                        Text(connected ? "No lens on this pair" : "Not connected")
-                            .multilineTextAlignment(.center)
-                            .font(.caption2).foregroundStyle(Color(.systemGray))
-                    }
                 }
-                }
+            } else {
+                wearerView
             }
         }
         .padding(.horizontal, 20)
@@ -1189,6 +1181,71 @@ struct LensPanel: View {
     }
 
     static let comparing = ProcessInfo.processInfo.environment["MIRROR_COMPARE"] == "1"
+
+    /// `streamRes` high, the default: what the canvas is until a real frame says otherwise.
+    private static let defaultFrame = CGSize(width: 720, height: 1280)
+
+    /// What the wearer sees: the camera frame, with the lens composited on top of it.
+    ///
+    /// Everything is authored in camera pixels — the frame at the size it actually arrives, the
+    /// lens at its own 600 x 600 — and the finished picture is shrunk to fit the phone, so the
+    /// two keep their true relative size. The display is additive: it can only add light, so
+    /// its black is see-through. Screen-blending it onto the frame does the same thing, and the
+    /// card's slate fill lifts the scene behind it the way it does on glass.
+    ///
+    /// Where the lens sits and how big it reads are knobs, because the camera and the display
+    /// do not share an optical axis or a field of view: `lensOverlayScale` (1 = pixel for
+    /// pixel), `lensOverlayX` / `lensOverlayY` (offset from centre, camera pixels).
+    private var wearerView: some View {
+        let frame = frameSize ?? Self.defaultFrame
+        let side = LensMetrics.canvas * CGFloat(Tuning.float("lensOverlayScale", 1))
+        let center = CGPoint(x: frame.width / 2 + CGFloat(Tuning.float("lensOverlayX", 0)),
+                             y: frame.height / 2 + CGFloat(Tuning.float("lensOverlayY", 0)))
+        return GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                Color.black
+                if let pov {
+                    Image(uiImage: pov).resizable().aspectRatio(contentMode: .fill)
+                        .frame(width: frame.width, height: frame.height)
+                } else {
+                    Text(cameraNote.isEmpty ? (connected ? "Starting camera…" : "Not connected") : cameraNote)
+                        .font(.system(size: 40)).foregroundStyle(Color(.systemGray))
+                        .frame(width: frame.width, height: frame.height * 0.3)
+                }
+                Group {
+                    if let lens {
+                        MockLens(view: lens)
+                    } else if let shot {
+                        LensMirror(shot: shot, avatar: avatar)
+                    }
+                }
+                .frame(width: side, height: side)
+                .blendMode(.screen)
+                .position(center)
+                // The edge of the display, so an empty lens still shows where it would draw.
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 3, dash: [14, 10]))
+                    .frame(width: side, height: side)
+                    .position(center)
+            }
+            .frame(width: frame.width, height: frame.height)
+            .clipped()
+            .scaleEffect(geo.size.width / frame.width, anchor: .topLeading)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+        }
+        .aspectRatio(frame.width / frame.height, contentMode: .fit)
+        .frame(maxHeight: CGFloat(Tuning.float("lensOverlayHeight", 420)))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(.separator)))
+        .overlay(alignment: .bottomTrailing) {
+            Text(verbatim: "\(Int(frame.width))×\(Int(frame.height)) · lens \(Int(side))")
+                .lineLimit(1)
+                .font(.caption2.monospacedDigit()).foregroundStyle(.white.opacity(0.8))
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(.black.opacity(0.45), in: Capsule())
+                .padding(6)
+        }
+    }
 
     private func tile<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(spacing: 3) {
@@ -1312,7 +1369,8 @@ struct LiveLensPanel: View {
     var body: some View {
         LensPanel(lens: glasses.mockLens, pov: glasses.pov, mocking: glasses.mocking,
                   connected: glasses.connected, identifying: glasses.identifying,
-                  cameraNote: glasses.cameraNote, shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
+                  cameraNote: glasses.cameraNote, shot: glasses.lensShot, avatar: { store.lensAvatar($0) },
+                  frameSize: glasses.frameSize)
     }
 }
 #endif
