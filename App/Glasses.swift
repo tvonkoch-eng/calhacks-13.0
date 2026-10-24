@@ -360,11 +360,11 @@ enum Identification {
     @ObservationIgnored private var followFace: Bool { Tuning.bool("followFace", true) }
     /// The card's person keeps it while their face is at least this share of the biggest in view.
     @ObservationIgnored private var mainFaceSlack: CGFloat { CGFloat(Tuning.float("mainFaceSlack", 1.15)) }
-    /// With `followFace`, a card whose person has been out of view this long comes down: the lens
-    /// shows who is in front of you, not who was. `cardClearAfter`, seconds.
-    @ObservationIgnored private var cardClearAfter: TimeInterval { TimeInterval(Tuning.float("cardClearAfter", 0.6)) }
-    /// When the card's person was last in view (their track, or a confident match of them).
-    @ObservationIgnored private var cardSeenAt = Date.distantPast
+    /// The card stays up until a different face is in front of you, then comes down at once: a
+    /// main face whose single best look scores below this against the card's person is someone
+    /// else. Same person ~0.4+, anyone else ~0.1, so a blurred look of the same face rarely trips it.
+    /// `differentBelow`.
+    @ObservationIgnored private var differentBelow: Float { Tuning.float("differentBelow", 0.25) }
     /// The best match for the face in view right now, confident or not, for the live readout.
     var likeness: Likeness?
     struct Likeness: Equatable {
@@ -1513,12 +1513,11 @@ enum Identification {
         return true
     }
 
-    /// Takes the card down once its person has been out of view for `cardClearAfter`. Not awaited:
-    /// clearing must not hold up the scan the way a new name's write does.
-    private func clearCardIfGone(_ now: Date) {
-        guard followFace, let card = onCard, !identifying,
-              now.timeIntervalSince(max(cardSeenAt, resultAt)) >= cardClearAfter else { return }
-        var log: [String: Any] = ["event": "autoClear", "person": card]
+    /// Takes the card down because a different face is now the main one. Not awaited: clearing
+    /// must not hold up the scan that may name the new face a frame later.
+    private func clearCard(for main: FaceTracker.Track, now: Date) {
+        guard let card = onCard else { return }
+        var log: [String: Any] = ["event": "autoClear", "person": card, "trackLooks": main.looks]
         if replaying { log["replayMs"] = Int(now.timeIntervalSince(replayBase) * 1000) }
         SpeedLog.record(log)
         result = .ready
@@ -1528,6 +1527,14 @@ enum Identification {
         } else {
             renderLens()
         }
+    }
+
+    /// True when the main face is clearly not the card's person: it isn't the track that was
+    /// announced as them, and its latest look doesn't resemble them.
+    private func isDifferentFace(_ main: FaceTracker.Track, from card: String, store: Store) -> Bool {
+        guard announced[main.id] != card, main.best.usable, main.looks > 0 else { return false }
+        let score = store.ranked(main.probe).first { $0.person.id == card }?.score ?? 0
+        return score < differentBelow
     }
 
     /// The clearest face in view and how much it looks like its best match, every scan.
@@ -1582,7 +1589,6 @@ enum Identification {
         guard !live.isEmpty else {
             if facing != nil { facing = nil }
             if likeness != nil { likeness = nil }
-            clearCardIfGone(frameTime)
             return
         }
 
@@ -1604,7 +1610,12 @@ enum Identification {
         let cardTrack = onCard.flatMap { card in inView.first { announced[$0.id] == card } }
         var main = inView.max { facePx($0) < facePx($1) }
         if let cardTrack, let biggest = main, facePx(cardTrack) * mainFaceSlack >= facePx(biggest) { main = cardTrack }
-        if cardTrack != nil { cardSeenAt = frameTime }
+        // A different face in front of you: the old card comes down now, before the new face
+        // is even named. Nobody in view leaves it up.
+        if followFace, !identifying, let card = onCard, let main, facePx(main) >= minAnnouncePx,
+           isDifferentFace(main, from: card, store: store) {
+            clearCard(for: main, now: frameTime)
+        }
         for track in live where track.weight >= minEvidence {
             guard let match = store.confidentMatch(track.probe) else { continue }
             if track.updated == frameTime { seenNow.append((match.person.id, match.score)) }
@@ -1632,8 +1643,6 @@ enum Identification {
         // still owns the lens. Decided before sightings are recorded, so this frame can't silence itself.
         let allowed = chosen.map { correcting ? !identifying : mayShow($0.match.person.id) } ?? false
         for seen in seenNow { sighted[seen.id] = frameTime }
-        if let card = onCard, seenNow.contains(where: { $0.id == card }) { cardSeenAt = frameTime }
-        if chosen == nil || !allowed { clearCardIfGone(frameTime) }
         onSeen?(seenNow.map(\.id))
         // Who the wearer is facing, for the aid: the clearest match in view right now.
         let looking = seenNow.max { $0.score < $1.score }?.id
