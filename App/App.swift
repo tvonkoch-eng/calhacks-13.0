@@ -47,6 +47,8 @@ struct CalHacksApp: App {
                     if Glasses.prefersMock {
                         await glasses.useMockGlasses()
                         Task { await glasses.connect() }
+                    } else {
+                        await glasses.dropMock()
                     }
                     // PREVIEW_SEEN="joaquin:7200,mirabelle:900" = seen that many seconds ago.
                     for entry in (ProcessInfo.processInfo.environment["PREVIEW_SEEN"] ?? "").split(separator: ",") {

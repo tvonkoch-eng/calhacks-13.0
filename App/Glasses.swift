@@ -818,8 +818,14 @@ enum Identification {
     /// and mirror their lens into the app, so the whole flow runs without hardware.
     func useMockGlasses() async {
         guard Self.ready else { status = "Glasses SDK unavailable here"; return }
+        await dropMock()
         MockDeviceKit.shared.enable()
-        guard let glasses = try? MockDeviceKit.shared.pairGlasses(model: .metaRayBanDisplay) else { return }
+        let glasses: any MockGlasses
+        do { glasses = try MockDeviceKit.shared.pairGlasses(model: .metaRayBanDisplay) } catch {
+            SpeedLog.record(["event": "mockPairFailed", "error": "\(error)"])
+            status = "Phone simulator failed to start"
+            return
+        }
         mock = glasses
         mocking = true
         glasses.powerOn()
@@ -883,22 +889,28 @@ enum Identification {
 
     static let mockKey = "MockGlasses"
 
+    /// Unpair every simulated pair, not just the one this launch made, and turn the kit off.
+    func dropMock() async {
+        let kit = MockDeviceKit.shared
+        let stale = kit.pairedDevices
+        for device in stale { await kit.unpairDevice(device) }
+        if kit.isEnabled { await kit.disable() }
+        if !stale.isEmpty { SpeedLog.record(["event": "mockDropped", "pairs": stale.count]) }
+        mock = nil
+        mocking = false
+    }
+
     /// Swap rigs live, no rebuild: drop the session, change the kit under it, come back up.
     /// Reconnecting is not optional — the session is pinned to one device identifier, and the
     /// simulated pair is a different device than the real one.
+    /// No early return when `on == mocking`: a simulated pair left over from an earlier launch got
+    /// found by connect() while `mocking` said false, so "Real glasses" did nothing (20:44).
     func useMock(_ on: Bool) async {
-        guard on != mocking else { return }
         UserDefaults.standard.set(on, forKey: Self.mockKey)
+        SpeedLog.record(["event": "rig", "mock": on])
         disconnect()
         mockLens = nil
-        if on {
-            await useMockGlasses()
-        } else {
-            if let mock { await MockDeviceKit.shared.unpairDevice(mock) }
-            mock = nil
-            await MockDeviceKit.shared.disable()
-            mocking = false
-        }
+        if on { await useMockGlasses() } else { await dropMock() }
         // disconnect() set the "user meant it" flag; this switch is a reconnect, not a stop.
         userDisconnected = false
         status = on ? "Starting phone simulator…" : "Looking for your glasses"
