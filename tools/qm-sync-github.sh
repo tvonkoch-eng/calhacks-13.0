@@ -65,6 +65,28 @@ git -C "$REPO" remote get-url github >/dev/null 2>&1 || { fail "no 'github' remo
 
 g() { git -C "$REPO" "$@"; }
 
+# GitHub pushes need a credential; `gh` is logged in but no git credential helper is
+# configured. Pull the token out of gh and feed it through an inline helper so it never
+# lands in .git/config, the remote URL, or any file on disk.
+GH_HOME="${QM_SYNC_GH_HOME:-/root/workspace/.ghlogin-home}"
+QM_GH_TOKEN=""
+if command -v gh >/dev/null 2>&1; then
+  QM_GH_TOKEN="$(HOME="$GH_HOME" GH_CONFIG_DIR="$GH_HOME/.config/gh" gh auth token 2>/dev/null)"
+fi
+export QM_GH_TOKEN
+GH_CRED_HELPER='!f(){ echo username=x-access-token; echo "password=$QM_GH_TOKEN"; }; f'
+# push to GitHub with that credential
+gpush_github() {
+  if [ -n "$QM_GH_TOKEN" ]; then
+    git -C "$REPO" -c 'credential.https://github.com.helper=' \
+                   -c "credential.https://github.com.helper=$GH_CRED_HELPER" \
+                   push "$@"
+  else
+    git -C "$REPO" push "$@"
+  fi
+}
+
+[ -n "$QM_GH_TOKEN" ] || warn "no GitHub token from gh (HOME=$GH_HOME) — the GitHub push will fail; fetches still work."
 note "repo   : $REPO"
 note "origin : $(g remote get-url origin)   (Mac hub — what the phones build)"
 note "github : $(g remote get-url github)   (human teammates)"
@@ -99,8 +121,7 @@ gh_url="$(g remote get-url github)"
 gh_public=unknown
 slug="$(printf '%s' "$gh_url" | sed -e 's#.*github\.com[:/]##' -e 's#\.git$##')"
 if command -v gh >/dev/null 2>&1; then
-  vis="$(HOME="${QM_SYNC_GH_HOME:-/root/workspace/.ghlogin-home}" \
-         GH_CONFIG_DIR="${QM_SYNC_GH_HOME:-/root/workspace/.ghlogin-home}/.config/gh" \
+  vis="$(HOME="$GH_HOME" GH_CONFIG_DIR="$GH_HOME/.config/gh" \
          gh repo view "$slug" --json visibility -q .visibility 2>/dev/null)"
   case "$vis" in PUBLIC) gh_public=yes ;; PRIVATE|INTERNAL) gh_public=no ;; esac
 fi
@@ -144,7 +165,7 @@ elif [ -n "$GHB" ] && [ "$GHB" = "$HUB" ]; then
   note "already up to date ($(git -C "$REPO" rev-parse --short "$HUB"))."
 else
   # Explicit sha:ref refspec. No +, no --force, ever.
-  out="$(g push github "$HUB:refs/heads/$GH_BRANCH" 2>&1)"
+  out="$(gpush_github github "$HUB:refs/heads/$GH_BRANCH" 2>&1)"
   rc=$?
   printf '%s\n' "$out"
   if [ $rc -ne 0 ]; then
