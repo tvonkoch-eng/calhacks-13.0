@@ -9,7 +9,7 @@ import json, os, statistics, sys, time, urllib.error, urllib.request
 KEY = os.environ.get("GROQ_KEY") or sys.exit("set GROQ_KEY")
 MODELS = sys.argv[1:] or ["qwen/qwen3.8-27b"]
 URL = "https://api.groq.com/openai/v1"
-# Must stay in sync with Answerer.prompt in App/Answer.swift.
+# Older copy of the prompt; the live one is Answerer.prompt in Assist/Sources/AssistCore/Answerer.swift (now also has WAIT and context).
 PROMPT = """You help someone wearing smart glasses during a live, in-person conversation. The input is a live speech transcript of a question someone just asked out loud. It may be cut off mid-sentence — infer the obvious full question and answer that.
 
 Answer in ONE line of at most 12 words. No preamble, no restating the question, no punctuation at the end. If the answer is a number or a name, lead with it. Plain facts only.

@@ -1,14 +1,17 @@
 import Foundation
 
 /// A question spotted in the live transcript.
-struct Candidate: Equatable {
+public struct Candidate: Equatable, Sendable {
     /// The question clause, fillers and lead-ins stripped.
-    let text: String
+    public let text: String
     /// How sure the local gate is. Only `.strong` is worth spending a speculative request on.
-    let confidence: Confidence
-    let words: Int
+    public let confidence: Confidence
+    public let words: Int
+    /// Stops mid-phrase ("how tall is the") with no question mark: if the recognizer closes the
+    /// sentence here, the rest is probably still coming in the next segment.
+    public let unfinished: Bool
 
-    enum Confidence { case strong, weak }
+    public enum Confidence: Sendable { case strong, weak }
 }
 
 /// The cheap local gate: does the tail of what we just heard look like a question we could answer?
@@ -17,7 +20,7 @@ struct Candidate: Equatable {
 /// enough to decide *whether to start* an answer. The model makes the final call and returns SKIP
 /// for anything personal, social or rhetorical that slips through — which is far more accurate than
 /// any regex, and by then we've already paid the latency we were trying to hide.
-enum QuestionGate {
+public enum QuestionGate {
     /// Words that make a clause a question all by themselves.
     private static let wh: Set<String> = [
         "who", "whos", "what", "whats", "when", "whens", "where", "wheres",
@@ -39,6 +42,8 @@ enum QuestionGate {
         "is", "are", "was", "were", "do", "does", "did", "has", "have", "had", "can", "could",
         "will", "would", "should", "be", "been", "being", "am", "very", "really", "most", "more",
         "much", "many", "about", "like",
+        // arithmetic: "what is 17 times" is not a question yet
+        "times", "plus", "minus", "divided", "multiplied", "x", "squared", "percent", "point",
     ]
 
     /// Noise people put in front of a real question.
@@ -69,10 +74,23 @@ enum QuestionGate {
     ]
 
     /// Find the question at the end of `transcript`, if there is one.
-    static func candidate(in transcript: String) -> Candidate? {
+    ///
+    /// `settled: false` means the last word may still be arriving. Live recognizers stream word
+    /// pieces ("the E", "the Eiff", "the Eiffel T"), so an unsettled hypothesis is judged without
+    /// its last word unless punctuation already closed it. Otherwise "how tall is the e" looks like
+    /// a complete question and we would ask the model about it.
+    public static func candidate(in transcript: String, settled: Bool = true) -> Candidate? {
         guard var clause = tail(of: transcript) else { return nil }
         let explicitMark = clause.hasSuffix("?")
+        let closed = transcript.trimmed.last.map { ".?!,".contains($0) } ?? false
+        let statement = transcript.trimmed.hasSuffix(".")
         clause = normalize(clause)
+        // A one- or two-letter tail ("the E", "wall F") is a word still being spoken. Longer
+        // pieces ("Eiff") are left in: the model copes, and asking now beats waiting for the word.
+        if !settled, !closed, let last = clause.split(separator: " ").last,
+           last.count <= 2, !last.contains(where: \.isNumber) {
+            clause = clause.split(separator: " ").dropLast().joined(separator: " ")
+        }
 
         clause = strip(fillers, from: clause)
         // Peel lead-ins, then any fillers they were hiding ("so do you know, uh, how tall …").
@@ -94,18 +112,23 @@ enum QuestionGate {
         if !peeled, aux.contains(first), count > 1, ["you", "u", "we", "i", "ya"].contains(words[1]) {
             return nil
         }
+        // The recognizer closed it with a period: "Was in Berlin last summer." is a statement
+        // (with the "I" lost), not a yes/no question.
+        if statement, !peeled, aux.contains(first) { return nil }
 
         let interrogative = wh.contains(first) || aux.contains(first) || peeled
         guard interrogative || explicitMark else { return nil }
 
         // Strong once there is enough of the clause to guess the whole question *and* the clause
         // does not stop mid-phrase. An explicit "?" from the recognizer means it is definitely done.
-        let settled = !dangling.contains(words[count - 1])
+        let complete = !dangling.contains(words[count - 1])
         let long = (wh.contains(first) && count >= 4)
             || (aux.contains(first) && count >= 5)
             || (peeled && count >= 3)
-        let strong = explicitMark || (long && settled)
-        return Candidate(text: clause, confidence: strong ? .strong : .weak, words: count)
+        let strong = explicitMark || (long && complete)
+        // Even "Do you know what?" with a question mark is a sentence the recognizer closed at a pause.
+        let unfinished = count < 3 || (!explicitMark && !complete)
+        return Candidate(text: clause, confidence: strong ? .strong : .weak, words: count, unfinished: unfinished)
     }
 
     /// Last sentence of the transcript — the one still being spoken.
@@ -141,5 +164,5 @@ enum QuestionGate {
 }
 
 extension StringProtocol {
-    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+    public var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }

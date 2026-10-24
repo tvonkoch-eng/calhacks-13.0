@@ -6,20 +6,6 @@ import MWDATInputs
 import Observation
 import UIKit
 
-/// What the lens shows during a conversation: the question we heard and the answer so far.
-struct AnswerCard: Equatable {
-    let question: String
-    let answer: String
-    let thinking: Bool
-
-    /// The lens is small. Echo just enough of the question to make the answer legible.
-    var echo: String {
-        let words = question.split(separator: " ")
-        guard words.count > 7 else { return question }
-        return words.prefix(7).joined(separator: " ") + "\u{2026}"
-    }
-}
-
 enum Identification {
     case ready
     case noFace

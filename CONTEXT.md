@@ -45,7 +45,8 @@ Cleaned up from the team's Granola notes (Cal Hacks 13.0).
 - [ ] Apify LinkedIn scrape → profile JSON in the app's format (`App/people.json`: name, role, facts).
 - [x] Press to identify on the glasses (phone button, lens button, capture button via Inputs).
 - [x] Spot a factual question in live speech and put the answer on the lens, answering speculatively from the partial transcript so the latency lands inside the question.
-- [ ] Mic on the glasses instead of the phone (MWDAT audio) — phone mic first because it is one less SDK surface to fight during the hack.
+- [x] Mac command-line loop (`Assist/`, `swift run assist`) sharing the engine with the app, with event logs and a spoken test suite.
+- [ ] Mic on the glasses instead of the phone (MWDAT audio).
 - [ ] Speaker attribution: right now it answers any question it hears, including the wearer's own.
 - [ ] Fold the person being identified into the answer context, so "where does she work" resolves.
 - [ ] Note: Meta's developer terms (checked Oct 19) prohibit face identification on the glasses without Meta's prior approval. Confirm how this affects the Meta prize demo.

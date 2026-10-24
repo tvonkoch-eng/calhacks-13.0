@@ -11,34 +11,52 @@ Pipeline: Vision face detection → square crop → Vision feature print → cos
 
 ## Conversation assist
 
-The phone listens. When someone asks a question about the world — "how tall is the Eiffel Tower" —
-the answer appears on the lens. Questions about the people in the room are ignored.
+The phone (or the Mac) listens. When someone asks a question about the world, like "how tall is the
+Eiffel Tower", the answer appears on the lens. Questions about the people in the room are ignored.
 
-The whole design is about **hiding the latency inside the question instead of after it**. A question
-takes one to three seconds to say out loud, and we know roughly what it is well before the last word,
-so we start answering mid-sentence:
+The latency has to land **inside the question, not after it**. A question takes one to three seconds
+to say and is usually recognisable before the last word, so the answer request fires on the partial
+transcript and the model's ~100 ms to first token overlaps the end of the sentence.
+
+All the logic is a Swift package in `Assist/`, shared by the iPhone app and a Mac command-line tool:
 
 | | |
 |---|---|
-| `Listen.swift` | Phone mic → `SFSpeechRecognizer`, on-device, partials every ~100-200 ms. Our own endpointing calls a sentence over after 320 ms of quiet instead of waiting out Apple's ~1.5 s finalize. One recognizer request per utterance. |
-| `Question.swift` | ~0 ms gate on every partial: is the tail of this a question we could answer? Strips fillers ("so, um") and lead-ins ("do you know"), drops obviously personal clauses, and refuses to call a clause ready while it's still mid-phrase — "how tall is the" waits, "how tall is the Eiffel" fires. |
-| `Assistant.swift` | Fires a **speculative** answer request on the partial transcript, so the model's time-to-first-token overlaps the rest of the sentence. Re-fires if the question grows by 2+ words or the model refused the fragment, capped at 3 tries. A generation counter throws away answers from superseded fires. |
-| `Answer.swift` | Local tier (arithmetic, time, date) answers in under a millisecond with no network. Otherwise a streaming call to Groq / Cerebras / OpenAI, one line, ≤12 words. The model returns `SKIP` for anything personal, social, rhetorical or too fragmentary — the real filter, with a regex only as the cheap pre-gate. |
-| `Glasses.swift` | A "…" hits the lens the moment a question is detected, then the answer streams in, coalesced to one lens write per 220 ms. It holds for 14 s, then the identity card comes back. |
+| `AssistSpeech/Transcriber.swift` | Apple's on-device **SpeechAnalyzer** (iOS/macOS 26): word-by-word hypotheses, closes sentences itself with `?`, no session limit. Mic or a recording replayed in real time. |
+| `AssistCore/QuestionGate.swift` | ~0 ms check on every hypothesis: strips fillers and lead-ins, drops obviously personal questions and statements, ignores half-spoken words ("the E"), won't fire mid-phrase ("how tall is the"). |
+| `AssistCore/Engine.swift` | Fires early, refires when the question grows 2+ words / adds a number / the model said WAIT. A sentence the recognizer closes mid-phrase ("Do you know what?") is **carried** into the next one, so a pause never splits a question. Sends the last few sentences as context ("how far is *it*"). |
+| `AssistCore/Answerer.swift` | Local tier (math, time, date, no network). Otherwise streams Groq `qwen/qwen3.8-27b`. Model replies SKIP (personal) or WAIT (too cut off); neither is ever shown. |
+| `AssistCore/EventLog.swift` | Every decision, timestamped, to the console and to `Assist/logs/*.jsonl`. |
 
-In the common case the answer is on the lens **before the asker stops talking**. The phone shows how
-early, per question, under Transcript.
+### The Mac loop (start here)
 
-Known limits: English only, one speaker's question at a time, and no "who said it" — it answers any
-question it hears, including your own.
-
-## Running it
+Needs macOS 26 and Swift 6.2+ (Xcode or just the Command Line Tools).
 
 ```
-cp Secrets.example.xcconfig Secrets.xcconfig   # put a Groq key in ANSWER_API_KEY
-xcodegen && open CalHacks.xcodeproj            # run on your iPhone
+cd Assist
+swift run assist mic                 # talk to it; Ctrl-C prints a summary table
+swift run assist say "So how tall is the [[slnc 700]] Eiffel Tower?"   # spoken by `say`, real pipeline
+swift run assist suite               # 11 spoken scenarios, pass/fail, timings
+swift run assist file clip.m4a       # replay a recording of a failure, in real time
+swift run assist-check               # offline logic tests, no audio or network
 ```
 
-Groq or Cerebras is worth it here: their time-to-first-token is ~100-250 ms against ~600 ms+ for the
-big hosted models, and first token is what reaches the lens. Without a key, face ID and the local
-answer tier still work.
+Add `-v` to see every partial hypothesis. The first mic run asks for Microphone permission for your
+terminal app.
+
+Measured on a Mac mini (M-series, macOS 26.3), `assist suite`: **11/11**. Model first token 80-170 ms.
+"lead" is how long the answer was up before the speaker stopped talking: +0.9 s on the Eiffel Tower
+(fired on "how tall is the Eiff"), around -0.1 to -0.9 s on short questions, where the remaining delay
+is the recognizer holding back the last word. Turning off its `fastResults` mode costs another ~1 s.
+
+### On the phone
+
+`project.yml` compiles `Assist/Sources/AssistCore` and `AssistSpeech` into the app (iOS 26 target);
+`App/Assistant.swift` is a thin wrapper, and `Glasses` is the `AnswerDisplay`.
+
+```
+xcodegen && open CalHacks.xcodeproj   # run on your iPhone
+```
+
+Known limits: English only; no speaker separation (it answers any factual question it hears,
+including the wearer's).
