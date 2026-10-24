@@ -17,6 +17,13 @@ struct CalHacksApp: App {
                 .task {
                     glasses.store = store
                     #if DEBUG
+                    // PREVIEW_SEEN="joaquin:7200,mirabelle:900" = seen that many seconds ago.
+                    for entry in (ProcessInfo.processInfo.environment["PREVIEW_SEEN"] ?? "").split(separator: ",") {
+                        let parts = entry.split(separator: ":")
+                        if parts.count == 2, let seconds = Double(parts[1]) {
+                            store.markSeen(String(parts[0]), at: .now.addingTimeInterval(-seconds))
+                        }
+                    }
                     if let id = ProcessInfo.processInfo.environment["PREVIEW_PERSON"],
                        let person = store.people.first(where: { $0.id == id }) {
                         glasses.preview(person)
@@ -37,14 +44,47 @@ struct HomeView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 header
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .animation(.smooth(duration: 0.3), value: glasses.identifying)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Contacts")
+                            .font(.system(size: 34, weight: .semibold, design: .serif))
+                            .padding(.horizontal, 20)
+                            .padding(.top, 10)
+                            .padding(.bottom, 6)
+                        notice
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 10)
+                        TimelineView(.periodic(from: .now, by: 30)) { context in
+                            VStack(spacing: 0) {
+                                ForEach(Array(store.recents.enumerated()), id: \.element.id) { index, person in
+                                    if index == 0, isCurrent(person, now: context.date) {
+                                        CurrentCard(person: person)
+                                            .padding(.horizontal, 16)
+                                            .padding(.bottom, 8)
+                                            .transition(.scale(scale: 0.96).combined(with: .opacity))
+                                    } else {
+                                        ContactRow(person: person, seen: store.lastSeen[person.id], now: context.date)
+                                    }
+                                }
+                            }
+                        }
+                        .animation(.spring(response: 0.55, dampingFraction: 0.82), value: store.recents.map(\.id))
+                    }
+                    .padding(.bottom, 24)
+                }
+                .scrollIndicators(.hidden)
                 actionButton
             }
             .background(Color(.systemBackground))
             .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: Person.self) { PersonView(person: $0) }
         }
+    }
+
+    /// The person you just identified stays featured for 15 minutes.
+    private func isCurrent(_ person: Person, now: Date) -> Bool {
+        guard let seen = store.lastSeen[person.id] else { return false }
+        return now.timeIntervalSince(seen) < 15 * 60
     }
 
     private var header: some View {
@@ -60,55 +100,31 @@ struct HomeView: View {
                     Circle().fill(glasses.connected ? Color.green : Color(.tertiaryLabel)).frame(width: 7, height: 7)
                     Text(glasses.connected ? "Glasses on" : "Glasses off")
                         .font(.footnote.weight(.medium))
-                        .foregroundStyle(.primary)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(Color(.secondarySystemBackground), in: Capsule())
             }
             Spacer()
-            NavigationLink { PeopleView() } label: {
-                Image(systemName: "person.2")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .frame(width: 36, height: 36)
-                    .background(Color(.secondarySystemBackground), in: Circle())
-            }
         }
         .tint(.primary)
         .padding(.horizontal, 20)
         .padding(.top, 8)
     }
 
-    @ViewBuilder private var content: some View {
+    /// One quiet line under the title: what's happening right now, if anything.
+    @ViewBuilder private var notice: some View {
         if glasses.identifying {
-            VStack(spacing: 14) {
-                ProgressView().controlSize(.large)
-                Text("Recognizing").font(.headline).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Recognizing")
             }
-        } else {
-            switch glasses.result {
-            case .known(let match, let face):
-                ScrollView {
-                    ProfileView(person: match.person, face: face)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 28)
-                }
-                .scrollIndicators(.hidden)
-            case .ready:
-                EmptyState(symbol: "eyeglasses",
-                           title: "Look at someone",
-                           detail: glasses.connected
-                               ? "Press the capture button on your glasses, or tap Identify."
-                               : "Put on your glasses and connect to get started.")
-            case .noFace:
-                EmptyState(symbol: "person.crop.circle.badge.questionmark",
-                           title: "No one in view",
-                           detail: "Face them and try again.")
-            case .unknown:
-                EmptyState(symbol: "person.crop.circle.badge.plus",
-                           title: "No one saved yet",
-                           detail: "Add photos of the people you want to recognize.")
-            }
+            .font(.subheadline).foregroundStyle(.secondary)
+        } else if case .noFace = glasses.result {
+            Text("No one in view. Face them and try again.").font(.subheadline).foregroundStyle(.secondary)
+        } else if !store.hasFaces {
+            Text("Add photos so people can be recognized.").font(.subheadline).foregroundStyle(.secondary)
+        } else if store.lastSeen.isEmpty {
+            Text("Look at someone and press the button on your glasses.").font(.subheadline).foregroundStyle(.secondary)
         }
     }
 
@@ -129,6 +145,7 @@ struct HomeView: View {
             }
         }
         .padding(.horizontal, 20)
+        .padding(.top, 8)
         .padding(.bottom, 12)
     }
 
@@ -139,21 +156,85 @@ struct HomeView: View {
     }
 }
 
-struct EmptyState: View {
-    let symbol: String
-    let title: String
-    let detail: String
+/// The person you're talking to now: photo, who they are, and something to say.
+struct CurrentCard: View {
+    @Environment(Store.self) private var store
+    @Environment(Glasses.self) private var glasses
+    let person: Person
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: symbol)
-                .font(.system(size: 52, weight: .ultraLight))
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 6)
-            Text(title).font(.system(.title2, design: .serif, weight: .semibold))
-            Text(detail).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        VStack(alignment: .leading, spacing: 0) {
+            NavigationLink(value: person) {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 14) {
+                        Avatar(person: person, size: 64)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("NOW")
+                                .font(.caption2.weight(.bold)).tracking(1)
+                                .foregroundStyle(.green)
+                            Text(person.name).font(.system(.title2, design: .serif, weight: .semibold))
+                            Text(person.role).font(.subheadline).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    if let opener = person.opener {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("SAY HI").font(.caption.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
+                            Text(opener).font(.system(.body, design: .serif))
+                        }
+                    }
+                }
+                .multilineTextAlignment(.leading)
+                .foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+
+            if case .known(let match, let face?) = glasses.result, match.person.id == person.id {
+                SaveFaceMenu(face: face, label: "Not \(person.name.split(separator: " ").first ?? "them")?")
+                    .font(.footnote)
+                    .tint(.secondary)
+                    .padding(.top, 14)
+            }
         }
-        .padding(.horizontal, 40)
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+struct ContactRow: View {
+    let person: Person
+    let seen: Date?
+    let now: Date
+
+    var body: some View {
+        NavigationLink(value: person) {
+            VStack(spacing: 0) {
+                HStack(spacing: 14) {
+                    Avatar(person: person, size: 48)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(person.name).font(.body.weight(.medium))
+                        Text(person.role).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Text(seenText).font(.footnote).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 12)
+                Divider().padding(.leading, 62)
+            }
+            .padding(.horizontal, 20)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var seenText: String {
+        guard let seen else { return "" }
+        if now.timeIntervalSince(seen) < 60 { return "Just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: seen, relativeTo: now)
     }
 }
 
@@ -250,27 +331,6 @@ struct SaveFaceMenu: View {
     }
 }
 
-struct PeopleView: View {
-    @Environment(Store.self) private var store
-
-    var body: some View {
-        List {
-            Section {
-                ForEach(store.contacts) { person in
-                    NavigationLink(value: person) { PersonRow(person: person) }
-                }
-            }
-            if let me = store.me {
-                Section("You") {
-                    NavigationLink(value: me) { PersonRow(person: me) }
-                }
-            }
-        }
-        .navigationTitle("People")
-        .navigationDestination(for: Person.self) { PersonView(person: $0) }
-    }
-}
-
 struct Avatar: View {
     @Environment(Store.self) private var store
     let person: Person
@@ -288,20 +348,6 @@ struct Avatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-    }
-}
-
-struct PersonRow: View {
-    let person: Person
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Avatar(person: person)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(person.name).font(.body.weight(.medium))
-                Text(person.role).font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
     }
 }
 

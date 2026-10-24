@@ -24,6 +24,8 @@ enum Identification {
     var result: Identification = .ready
 
     @ObservationIgnored var store: Store?
+    /// The last automatic "seen" mark, so correcting a wrong match restores the wrong person's time.
+    @ObservationIgnored private var lastMark: (id: String, previous: Date?)?
     @ObservationIgnored private var session: DeviceSession?
     @ObservationIgnored private var camera: Camera?
     @ObservationIgnored private var display: Display?
@@ -156,13 +158,21 @@ enum Identification {
         snapshot = UIImage(ciImage: image).rendered()
         let faces = await detect(image)
         result = faces.first.map(classify) ?? .noFace
+        recordSeen()
+    }
+
+    private func recordSeen() {
+        guard case .known(let match, _) = result, let store else { return }
+        lastMark = (match.person.id, store.markSeen(match.person.id))
     }
 
     /// Re-match the last face after it was saved to someone.
     func rematch() {
         switch result {
         case .known(_, let face?), .unknown(let face):
+            if let lastMark { store?.markSeen(lastMark.id, at: lastMark.previous) }
             result = classify(face)
+            recordSeen()
             renderLens()
         default: break
         }
@@ -172,6 +182,7 @@ enum Identification {
     /// Screenshot hook: PREVIEW_PERSON=<id> shows that person's card without glasses.
     func preview(_ person: Person) {
         result = .known(Match(person: person, score: 1), nil)
+        store?.markSeen(person.id)
     }
     #endif
 

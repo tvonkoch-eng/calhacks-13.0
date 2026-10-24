@@ -33,9 +33,11 @@ struct Match {
     private(set) var people: [Person] = []
     private(set) var gallery: [String: [[Float]]] = [:]
     private(set) var avatars: [String: UIImage] = [:]
+    private(set) var lastSeen: [String: Date] = [:]
 
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     private var galleryURL: URL { docs.appendingPathComponent("gallery.json") }
+    private var seenURL: URL { docs.appendingPathComponent("seen.json") }
     private func avatarURL(_ id: String) -> URL { docs.appendingPathComponent("avatar-\(id).jpg") }
 
     init() {
@@ -45,6 +47,9 @@ struct Match {
         }
         if let data = try? Data(contentsOf: galleryURL) {
             gallery = (try? JSONDecoder().decode([String: [[Float]]].self, from: data)) ?? [:]
+        }
+        if let data = try? Data(contentsOf: seenURL) {
+            lastSeen = (try? JSONDecoder().decode([String: Date].self, from: data)) ?? [:]
         }
         for person in people {
             if let image = UIImage(contentsOfFile: avatarURL(person.id).path) { avatars[person.id] = image }
@@ -83,6 +88,22 @@ struct Match {
 
     var me: Person? { people.first { $0.isMe == true } }
     var contacts: [Person] { people.filter { $0.isMe != true } }
+
+    /// Contacts, most recently seen first; people you haven't met keep their file order.
+    var recents: [Person] {
+        contacts.enumerated().sorted { a, b in
+            let da = lastSeen[a.element.id] ?? .distantPast, db = lastSeen[b.element.id] ?? .distantPast
+            return da != db ? da > db : a.offset < b.offset
+        }.map(\.element)
+    }
+
+    /// Records a conversation now; returns the previous time so a wrong match can be undone.
+    @discardableResult func markSeen(_ id: String, at date: Date? = .now) -> Date? {
+        let previous = lastSeen[id]
+        lastSeen[id] = date
+        try? JSONEncoder().encode(lastSeen).write(to: seenURL)
+        return previous
+    }
     func samples(_ id: String) -> Int { gallery[id]?.count ?? 0 }
 
     func enroll(_ id: String, _ face: FaceHit) {
