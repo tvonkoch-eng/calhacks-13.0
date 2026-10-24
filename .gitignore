@@ -3,3 +3,4 @@ build/
 DerivedData/
 .DS_Store
 build-sim/
+Secrets.xcconfig

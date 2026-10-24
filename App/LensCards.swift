@@ -4,48 +4,41 @@ import UIKit
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
 /// who they are and three lines of background.
 enum LensCards {
-    static func working() -> FlexBox {
-        FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
-            Icon(name: .eye)
-            Text("Recognizing", style: .heading)
+    /// A conversation answer: the answer big, the question it answers small underneath.
+    static func answer(_ card: AnswerCard) -> FlexBox {
+        let headline = card.answer.isEmpty ? "\u{2026}" : card.answer
+        let echo = card.echo
+        return FlexBox(direction: .column, spacing: 8) {
+            Text(headline, style: .heading)
+            Text(echo, style: .meta, color: .secondary)
         }
         .padding(24)
         .background(.card)
     }
 
-    static func card(
-        for result: Identification,
+    /// The identity experience on the lens. Idle: just the bottom row, floating. With someone
+    /// identified: a card with their photo, name, role and background, over the same bottom row.
+    /// The bottom row is the people-met counter on the left and Identify on the right; Identify is
+    /// the only control and always has focus, so a pinch presses it.
+    static func hud(
+        result: Identification,
         avatar: (String) -> UIImage?,
-        hasFaces: Bool,
-        identify: @escaping @Sendable () -> Void,
-        dismiss: @escaping @Sendable () -> Void
+        identifying: Bool,
+        confirming: Bool,
+        connected: Int,
+        identify: @escaping @Sendable () -> Void
     ) -> FlexBox {
-        switch result {
-        case .ready:
-            return FlexBox(direction: .column, spacing: 14) {
-                FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
-                    Icon(name: .smartGlasses)
-                    FlexBox(direction: .column, spacing: 2) {
-                        Text("Ready", style: .heading)
-                        Text("Look at someone, then identify", style: .meta, color: .secondary)
-                    }
-                }
-                Button(label: "Identify", style: .primary, iconName: .eye, onClick: identify)
-            }
-            .padding(24)
-            .background(.card)
+        let label = identifying ? "Identifying" : confirming ? "Are you sure?" : "Identify"
+        let bottom = bottomRow(label: label, icon: confirming ? .checkmark : .eye, connected: connected, identify: identify)
 
+        switch result {
         case .known(let match, _):
             let person = match.person
             let photo = avatar(person.id)
             let details = Array(person.details.prefix(3))
             return FlexBox(direction: .column, spacing: 16) {
                 FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
-                    if let photo {
-                        Image(image: photo, sizePreset: .icon, cornerRadius: .medium)
-                    } else {
-                        Icon(name: .personCircle)
-                    }
+                    if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
                     FlexBox(direction: .column, spacing: 2) {
                         Text(person.name, style: .heading)
                         Text(person.role, style: .meta, color: .secondary)
@@ -55,57 +48,77 @@ enum LensCards {
                     for detail in details {
                         FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
                             Icon(name: icon(detail.kind), style: .outline)
-                            Text(detail.text, style: .body)
+                            Text(detail.text, style: .body).flexShrink(1)
                         }
                     }
                 }
-                ButtonGroup {
-                    Button(label: "Done", style: .primary, iconName: .checkmark, onClick: dismiss)
-                        .actionRole(.primary)
-                    Button(label: "Again", style: .secondary, iconName: .twoArrowsClockwise, onClick: identify)
-                }
+                bottom
             }
-            .padding(24)
+            .padding(22)
             .background(.card)
 
-        case .unknown:
-            return message(icon: .person, title: "No one saved yet", detail: "Add people in the app",
-                           identify: identify, dismiss: dismiss)
-
-        case .noFace:
-            return message(icon: .eye, title: "No one in view", detail: "Look at them and try again",
-                           identify: identify, dismiss: dismiss)
-        }
-    }
-
-    private static func message(
-        icon: IconName, title: String, detail: String,
-        identify: @escaping @Sendable () -> Void, dismiss: @escaping @Sendable () -> Void
-    ) -> FlexBox {
-        FlexBox(direction: .column, spacing: 14) {
-            FlexBox(direction: .row, spacing: 12, crossAlignment: .center) {
-                Icon(name: icon)
-                FlexBox(direction: .column, spacing: 2) {
+        case .noFace where !identifying, .unknown where !identifying:
+            let (title, subtitle) = message(for: result)
+            return FlexBox(direction: .column, spacing: 16) {
+                FlexBox(direction: .column, spacing: 4) {
                     Text(title, style: .heading)
-                    Text(detail, style: .meta, color: .secondary)
+                    Text(subtitle, style: .meta, color: .secondary)
                 }
+                bottom
             }
-            ButtonGroup {
-                Button(label: "Again", style: .primary, iconName: .twoArrowsClockwise, onClick: identify)
-                    .actionRole(.primary)
-                Button(label: "Done", style: .secondary, iconName: .checkmark, onClick: dismiss)
-            }
+            .padding(22)
+            .background(.card)
+
+        default:
+            return FlexBox(direction: .column) { bottom }.padding(20)
         }
-        .padding(24)
-        .background(.card)
     }
 
+    private static func bottomRow(label: String, icon: IconName, connected: Int,
+                                  identify: @escaping @Sendable () -> Void) -> FlexBox {
+        let badge = counterBadge(connected)
+        return FlexBox(direction: .row, spacing: 8, crossAlignment: .center) {
+            FlexBox(direction: .row, spacing: 6, crossAlignment: .center) {
+                Icon(name: .person, style: .outline)
+                if let badge { Image(image: badge, sizePreset: .icon) }
+            }
+            .flexGrow(1)
+            ButtonGroup(alignment: .end) {
+                Button(label: label, style: .primary, iconName: icon, onClick: identify)
+                    .actionRole(.primary)
+            }
+        }
+    }
+
+    private static func message(for result: Identification) -> (String, String) {
+        if case .unknown = result { return ("No one saved yet", "Add people in the app") }
+        return ("No one in view", "Face them and try again")
+    }
+
+    /// No plain briefcase exists in the lens icon set (crossBriefcase is a first-aid kit).
     private static func icon(_ kind: Person.Kind) -> IconName {
         switch kind {
         case .school: .graduationCap
-        case .work: .crossBriefcase
+        case .work: .lightBulb
         case .from: .house
         case .interests: .heart
+        }
+    }
+
+    /// A small green tag with the count in it. The lens text has no colors, so the tag is drawn.
+    private static func counterBadge(_ count: Int) -> UIImage? {
+        let size = CGSize(width: 48, height: 48)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            UIColor(red: 0.20, green: 0.78, blue: 0.45, alpha: 1).setFill()
+            UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()
+            let text = "\(count)" as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: count > 9 ? 22 : 28, weight: .bold),
+                .foregroundColor: UIColor.white,
+            ]
+            let textSize = text.size(withAttributes: attributes)
+            text.draw(at: CGPoint(x: (size.width - textSize.width) / 2, y: (size.height - textSize.height) / 2),
+                      withAttributes: attributes)
         }
     }
 }
