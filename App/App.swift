@@ -122,7 +122,7 @@ struct HomeView: View {
                 // 300pt panel above the header blacked out the app on device.
                 LensPanel(lens: glasses.mockLens, pov: glasses.pov, mocking: glasses.mocking,
                           connected: glasses.connected, identifying: glasses.identifying,
-                          shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
+                          cameraNote: glasses.cameraNote, shot: glasses.lensShot, avatar: { store.lensAvatar($0) })
                 #endif
                 header
                 ScrollView {
@@ -1037,6 +1037,8 @@ struct LensPanel: View {
     let mocking: Bool
     let connected: Bool
     let identifying: Bool
+    /// Why there's no picture, in words: starting, paused, reconnecting.
+    var cameraNote: String = ""
     /// What was last written to the lens, for the mirror. Nil when nothing is on it.
     let shot: LensShot?
     let avatar: (String) -> UIImage?
@@ -1067,7 +1069,8 @@ struct LensPanel: View {
                     if let pov {
                         Image(uiImage: pov).resizable().aspectRatio(contentMode: .fill)
                     } else {
-                        Text(connected ? "Waiting for frames" : "Not connected")
+                        Text(cameraNote.isEmpty ? (connected ? "Starting camera…" : "Not connected") : cameraNote)
+                            .multilineTextAlignment(.center).padding(.horizontal, 8)
                             .font(.caption2).foregroundStyle(Color(.systemGray))
                     }
                 }

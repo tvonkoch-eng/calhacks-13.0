@@ -73,8 +73,11 @@ enum Identification {
     @ObservationIgnored private var frameRequest = UUID()
     @ObservationIgnored private let worker = DispatchQueue(label: "glasses-faces", qos: .userInitiated)
     @ObservationIgnored private var streamLive = false
-    /// Set when the stream reports an error or wedges; the next frame request rebuilds the camera.
-    @ObservationIgnored private var streamBroken = false
+    /// When the current camera's stream was started, so its first frame gets `firstFrameGrace`.
+    @ObservationIgnored private var streamStartedAt = Date.distantPast
+    /// The SDK's own word on the stream (streaming / paused / waitingForDevice …), for the watchdog
+    /// and the phone. Paused is the glasses' decision (folded, off your face, too hot), not a fault.
+    private(set) var streamState = "none"
     @ObservationIgnored private var cameraTokens: [any AnyListenerToken] = []
     /// Medium (504x896) at 5 fps: faces at talking distance are still ~150 px, and the radio keeps
     /// headroom for lens writes and the Neural Band.
@@ -118,12 +121,30 @@ enum Identification {
     #endif
     /// Set by Disconnect so we don't reconnect behind the user's back.
     @ObservationIgnored private var userDisconnected = false
-    @ObservationIgnored private var lastAutoReconnect = Date.distantPast
+    /// One pending recovery at a time, retried with backoff for as long as it takes. A recovery is
+    /// never dropped: the old 20/30 s rate limits returned without doing anything, and that is the
+    /// state the app got stuck in ("Waiting for frames" with no camera and nothing scheduled).
+    @ObservationIgnored private var recoveryTask: Task<Void, Never>? {
+        didSet { recovering = recoveryTask != nil }
+    }
+    private(set) var recovering = false
+    /// Why the camera tile has no picture, for the phone.
+    var cameraNote: String {
+        if !connected { return recovering || connecting ? "Reconnecting to your glasses…" : status }
+        if recovering { return "Camera stalled, reconnecting…" }
+        if streamState == "paused" { return "Glasses paused the camera (folded or off your face)" }
+        if streamState == "waitingForDevice" { return "Waiting for the glasses…" }
+        return "Starting camera…"
+    }
+    @ObservationIgnored private var recoveryAttempt = 0
+    /// Set while only the wearer can fix it (approve in Meta AI, grant camera, update the glasses):
+    /// retrying then would open Meta AI every 30 s. Cleared on the next connect.
+    @ObservationIgnored private var blockedOnUser = false
+    /// The camera restart is tried once per stall; if frames don't come back, the session goes.
+    @ObservationIgnored private var cameraRestartTried = false
     /// When a frame last actually arrived. The watchdog below is the only thing that notices a
     /// stream that has gone quiet without erroring — the watch path has no timeout of its own.
     @ObservationIgnored private var lastFrameAt = Date.distantPast
-    @ObservationIgnored private var lastRebuild = Date.distantPast
-    @ObservationIgnored private var lastSessionRecovery = Date.distantPast
     @ObservationIgnored private var frameWatchdog: Task<Void, Never>?
     @ObservationIgnored private var watchTask: Task<Void, Never>?
     /// Pressing Identify on the glasses while someone is on screen asks first, so a stray pinch
@@ -131,7 +152,12 @@ enum Identification {
     @ObservationIgnored private var confirming = false
     @ObservationIgnored private var confirmTask: Task<Void, Never>?
     @ObservationIgnored private var lastSend = Date.distantPast
-    @ObservationIgnored private var pendingSend: Task<Void, Never>?
+    /// Lens writes go out one at a time, newest wins. Overlapping sends made the display answer
+    /// "Superseded by new display request" (13 times in one session) and loaded the shared radio.
+    @ObservationIgnored private var queuedView: FlexBox?
+    @ObservationIgnored private var lensWriter: Task<Void, Never>?
+    @ObservationIgnored private var writeWaiters: [CheckedContinuation<Bool, Never>] = []
+    @ObservationIgnored private var lastWriteOK = false
     /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
     @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
@@ -235,12 +261,14 @@ enum Identification {
         guard Self.ready else { status = "Glasses SDK unavailable here"; return }
         guard !connected, !connecting else { return }
         userDisconnected = false
+        blockedOnUser = false
         connecting = true
         defer { connecting = false }
         let wearables = Wearables.shared
         do {
             if wearables.registrationState != .registered {
                 status = "Approve in Meta AI…"
+                blockedOnUser = true
                 try await wearables.startRegistration()
                 return
             }
@@ -258,6 +286,7 @@ enum Identification {
                   !(device.linkState == .connected && device.compatibility() == .compatible) {
                 if device.compatibility() == .deviceUpdateRequired {
                     status = "Update your glasses in the Meta AI app"
+                    blockedOnUser = true
                     return
                 }
                 try await Task.sleep(for: .milliseconds(100))
@@ -270,11 +299,17 @@ enum Identification {
                     status = "Allow camera access in Meta AI"
                     guard try await wearables.requestPermission(.camera) == .granted else {
                         status = "Camera access was denied in Meta AI"
+                        blockedOnUser = true
                         return
                     }
                 }
             } catch {
                 status = Self.message(for: error)
+                // No glasses nearby is worth retrying; anything else needs the wearer.
+                switch error {
+                case .noDevice, .noDeviceWithConnection, .connectionError, .requestTimeout, .internalError: break
+                default: blockedOnUser = true
+                }
                 return
             }
 
@@ -288,20 +323,39 @@ enum Identification {
             // Subscribe before start(): a stream created afterwards can miss the .started transition.
             let states = session.stateStream()
             try session.start()
-            for await state in states where state == .started { break }
+            // Never wait forever on .started: a session that doesn't start in 10 s is retried.
+            let started = await withTaskGroup(of: Bool.self) { group in
+                group.addTask { for await state in states where state == .started { return true }; return false }
+                group.addTask { try? await Task.sleep(for: .seconds(10)); return false }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+            guard started else {
+                SpeedLog.record(["event": "connectError", "error": "sessionStartTimeout"])
+                session.stop()
+                self.session = nil
+                tokens = []
+                scheduleRecovery(reason: "sessionStartTimeout")
+                return
+            }
 
             // Standalone photo capture failed instantly on every scan (0 bytes in ~20 ms), so frames come
             // from the stream. Medium (504x896) keeps Bluetooth load down; faces at talking distance
             // are still ~150 px.
             guard let camera = try session.addCamera(config: streamConfig) else {
                 status = "Glasses camera unavailable"
+                session.stop()
+                self.session = nil
+                tokens = []
+                scheduleRecovery(reason: "noCamera")
                 return
             }
             attachCamera(camera)
             // Bring the stream up now, not on the first press: spinning it up cost ~830 ms of
             // every identify, and it is the single biggest item on the clock.
             startStream()
-            lastFrameAt = Date()
+            cameraRestartTried = false
             watchFrames()
 
             if wearables.deviceForIdentifier(found)?.supportsDisplay() == true {
@@ -330,6 +384,10 @@ enum Identification {
         } catch {
             SpeedLog.record(["event": "connectError", "error": "\(error)"])
             status = (error as? LocalizedError)?.errorDescription ?? "Couldn't connect to your glasses. Try again."
+            // Half-built: drop it, and try again rather than leave a dead session behind.
+            session?.stop()
+            teardown(status: status, keepContext: true)
+            scheduleRecovery(reason: "connectError")
         }
     }
 
@@ -352,24 +410,46 @@ enum Identification {
     }
 
     /// The device decides when a session pauses or ends (band hiccups, another app, folding the
-    /// glasses). Log every transition; on an unexpected stop, try one reconnect.
+    /// glasses). Log every transition; an unexpected stop is recovered like any other fault.
     private func sessionChanged(_ state: String, stopped: Bool) {
         SpeedLog.record(["event": "session", "state": state])
         guard stopped, connected else { return }
-        teardown(status: "Glasses disconnected")
-        reconnectSoon(reason: "sessionStopped")
+        teardown(status: "Reconnecting to your glasses…", keepContext: true)
+        scheduleRecovery(reason: "sessionStopped")
     }
 
-    /// At most one automatic reconnect every 30 s, so a device that keeps ending the session
-    /// can't put us in a loop.
-    private func reconnectSoon(reason: String) {
-        guard !userDisconnected, Date().timeIntervalSince(lastAutoReconnect) > 30 else { return }
-        lastAutoReconnect = Date()
-        SpeedLog.record(["event": "reconnect", "reason": reason])
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            await self?.connect()
+    /// The one way back from any fault: stop what's left, wait until it has actually stopped, and
+    /// connect again. Backoff 0, 2, 4, 8, 15, then every 30 s, for as long as it takes; it resets
+    /// once frames have flowed for 30 s. Only Disconnect ends it.
+    private func scheduleRecovery(reason: String) {
+        guard !userDisconnected, !blockedOnUser, recoveryTask == nil else { return }
+        let ladder: [Double] = [0, 2, 4, 8, 15, 30]
+        let delay = ladder[min(recoveryAttempt, ladder.count - 1)]
+        recoveryAttempt += 1
+        SpeedLog.record(["event": "recover", "reason": reason, "attempt": recoveryAttempt, "delayS": delay])
+        if !connected || status.hasPrefix("Connected") { status = "Reconnecting to your glasses…" }
+        recoveryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled, !self.userDisconnected else { self?.recoveryTask = nil; return }
+            await self.restartSession()
+            self.recoveryTask = nil
+            if !self.connected, !self.connecting { self.scheduleRecovery(reason: "stillDown") }
         }
+    }
+
+    private func restartSession() async {
+        if let old = session {
+            display?.stop()
+            old.stop()
+            // Starting a new session while the old one is still stopping got the new one stopped
+            // too (17:33:15 in Toby's log). Wait for the old one to finish, up to 4 s.
+            let deadline = Date().addingTimeInterval(4)
+            while old.state != .stopped, old.state != .idle, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        if connected || session != nil { teardown(status: "Reconnecting to your glasses…", keepContext: true) }
+        await connect()
     }
 
     /// Reconnect when the glasses come back (unfolded, back in range).
@@ -380,7 +460,11 @@ enum Identification {
             var available = true
             for await id in finder.activeDeviceStream() {
                 guard let self else { return }
-                if id != nil, !available, !self.connected, !self.connecting { self.reconnectSoon(reason: "glassesAvailable") }
+                if id != nil, !available, !self.connected, !self.connecting {
+                    // Back in range: skip the backoff.
+                    self.recoveryTask?.cancel(); self.recoveryTask = nil; self.recoveryAttempt = 0
+                    self.scheduleRecovery(reason: "glassesAvailable")
+                }
                 available = id != nil
             }
         }
@@ -388,6 +472,9 @@ enum Identification {
 
     func disconnect() {
         userDisconnected = true
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        recoveryAttempt = 0
         display?.stop()
         session?.stop()
         teardown(status: "Not connected")
@@ -653,23 +740,30 @@ enum Identification {
         return store.match(face.embedding).map { .known($0, face) } ?? .unknown(face)
     }
 
-    private func teardown(status: String) {
+    /// `keepContext`: a reconnect, not a goodbye. The person on the card and the aid's lens survive
+    /// it, so the lens comes back showing what it showed.
+    private func teardown(status: String, keepContext: Bool = false) {
         inputTask?.cancel()
         inputTask = nil
         tokens = []
         releaseCameraTokens()
-        streamBroken = false
         camera = nil
         display = nil
         displayReady = false
         session = nil
         connected = false
-        pendingSend?.cancel()
-        pendingSend = nil
-        aidLens = LensView()
-        bioTask?.cancel()
-        result = .ready
+        lensWriter?.cancel()
+        lensWriter = nil
+        queuedView = nil
+        finishWrites(false)
+        if !keepContext {
+            aidLens = LensView()
+            bioTask?.cancel()
+            result = .ready
+            resultAt = .distantPast
+        }
         streamLive = false
+        streamState = "none"
         frameWatchdog?.cancel()
         frameWatchdog = nil
         lensShot = nil
@@ -679,7 +773,6 @@ enum Identification {
         autoBusy = false
         tracker.reset()
         announced.removeAll()
-        resultAt = .distantPast
         resumeFrame(nil)
         self.status = status
     }
@@ -705,19 +798,18 @@ enum Identification {
 
     // MARK: - Camera
 
-    /// The next frame from the glasses camera, starting the stream if it isn't running.
+    /// The next frame from the glasses camera, for a press. Never repairs anything itself: a
+    /// press used to rebuild the camera on a stale error flag, and that tore down a session that
+    /// was delivering 2 fps (17:33:14 in Toby's log). Faults are the watchdog's job.
     private func nextFrame() async -> CIImage? {
-        if let image = await frame() { return image }
-        // Wedged. Rebuild the camera off the session and give it one more go.
-        streamBroken = true
-        if let image = await frame() { return image }
-        // Five seconds of nothing through a brand-new camera: the session is the problem.
-        recoverSession(reason: "noFrames")
-        return nil
+        guard camera != nil else {
+            scheduleRecovery(reason: "pressNoCamera")
+            return nil
+        }
+        return await frame()
     }
 
     private func frame() async -> CIImage? {
-        if streamBroken || camera == nil { rebuildCamera() }
         guard camera != nil else { return nil }
         startStream()
         let request = UUID()
@@ -734,41 +826,49 @@ enum Identification {
         }
     }
 
-    /// A camera rebuild fixes a wedged stream; it cannot fix a wedged session. When frames stay
-    /// gone after a rebuild, tear the session down and build a new one — that is the reset the SDK
-    /// actually honours, and before this the only way out was killing the app.
-    private func recoverSession(reason: String) {
-        guard !userDisconnected, Date().timeIntervalSince(lastSessionRecovery) > 20 else { return }
-        lastSessionRecovery = Date()
-        SpeedLog.record(["event": "sessionRecover", "reason": reason])
-        display?.stop()
-        session?.stop()
-        teardown(status: "Reconnecting to your glasses…")
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1))
-            await self?.connect()
-        }
-    }
+    /// The first frame of a new stream took 6-12 s on Toby's glasses, every time. The old 6 s stall
+    /// limit fired before it arrived and tore down a stream that was about to work.
+    @ObservationIgnored private var firstFrameGrace: TimeInterval { TimeInterval(Tuning.float("firstFrameGrace", 15)) }
+    /// Once frames have flowed (2 fps), this long without one is a stall.
+    @ObservationIgnored private var stallAfter: TimeInterval { TimeInterval(Tuning.float("stallAfter", 6)) }
 
     /// The watch path waits on frames that simply arrive, so a silent stream looks exactly like an
-    /// empty room — no timeout fires and nothing recovers until someone presses the button. This
-    /// notices the silence instead: rebuild the camera, and if that was already tried, take the
-    /// session with it.
+    /// empty room. This notices the silence and repairs it, and it is the only thing that does:
+    /// first a camera restart, then the session, then the session again with backoff. It never
+    /// stops watching while connected, and never leaves the app connected without a camera.
     private func watchFrames() {
         frameWatchdog?.cancel()
         frameWatchdog = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                guard let self else { return }
-                guard self.connected, self.streamLive, !self.identifying else { continue }
-                let quiet = Date().timeIntervalSince(self.lastFrameAt)
-                guard quiet > 6 else { continue }
-                SpeedLog.record(["event": "frameStall", "quietMs": (quiet * 1000).rounded()])
-                if Date().timeIntervalSince(self.lastRebuild) < 12 {
-                    self.recoverSession(reason: "frameStall")
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
+                guard self.connected, self.recoveryTask == nil else { continue }
+                guard self.camera != nil else {
+                    self.scheduleRecovery(reason: "noCamera")
+                    continue
+                }
+                let now = Date()
+                let flowing = self.lastFrameAt > self.streamStartedAt
+                // Frames for 30 s straight: whatever went wrong before is over.
+                if flowing, now.timeIntervalSince(self.lastFrameAt) < 2,
+                   now.timeIntervalSince(self.streamStartedAt) > 30, self.recoveryAttempt > 0 || self.cameraRestartTried {
+                    self.recoveryAttempt = 0
+                    self.cameraRestartTried = false
+                }
+                // Paused is the glasses' call (folded, off your face, thermal). Give it a minute.
+                let paused = self.streamState == "paused" || self.streamState == "waitingForDevice"
+                let quiet = now.timeIntervalSince(flowing ? self.lastFrameAt : self.streamStartedAt)
+                // A stream the SDK itself calls stopped won't come back by waiting.
+                let dead = self.streamState == "stopped"
+                let limit = paused ? 60 : dead ? 3 : (flowing ? self.stallAfter : self.firstFrameGrace)
+                guard quiet > limit else { continue }
+                SpeedLog.record(["event": "frameStall", "quietMs": (quiet * 1000).rounded(),
+                                 "flowing": flowing, "stream": self.streamState])
+                if self.cameraRestartTried {
+                    self.scheduleRecovery(reason: "frameStall")
                 } else {
-                    self.rebuildCamera()
-                    self.startStream()
+                    self.cameraRestartTried = true
+                    await self.restartCamera()
                 }
             }
         }
@@ -778,32 +878,35 @@ enum Identification {
         guard let camera, !streamLive else { return }
         camera.stream.start()
         streamLive = true
+        streamStartedAt = Date()
     }
 
-    /// Replaces the camera after a stream error. Stopping a stream is one-way: the SDK answers a
-    /// later start() with "Critical error, the stream should end" and never sends another frame,
-    /// which is why every identify after the first one used to time out. Recovery is a fresh
-    /// addCamera on the same session.
-    ///
-    /// It does NOT stop the old camera. Doing that is the same one-way stop by another name: live
-    /// on Toby's phone this loop ran nine times, each rebuild answered by another critical error,
-    /// and the session never produced a frame again. Drop the reference and let it go; when even a
-    /// fresh camera stays quiet, `recoverSession` replaces the whole session instead.
-    private func rebuildCamera() {
+    /// A fresh camera on the same session: the cheap repair. The old code added a new camera while
+    /// the old one was still active, which the SDK refuses (capabilityAlreadyActive): it failed 4
+    /// times out of 4. Stop the old one and wait for it to report stopped first. If that still
+    /// fails, the session goes.
+    private func restartCamera() async {
         guard let session else { return }
-        SpeedLog.record(["event": "cameraRebuild"])
-        lastRebuild = Date()
+        SpeedLog.record(["event": "cameraRestart"])
+        let old = camera
         releaseCameraTokens()
         camera = nil
         streamLive = false
-        streamBroken = false
-        guard let fresh = (try? session.addCamera(config: streamConfig)) ?? nil else {
-            SpeedLog.record(["event": "cameraRebuildFailed"])
-            recoverSession(reason: "addCameraFailed")
-            return
+        streamState = "none"
+        if let old {
+            old.stop()
+            let deadline = Date().addingTimeInterval(3)
+            while old.state != .stopped, Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
         }
-        attachCamera(fresh)
-        lastFrameAt = Date()
+        do {
+            guard let fresh = try session.addCamera(config: streamConfig) else { throw CancellationError() }
+            attachCamera(fresh)
+            startStream()
+            SpeedLog.record(["event": "cameraRestartOK"])
+        } catch {
+            SpeedLog.record(["event": "cameraRestartFailed", "error": "\(error)"])
+            scheduleRecovery(reason: "cameraRestartFailed")
+        }
     }
 
     private func attachCamera(_ camera: Camera) {
@@ -841,11 +944,20 @@ enum Identification {
                 await self.autoScan(ci)
             }
         })
-        cameraTokens.append(camera.stream.errorPublisher.listen { [weak self] error in
+        // Logged only. "Critical error, the stream should end" arrived at 17:32:17 and frames kept
+        // coming at 2 fps for another minute; treating it as fatal is what broke a working stream.
+        // If frames really stop, the watchdog sees it.
+        cameraTokens.append(camera.stream.errorPublisher.listen { error in
             let message = error.localizedDescription
+            Task { @MainActor in SpeedLog.record(["event": "streamError", "error": message]) }
+        })
+        cameraTokens.append(camera.stream.statePublisher.listen { [weak self] state in
             Task { @MainActor in
-                SpeedLog.record(["event": "streamError", "error": message])
-                self?.streamBroken = true
+                guard let self else { return }
+                let name = "\(state)"
+                guard name != self.streamState else { return }
+                self.streamState = name
+                SpeedLog.record(["event": "stream", "state": name])
             }
         })
         self.camera = camera
@@ -901,7 +1013,7 @@ enum Identification {
         guard Tuning.bool("liveRestream", false) else { return }
         guard connected, let live = liveStreamSettings, live != streamSettings else { return }
         SpeedLog.record(["event": "restream", "from": live, "to": streamSettings])
-        rebuildCamera()
+        Task { await restartCamera() }
     }
 
     // MARK: - Auto-identify
@@ -1116,51 +1228,52 @@ enum Identification {
         )
     }
 
-    /// Rate-limited lens write. The first frame of an answer goes out immediately; the stream of
-    /// token updates behind it collapses into one frame every `minSendInterval`, last value wins.
+    /// Lens writes, one at a time and newest wins: a burst of updates (an answer streaming in)
+    /// collapses to the latest card every `minSendInterval`, and no write ever overlaps another.
     private func send(_ view: FlexBox) {
-        pendingSend?.cancel()
-        let wait = minSendInterval - Date().timeIntervalSince(lastSend)
-        guard wait > 0 else {
-            lastSend = Date()
-            Task { await self.write(view) }
-            return
-        }
-        pendingSend = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(wait))
-            guard !Task.isCancelled, let self, let display = self.display else { return }
-            self.lastSend = Date()
-            _ = display
-            await self.write(view)
+        queuedView = view
+        guard lensWriter == nil else { return }
+        lensWriter = Task { [weak self] in
+            while let self, !Task.isCancelled, self.queuedView != nil {
+                let wait = self.minSendInterval - Date().timeIntervalSince(self.lastSend)
+                if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                guard !Task.isCancelled, let view = self.queuedView else { break }
+                self.queuedView = nil
+                self.lastSend = Date()
+                self.lastWriteOK = await self.write(view)
+            }
+            self?.lensWriter = nil
+            self?.finishWrites(self?.lastWriteOK ?? false)
         }
     }
 
-    private func write(_ view: FlexBox) async {
-        guard let display else { return }
+    private func finishWrites(_ ok: Bool) {
+        let waiters = writeWaiters
+        writeWaiters = []
+        for waiter in waiters { waiter.resume(returning: ok) }
+    }
+
+    @discardableResult
+    private func write(_ view: FlexBox) async -> Bool {
+        guard let display else { return false }
         let start = CFAbsoluteTimeGetCurrent()
         do {
             try await display.send(view)
             let elapsed = ms(since: start)
             if elapsed > 1000 { SpeedLog.record(["event": "lensSlow", "ms": elapsed]) }
-        } catch {
-            SpeedLog.record(["event": "lensError", "error": "\(error)"])
-        }
-    }
-
-    /// Sends the lens as it now stands (a fresh result wins it, see `LensPolicy`) and waits for
-    /// it, so the speed log can time it; false when there's no lens.
-    private func sendLens() async -> Bool {
-        guard let display, displayReady else { return false }
-        let view = lensView()
-        pendingSend?.cancel()
-        lastSend = Date()
-        do {
-            try await display.send(view)
+            return true
         } catch {
             SpeedLog.record(["event": "lensError", "error": "\(error)"])
             return false
         }
-        return true
+    }
+
+    /// Puts the lens as it now stands through the same queue (a fresh result wins it, see
+    /// `LensPolicy`) and waits until it is on the glasses, so the speed log can time it.
+    private func sendLens() async -> Bool {
+        guard display != nil, displayReady else { return false }
+        send(lensView())
+        return await withCheckedContinuation { writeWaiters.append($0) }
     }
 }
 
