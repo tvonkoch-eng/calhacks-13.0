@@ -1196,16 +1196,6 @@ struct LensOptics {
     /// The angle a centred span of frame pixels covers.
     func degrees(_ pixels: CGFloat) -> CGFloat { 2 * atan(pixels / 2 / focal) * 180 / .pi }
 
-    /// A landscape window `degrees` wide, centred on the lens and kept inside the frame: never
-    /// shorter than the lens with a margin, and never taller than wide.
-    func window(degrees: CGFloat) -> CGRect {
-        let width = min(frame.width, max(side * 1.2, 2 * focal * tan(degrees / 2 * .pi / 180)))
-        let height = min(frame.height, width, max(side * 1.12, width * 9 / 16))
-        let x = min(max(center.x - width / 2, 0), frame.width - width)
-        let y = min(max(center.y - height / 2, 0), frame.height - height)
-        return CGRect(x: x, y: y, width: width, height: height)
-    }
-
     /// The panel's side in frame pixels.
     var side: CGFloat { 2 * focal * tan(lensDegrees / 2 * .pi / 180) }
 
@@ -1266,8 +1256,6 @@ struct LensPanel: View {
     let avatar: (String) -> UIImage?
     /// The pixel size of the frames off the camera; nil until the first one lands.
     var frameSize: CGSize? = nil
-    /// Tapped out to the whole scene across; the default is zoomed in around the lens.
-    @State private var wide = false
 
     private var state: (String, Color) {
         if identifying { return ("Looking", .orange) }
@@ -1319,37 +1307,57 @@ struct LensPanel: View {
     /// `streamRes` high, the default: what the canvas is until a real frame says otherwise.
     private static let defaultFrame = CGSize(width: 720, height: 1280)
 
-    /// What the wearer sees: the camera frame, with the lens composited on top of it.
+    /// What the wearer sees: the camera frame, with the lens laid over it.
     ///
-    /// Everything is authored in camera pixels and the finished picture is shrunk to fit the
-    /// phone. The display is additive: it can only add light, so its black is see-through.
-    /// Screen-blending it onto the frame does the same thing, and the card's slate fill lifts the
-    /// scene behind it the way it does on glass.
+    /// The camera is the frame's full width, 4:3, centred where the wearer is looking. The lens is
+    /// deliberately NOT true to scale: at its real 14° it is a fingernail on a phone and the card
+    /// can't be read. It is drawn large in the lower two-thirds of the panel, under where the
+    /// display sits across, and only the lower part of the 600 px panel is shown — the renderer
+    /// stacks cards on the floor of the panel, so that is where everything is. `lensShown` is the
+    /// share of the panel's height shown (0.6 = its bottom 360 px).
     ///
-    /// The lens is placed by angle, not by pixel, because that is what the eye sees: the camera
-    /// and the display share a direction of view, not a pixel grid. See `LensOptics`.
+    /// Cards are drawn opaque rather than screen-blended: on a phone a see-through card over a
+    /// busy scene is unreadable, which is the opposite of what the panel is for.
     private var wearerView: some View {
         let frame = frameSize ?? Self.defaultFrame
         let optics = LensOptics(frame: frame)
-        let side = optics.side
-        let center = optics.center
-        // A 16:9 band of the portrait frame around the lens: `eyeZoomDeg` of scene across by
-        // default, so the lens is about half the panel and the card can be read; a tap shows the
-        // frame's full width (all 56° the camera sees), true to scale and tiny. Either way the
-        // lens keeps its true size relative to the scene behind it.
-        let window = optics.window(degrees: wide ? 180 : CGFloat(Tuning.float("eyeZoomDeg", 30)))
+        let window: CGRect = {
+            let height = min(frame.height, frame.width * 3 / 4)
+            let y = min(max(optics.center.y - height / 2, 0), frame.height - height)
+            return CGRect(x: 0, y: y, width: frame.width, height: height)
+        }()
+        let shown = LensMetrics.canvas * CGFloat(Tuning.float("lensShown", 0.6))
         return GeometryReader { geo in
+            let k = geo.size.width / window.width
+            let margin: CGFloat = 8
+            // Two-thirds of the panel's height, and no wider than the panel.
+            let scale = min((geo.size.height * 2 / 3 - margin) / shown,
+                            (geo.size.width - 2 * margin) / LensMetrics.canvas)
+            let box = CGSize(width: LensMetrics.canvas * scale, height: shown * scale)
+            // Across, under where the display really is; clamped so it stays on the panel.
+            let x = min(max((optics.center.x - window.minX) * k, box.width / 2 + margin),
+                        geo.size.width - box.width / 2 - margin)
             ZStack(alignment: .topLeading) {
-                Color.black
-                if let pov {
-                    Image(uiImage: pov).resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: frame.width, height: frame.height)
-                } else {
-                    Text(cameraNote.isEmpty ? (connected ? "Starting camera…" : "Not connected") : cameraNote)
-                        .font(.system(size: 40)).foregroundStyle(Color(.systemGray))
-                        .frame(width: frame.width, height: frame.height * 0.3)
+                ZStack(alignment: .topLeading) {
+                    Color.black
+                    if let pov {
+                        Image(uiImage: pov).resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: frame.width, height: frame.height)
+                    } else {
+                        Text(cameraNote.isEmpty ? (connected ? "Starting camera…" : "Not connected") : cameraNote)
+                            .font(.system(size: 40)).foregroundStyle(Color(.systemGray))
+                            .frame(width: frame.width, height: frame.height * 0.3)
+                    }
                 }
-                // Laid out at the lens's own 600 and shrunk, so line breaks land where they do on glass.
+                .frame(width: frame.width, height: frame.height)
+                .offset(x: -window.minX, y: -window.minY)
+                .frame(width: window.width, height: window.height, alignment: .topLeading)
+                .clipped()
+                .scaleEffect(k, anchor: .topLeading)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+
+                // Laid out at the lens's own 600 and scaled, so line breaks land where they do on
+                // glass; only the bottom `shown` of it is kept.
                 Group {
                     if let lens {
                         MockLens(view: lens)
@@ -1358,38 +1366,22 @@ struct LensPanel: View {
                     }
                 }
                 .frame(width: LensMetrics.canvas, height: LensMetrics.canvas)
-                .scaleEffect(side / LensMetrics.canvas)
-                .frame(width: side, height: side)
-                .blendMode(.screen)
-                .position(center)
-                // The edge of the display, so an empty lens still shows where it would draw.
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 3, dash: [14, 10]))
-                    .frame(width: side, height: side)
-                    .position(center)
+                .scaleEffect(scale, anchor: .bottom)
+                .frame(width: box.width, height: box.height, alignment: .bottom)
+                .clipped()
+                .opacity(Double(Tuning.float("lensOpacity", 0.95)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.white.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+                )
+                .position(x: x, y: geo.size.height - margin - box.height / 2)
             }
-            .frame(width: frame.width, height: frame.height)
-            .offset(x: -window.minX, y: -window.minY)
-            .frame(width: window.width, height: window.height, alignment: .topLeading)
-            .clipped()
-            .scaleEffect(geo.size.width / window.width, anchor: .topLeading)
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .aspectRatio(window.width / window.height, contentMode: .fit)
-        .contentShape(Rectangle())
-        .onTapGesture { withAnimation(.easeInOut(duration: 0.25)) { wide.toggle() } }
         // Height from the full width, rather than squeezed by whatever height the stack offers.
         .fixedSize(horizontal: false, vertical: true)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color(.separator)))
-        .overlay(alignment: .bottomTrailing) {
-            // Under the panel, not on it: the lens fills most of the window.
-            Text(verbatim: "\(wide ? "tap to zoom in" : "tap for full view") · scene \(Int(optics.degrees(window.width).rounded()))°×\(Int(optics.degrees(window.height).rounded()))° · lens \(Int(optics.lensDegrees.rounded()))°")
-                .lineLimit(1).minimumScaleFactor(0.6)
-                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                .offset(y: 16)
-        }
-        .padding(.bottom, 16)
     }
 
     private func tile<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
