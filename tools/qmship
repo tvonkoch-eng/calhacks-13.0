@@ -72,28 +72,36 @@ if [ -n "$(git status --porcelain)" ]; then
   say "committed $(git rev-parse --short HEAD)"
 fi
 
-# ---- 2. rebase onto the hub: collisions surface HERE, not on the Mac ----
-git fetch -q origin || { say "FETCH_FAILED — is the Mac reachable?"; exit 1; }
-BEHIND=$(git rev-list --count HEAD..origin/integration 2>/dev/null || echo 0)
-if [ "$BEHIND" != "0" ]; then
-  say "hub moved ($BEHIND commit(s) from other agents) — rebasing"
-  if ! git rebase -q origin/integration; then
-    say ""
-    say "CONFLICT with another agent's work. Nothing is lost — both versions are in git."
-    say "Files:"
-    git diff --name-only --diff-filter=U | sed 's/^/  /'
-    say ""
-    say "Fix them, then:  git add -A && git rebase --continue && $0 ..."
-    say "Or back out:     git rebase --abort"
-    exit 3
+# ---- 2+3. rebase onto the hub, then publish ----
+# Collisions surface HERE, in this sandbox, not on the Mac. With five sessions pushing, the hub
+# can also move in the gap between our rebase and our push, so retry the whole dance a few times
+# instead of making a human re-run it.
+ATTEMPT=0
+while :; do
+  ATTEMPT=$((ATTEMPT+1))
+  git fetch -q origin || { say "FETCH_FAILED — is the Mac reachable?"; exit 1; }
+  BEHIND=$(git rev-list --count HEAD..origin/integration 2>/dev/null || echo 0)
+  if [ "$BEHIND" != "0" ]; then
+    say "hub moved ($BEHIND commit(s) from other agents) — rebasing"
+    if ! git rebase -q origin/integration; then
+      say ""
+      say "CONFLICT with another agent's work. Nothing is lost — both versions are in git."
+      say "Files:"
+      git diff --name-only --diff-filter=U | sed 's/^/  /'
+      say ""
+      say "Fix them, then:  git add -A && git rebase --continue && $0 ..."
+      say "Or back out:     git rebase --abort"
+      exit 3
+    fi
   fi
-fi
-
-# ---- 3. publish ----
-if ! git push -q origin HEAD:integration; then
-  say "PUSH_REJECTED — the hub moved again mid-flight; just re-run."
-  exit 1
-fi
+  git push -q origin HEAD:integration && break
+  if [ $ATTEMPT -ge 4 ]; then
+    say "PUSH_REJECTED four times — the hub is very busy. Re-run."
+    exit 1
+  fi
+  say "push raced another agent — retrying ($ATTEMPT)"
+  sleep 1
+done
 SHA=$(git rev-parse --short HEAD)
 say "pushed $SHA  ($(( $(date +%s) - T_START ))s so far)"
 
