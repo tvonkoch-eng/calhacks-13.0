@@ -19,6 +19,13 @@ import Observation
             let listener = self.listener
             glasses?.audioSink.handler = { buffer in listener.feed(buffer) }
             glasses?.setStreamAudio(listener.mic == .glasses)
+            glasses?.onStreamAudioLost = { [weak self] reason in
+                guard let self else { return }
+                self.mic = .phone
+                self.note = reason == "micPermissionDenied"
+                    ? "Glasses mic needs microphone access in Meta AI. Using the iPhone mic."
+                    : "The glasses wouldn't stream audio. Using the iPhone mic."
+            }
         }
     }
     /// Setting the roster names the wearer: the aid is rebuilt with the isMe person's first name.

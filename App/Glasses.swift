@@ -132,9 +132,24 @@ enum Identification {
     @ObservationIgnored let audioSink = AudioSink()
     @ObservationIgnored private var audioFrames = 0
 
+    /// Called when the glasses' audio can't be had (no permission, or streams with audio keep
+    /// dying): back to video only, so the camera keeps working, and the phone mic takes over.
+    @ObservationIgnored var onStreamAudioLost: ((String) -> Void)?
+    /// Streams with audio that died before their first frame, in a row.
+    @ObservationIgnored private var audioStreamFailures = 0
+
+    private func disableStreamAudio(reason: String) {
+        guard streamAudio else { return }
+        streamAudio = false
+        audioStreamFailures = 0
+        SpeedLog.record(["event": "streamAudioDisabled", "reason": reason])
+        onStreamAudioLost?(reason)
+    }
+
     func setStreamAudio(_ on: Bool) {
         guard on != streamAudio else { return }
         streamAudio = on
+        audioStreamFailures = 0
         SpeedLog.record(["event": "streamAudio", "on": on])
         if connected { Task { await restartSession() } }
     }
@@ -318,6 +333,14 @@ enum Identification {
             let selector = SpecificDeviceSelector(device: found)
 
             do throws(PermissionError) {
+                // The glasses' mic on the stream needs its own grant; without it every stream
+                // that asks for audio dies on its first frame (18:09, five times in a row).
+                if streamAudio, try await wearables.checkPermissionStatus(.microphone) != .granted {
+                    status = "Allow microphone access in Meta AI"
+                    if try await wearables.requestPermission(.microphone) != .granted {
+                        disableStreamAudio(reason: "micPermissionDenied")
+                    }
+                }
                 if try await wearables.checkPermissionStatus(.camera) != .granted {
                     status = "Allow camera access in Meta AI"
                     guard try await wearables.requestPermission(.camera) == .granted else {
@@ -887,6 +910,14 @@ enum Identification {
                 guard quiet > limit else { continue }
                 SpeedLog.record(["event": "frameStall", "quietMs": (quiet * 1000).rounded(),
                                  "flowing": flowing, "stream": self.streamState])
+                // Audio on and the stream died before a single frame, twice: the glasses won't
+                // stream audio. Drop it rather than lose the camera too.
+                if self.streamAudio, !flowing, dead {
+                    self.audioStreamFailures += 1
+                    if self.audioStreamFailures >= 2 { self.disableStreamAudio(reason: "streamDiesWithAudio") }
+                } else if flowing {
+                    self.audioStreamFailures = 0
+                }
                 // On real glasses a camera restart "succeeds" and the new stream dies on its first
                 // frame (Critical error, 17:48:09), while a session restart is back streaming in
                 // ~2 s. So real glasses go straight to the session; only the simulator tries the camera.
