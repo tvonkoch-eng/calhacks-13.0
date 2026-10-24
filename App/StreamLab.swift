@@ -125,6 +125,7 @@ struct StreamControls: View {
 
 /// Every frame of one run. Sort by sharpness to see the best and worst the link produced.
 struct FrameRunView: View {
+    @Environment(Glasses.self) private var glasses
     let run: FrameRun
     @State private var bySharpness = false
 
@@ -154,6 +155,9 @@ struct FrameRunView: View {
         .navigationTitle(run.asked)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Feeds this run through the live matcher; go back to the home screen to watch the
+            // camera and lens tiles.
+            Button("Replay") { glasses.replay(run) }
             Button(bySharpness ? "By time" : "By sharpness") { bySharpness.toggle() }
         }
     }

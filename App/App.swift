@@ -55,6 +55,12 @@ struct CalHacksApp: App {
                             store.markSeen(String(parts[0]), at: .now.addingTimeInterval(-seconds))
                         }
                     }
+                    // REPLAY_RUN=<folder in Documents/frames> plays a recorded run through the matcher.
+                    if let name = env["REPLAY_RUN"],
+                       let run = FrameRun.load(FrameRecorder.root.appendingPathComponent(name)) {
+                        glasses.replay(run)
+                        return
+                    }
                     if let id = ProcessInfo.processInfo.environment["PREVIEW_PERSON"],
                        let person = store.people.first(where: { $0.id == id }) {
                         glasses.preview(person)

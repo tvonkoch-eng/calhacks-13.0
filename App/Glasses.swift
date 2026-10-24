@@ -677,9 +677,9 @@ enum Identification {
         lastMark = (match.person.id, store.markSeen(match.person.id))
         // Shared with the watch path: a press counts as showing this person too, so auto doesn't
         // immediately re-announce whoever you just identified by hand.
-        resultAt = Date()
-        lastShown[match.person.id] = Date()
-        sighted[match.person.id] = Date()
+        resultAt = clockNow
+        lastShown[match.person.id] = clockNow
+        sighted[match.person.id] = clockNow
         // The bio's turn ends on its own; hand the lens back to the aid (or shrink the card) then.
         bioTask?.cancel()
         bioTask = Task { [weak self, bioHolds] in
@@ -1048,6 +1048,146 @@ enum Identification {
         }
     }
 
+    /// One decoded frame, from the glasses or from a replay: counted, shown, then scanned.
+    private func ingest(_ image: UIImage?, small: UIImage?) async {
+        lastFrameAt = Date()
+        noteFrame(image)
+        // Every frame is already decoded and downscaled for the face path, whether or not anyone
+        // is looking at the phone, so showing it costs one texture upload and no extra radio time.
+        if let small, Date().timeIntervalSince(lastPov) > 0.04 {
+            lastPov = Date()
+            pov = small
+        }
+        // A press parked on a continuation always wins the frame.
+        if frameWaiter != nil {
+            resumeFrame(image.flatMap { CIImage(image: $0) })
+            return
+        }
+        // Otherwise the watch gets a look, at its own throttled cadence.
+        guard claimAutoScan() else { return }
+        guard let ci = image.flatMap({ CIImage(image: $0) }) else {
+            autoBusy = false
+            return
+        }
+        await autoScan(ci)
+    }
+
+    // MARK: - Replay
+
+    /// True while a recorded run is being fed through the pipeline instead of the glasses.
+    private(set) var replaying = false
+    /// The face path's clock: wall time, or during a replay the time the current frame was
+    /// recorded at. Every gate the matcher has (scan cadence, card hold, tracker age) reads this,
+    /// so a replay decides exactly as the phone would whatever speed the simulator runs at.
+    @ObservationIgnored private var replayNow: Date?
+    private var clockNow: Date { replayNow ?? Date() }
+    /// A lens write in flight during a replay: the mirror changes when the recorded clock gets there.
+    @ObservationIgnored private var replayLensDue: Date?
+    @ObservationIgnored private var replayLensWrites = 0
+    @ObservationIgnored private var replayBase = Date()
+    /// What a face scan cost on the phone (speed log median, Oct 24). The simulator runs Vision on
+    /// the CPU at ~10x that, so a replay charges the phone's cost, not its own.
+    @ObservationIgnored private var replayScanMs: Int { Tuning.int("replayScanMs", 10) }
+    @ObservationIgnored private var replayTask: Task<Void, Never>?
+    /// What a lens write cost on the real pair (median of Oct 24's logs). A replay waits this long
+    /// before the mirror changes, so the timing on screen is the timing on the glasses.
+    @ObservationIgnored private var replayLensMs: Int { Tuning.int("replayLensMs", 850) }
+
+    /// Plays a recorded run through the live path — frame handling, face scans, tracker, card
+    /// rules, lens mirror — at the pace it was recorded. Needs no glasses, so it runs in the
+    /// simulator: the way to see what a matcher change does to a real run.
+    func replay(_ run: FrameRun) {
+        guard !connected || replaying else {
+            status = "Disconnect the glasses to replay"
+            return
+        }
+        replayTask?.cancel()
+        replayTask = Task { [weak self] in
+            guard let self else { return }
+            let base = Date()
+            self.replayNow = base
+            self.replayBase = base
+            self.startReplay(run)
+            let wall = ContinuousClock()
+            let wallStart = wall.now
+            // Until then the phone would still be scanning or writing the lens: frames still show,
+            // but none gets a scan — exactly what autoBusy does to the live stream.
+            var busyUntil = Date.distantPast
+            for frame in run.frames {
+                // Watchable: never ahead of real time. Falling behind is fine, the decisions run on
+                // the recorded clock.
+                try? await wall.sleep(until: wallStart + .milliseconds(frame.ms))
+                guard !Task.isCancelled else { return }
+                let at = base.addingTimeInterval(Double(frame.ms) / 1000)
+                self.replayNow = at
+                if let due = self.replayLensDue, at >= due {
+                    self.replayLensDue = nil
+                    _ = self.lensView()
+                }
+                let url = frame.url
+                let decoded = await Task.detached(priority: .userInitiated) { () -> (UIImage?, UIImage?) in
+                    let image = UIImage(contentsOfFile: url.path)
+                    return (image, image?.fitted(to: 360))
+                }.value
+                self.autoBusy = at < busyUntil
+                let writes = self.replayLensWrites
+                let scansBefore = self.lastAutoScan
+                await self.ingest(decoded.0, small: decoded.1)
+                if self.lastAutoScan != scansBefore {
+                    let lens = self.replayLensWrites != writes ? Double(self.replayLensMs) : 0
+                    busyUntil = at.addingTimeInterval((Double(self.replayScanMs) + lens) / 1000)
+                }
+            }
+            if self.replayLensDue != nil { self.replayLensDue = nil; _ = self.lensView() }
+            try? await Task.sleep(for: .seconds(2))
+            self.replaying = false
+            self.replayNow = nil
+            self.connected = false
+            self.status = "Replay finished · \(run.asked)"
+        }
+    }
+
+    /// One line per scan during a replay: every live track, its fused best match and margin, and
+    /// who it was announced as — what the matcher saw, frame by frame, on the recorded clock.
+    private func logReplayScan(_ live: [FaceTracker.Track], frameTime: Date, store: Store) {
+        let tracks: [[String: Any]] = live.map { track in
+            let ranked = track.looks > 0 ? store.ranked(track.probe) : []
+            var t: [String: Any] = ["id": track.id, "looks": track.looks, "w": (Double(track.weight) * 100).rounded() / 100,
+                                    "px": Int(facePx(track)), "now": track.updated == frameTime]
+            if let top = ranked.first {
+                t["top"] = top.person.id
+                t["score"] = (Double(top.score) * 1000).rounded() / 1000
+                t["gap"] = (Double(top.score - (ranked.dropFirst().first?.score ?? 0)) * 1000).rounded() / 1000
+            }
+            if let shown = announced[track.id] { t["shown"] = shown }
+            return t
+        }
+        SpeedLog.record(["event": "replayScan", "ms": Int(frameTime.timeIntervalSince(replayBase) * 1000),
+                         "card": onCard ?? "", "tracks": tracks])
+    }
+
+    private func startReplay(_ run: FrameRun) {
+        tracker.reset()
+        announced.removeAll()
+        dissent = nil
+        sighted.removeAll()
+        lastShown.removeAll()
+        lastAutoScan = .distantPast
+        replayLensDue = nil
+        result = .ready
+        resultAt = .distantPast
+        likeness = nil
+        pov = nil
+        autoBusy = false
+        frameSizes.removeAll()
+        statsFrom = Date()
+        replaying = true
+        connected = true
+        status = "Replaying \(run.asked)…"
+        _ = lensView()
+        SpeedLog.record(["event": "replay", "run": run.name])
+    }
+
     private func attachCamera(_ camera: Camera) {
         liveStreamSettings = streamSettings
         frameSizes.removeAll()
@@ -1061,30 +1201,7 @@ enum Identification {
             let image = frame.makeUIImage()
             if let image, recorder.isRecording { recorder.save(image) }
             let small = image?.fitted(to: 360)
-            Task { @MainActor in
-                guard let self else { return }
-                self.lastFrameAt = Date()
-                self.noteFrame(image)
-                // Every frame is already decoded and downscaled above for the face path, whether
-                // or not anyone is looking at the phone, so showing it costs one texture upload
-                // and no extra radio time. Real glasses arrive at 7 fps: a slideshow, by budget.
-                if let small, Date().timeIntervalSince(self.lastPov) > 0.04 {
-                    self.lastPov = Date()
-                    self.pov = small
-                }
-                // A press parked on a continuation always wins the frame.
-                if self.frameWaiter != nil {
-                    self.resumeFrame(image.flatMap { CIImage(image: $0) })
-                    return
-                }
-                // Otherwise the watch gets a look, at its own throttled cadence.
-                guard self.claimAutoScan() else { return }
-                guard let ci = image.flatMap({ CIImage(image: $0) }) else {
-                    self.autoBusy = false
-                    return
-                }
-                await self.autoScan(ci)
-            }
+            Task { @MainActor in await self?.ingest(image, small: small) }
         })
         // Logged only. "Critical error, the stream should end" arrived at 17:32:17 and frames kept
         // coming at 2 fps for another minute; treating it as fatal is what broke a working stream.
@@ -1138,7 +1255,7 @@ enum Identification {
         frameSizes[key, default: 0] += 1
         statsFrames += 1
         secFrames += 1
-        let now = Date()
+        let now = clockNow
         let second = now.timeIntervalSince(secFrom)
         if second >= 1 {
             delivered = Delivered(size: key, fps: (Double(secFrames) / second * 10).rounded() / 10)
@@ -1181,16 +1298,16 @@ enum Identification {
 
     /// True when a watch scan should run on this frame, and claims the slot if so.
     private func claimAutoScan() -> Bool {
-        guard watching, connected, !identifying, !autoBusy, store != nil else { return false }
+        guard watching || replaying, connected, !identifying, !autoBusy, store != nil else { return false }
         // Aid cards on the lens never pause scanning: `facing`/`present` stay current, which is
         // what the aid's "who is THEM" reads, and a fresh identification may take the lens back.
         // NOTE: a card being up no longer stops the scan. It used to return false for the whole
         // 20 s `cardHolds`, so turning to a new person meant waiting out the old one with the
         // camera effectively off. `cardHolds` now gates only the *display* (see mayShow), and the
         // tracker keeps accumulating evidence about whoever you turned to in the meantime.
-        guard Date().timeIntervalSince(lastAutoScan) >= autoInterval else { return false }
+        guard clockNow.timeIntervalSince(lastAutoScan) >= autoInterval else { return false }
         autoBusy = true
-        lastAutoScan = Date()
+        lastAutoScan = clockNow
         return true
     }
 
@@ -1216,13 +1333,13 @@ enum Identification {
         guard !identifying else { return false }
         if followFace {
             guard onCard != id else { return false }
-            if onCard != nil, Date().timeIntervalSince(resultAt) < cardHolds { return false }
+            if onCard != nil, clockNow.timeIntervalSince(resultAt) < cardHolds { return false }
             return true
         }
-        if lastShown[id] != nil, let seen = sighted[id], Date().timeIntervalSince(seen) < absentFor { return false }
+        if lastShown[id] != nil, let seen = sighted[id], clockNow.timeIntervalSince(seen) < absentFor { return false }
         // Someone else is on the card; leave them there for a beat before swapping.
         if case .known(let current, _) = result, current.person.id != id,
-           Date().timeIntervalSince(resultAt) < cardHolds { return false }
+           clockNow.timeIntervalSince(resultAt) < cardHolds { return false }
         return true
     }
 
@@ -1241,7 +1358,7 @@ enum Identification {
         let scan = await scanFaces(image)
         guard let store else { return }
         for hit in scan.hits where hit.sharpness > 0 { sharpSamples.append(hit.sharpness) }
-        let frameTime = Date()
+        let frameTime = clockNow
         let live = tracker.update(scan.hits, now: frameTime)
         guard !live.isEmpty else {
             if facing != nil { facing = nil }
@@ -1258,6 +1375,7 @@ enum Identification {
         var seenNow: [(id: String, score: Float)] = []
         frameWidth = image.extent.width
         updateLikeness(live.filter { $0.updated == frameTime && $0.looks > 0 }, store: store)
+        if replaying { logReplayScan(live, frameTime: frameTime, store: store) }
         for track in live where track.weight >= minEvidence {
             guard let match = store.confidentMatch(track.probe) else { continue }
             if track.updated == frameTime { seenNow.append((match.person.id, match.score)) }
@@ -1315,7 +1433,7 @@ enum Identification {
                                   "evidence": (Double(chosen.track.weight) * 100).rounded() / 100,
                                   "sharpness": (Double(chosen.track.best.sharpness) * 1000).rounded() / 1000,
                                   "aligned": chosen.track.best.aligned,
-                                  "ttidMs": ms(since: chosen.track.firstSeen.timeIntervalSinceReferenceDate),
+                                  "ttidMs": (clockNow.timeIntervalSince(chosen.track.firstSeen) * 1000).rounded(),
                                   "faces": scan.timing.faces, "embedded": scan.hits.filter(\.usable).count,
                                   "gated": scan.timing.gated,
                                   "detectMs": (scan.timing.detectMs * 10).rounded() / 10,
@@ -1325,6 +1443,7 @@ enum Identification {
         let lensStart = CFAbsoluteTimeGetCurrent()
         if await sendLens() { log["lensMs"] = ms(since: lensStart) }
         log["totalMs"] = ms(since: start)
+        if replaying { log["replayMs"] = Int(clockNow.timeIntervalSince(replayBase) * 1000) }
         SpeedLog.record(log)
     }
 
@@ -1499,7 +1618,7 @@ enum Identification {
         let person = knownPerson
         let around = person.map { facing == $0.id || present.contains($0.id) } ?? false
         return LensPolicy.mode(identifying: identifying, confirming: confirming, known: person != nil, around: around,
-                               sinceIdentified: Date().timeIntervalSince(resultAt), bioHolds: bioHolds,
+                               sinceIdentified: clockNow.timeIntervalSince(resultAt), bioHolds: bioHolds,
                                aidArmed: aidArmed, aidEmpty: aidLens.isEmpty)
     }
 
@@ -1588,6 +1707,11 @@ enum Identification {
     /// Puts the lens as it now stands through the same queue (a fresh result wins it, see
     /// `LensPolicy`) and waits until it is on the glasses, so the speed log can time it.
     private func sendLens() async -> Bool {
+        if replaying {
+            replayLensDue = clockNow.addingTimeInterval(Double(replayLensMs) / 1000)
+            replayLensWrites += 1
+            return true
+        }
         guard display != nil, displayReady else { return false }
         send(lensView())
         return await withCheckedContinuation { writeWaiters.append($0) }

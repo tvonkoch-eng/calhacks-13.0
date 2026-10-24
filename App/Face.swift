@@ -193,6 +193,7 @@ enum FaceEngine {
         // into one canonical pose. The request also carries the bounding box and roll.
         let wantAlignment = Tuning.bool("alignFaces", true)
         let request: VNImageBasedRequest = wantAlignment ? VNDetectFaceLandmarksRequest() : VNDetectFaceRectanglesRequest()
+        onSimulatorCPU(request)
         try? VNImageRequestHandler(ciImage: image).perform([request])
         let observations = ((request as? VNDetectFaceLandmarksRequest)?.results
             ?? (request as? VNDetectFaceRectanglesRequest)?.results ?? [])
@@ -410,6 +411,18 @@ enum FaceEngine {
     }()
 
     /// Loads the models up front so the first identify doesn't pay for it.
+    /// Vision in the iOS Simulator fails every request with "Could not create inference context"
+    /// unless it is pinned to the CPU (the simulator GPU fails the same way), so a replay there saw
+    /// no faces at all. Even on the CPU the landmarks never come back, so simulator crops are never
+    /// aligned and its matches differ from a phone's: watch replays there, measure them on a phone.
+    static func onSimulatorCPU(_ request: VNRequest) {
+        #if targetEnvironment(simulator)
+        guard let cpu = MLComputeDevice.allComputeDevices.first(where: { if case .cpu = $0 { true } else { false } }),
+              let stages = try? request.supportedComputeStageDevices else { return }
+        for stage in stages.keys { request.setComputeDevice(cpu, for: stage) }
+        #endif
+    }
+
     static func warmUp() {
         let blank = CIImage(color: .gray).cropped(to: CGRect(x: 0, y: 0, width: 256, height: 256))
         try? VNImageRequestHandler(ciImage: blank).perform([VNDetectFaceLandmarksRequest()])
@@ -459,6 +472,7 @@ enum FaceEngine {
     private static func featurePrint(_ image: CGImage) -> [Float]? {
         let request = VNGenerateImageFeaturePrintRequest()
         request.imageCropAndScaleOption = .scaleFill
+        onSimulatorCPU(request)
         try? VNImageRequestHandler(cgImage: image).perform([request])
         guard let print = request.results?.first, print.elementType == .float else { return nil }
         return normalised(print.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) })
