@@ -129,7 +129,7 @@ struct PeopleHome: View {
     }
 
     /// Everyone you know: the roster and the people you kept, not yourself.
-    private var everyone: [Person] { store.contacts.filter { $0.isMe != true } }
+    private var everyone: [Person] { store.contacts.filter { $0.isMe != true && !store.removed.contains($0.id) } }
 
     /// Newest first: the last person added at the top.
     private var filtered: [Person] {
@@ -347,6 +347,7 @@ struct TranscriptSheet: View {
 struct ContactView: View {
     @Environment(Store.self) private var store
     @Environment(CRM.self) private var crm
+    @Environment(\.dismiss) private var dismiss
     let id: String
     @State private var editing = false
     @State private var note = ""
@@ -403,7 +404,16 @@ struct ContactView: View {
             .scrollDismissesKeyboard(.interactively)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Edit") { editing = true } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Edit", systemImage: "pencil") { editing = true }
+                        // Roster people come back from New person's quick add; anyone else is forgotten.
+                        Button("Remove", systemImage: "person.badge.minus", role: .destructive) {
+                            if store.people.contains(where: { $0.id == id }) { store.remove(id) } else { crm.forgetPerson(id) }
+                            dismiss()
+                        }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                }
             }
             .sheet(isPresented: $editing) { ContactEditor(person: person) { _ in } }
             .onAppear { note = store.notes[id] ?? "" }
@@ -730,6 +740,7 @@ struct NewPersonSheet: View {
                     .focused($typing)
                     .padding(.vertical, 18).padding(.horizontal, 16)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                quickAdd
                 Spacer()
             }
             .padding(24)
@@ -743,6 +754,35 @@ struct NewPersonSheet: View {
             }
             .onAppear { typing = true }
         }
+    }
+
+    /// The roster, one tap each: puts a removed person back exactly as they were (photos, details).
+    private var quickAdd: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionLabel("Quick add")
+            ScrollView(.horizontal) {
+                HStack(spacing: 14) {
+                    ForEach(store.people) { person in
+                        Button {
+                            store.restore(person.id)
+                            dismiss()
+                            saved(person)
+                        } label: {
+                            VStack(spacing: 6) {
+                                Avatar(person: person, size: 56)
+                                Text(person.name.split(separator: " ").first.map(String.init) ?? person.name)
+                                    .font(.footnote).foregroundStyle(.primary)
+                                Text(store.removed.contains(person.id) ? "Removed" : "Added")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func save() {

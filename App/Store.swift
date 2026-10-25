@@ -425,7 +425,23 @@ struct Match {
     /// can be watched going through the stranger path. Changing it rebuilds the index.
     private var hidden: Set<String> {
         Set((UserDefaults.standard.string(forKey: "hidePeople") ?? "").split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }).union(removed)
+    }
+
+    /// Roster people removed on this phone: off the People list and out of matching, so their face
+    /// comes back through the new-person path. New person's quick add restores them.
+    private(set) var removed: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "removedPeople") ?? [])
+
+    func remove(_ id: String) {
+        removed.insert(id)
+        UserDefaults.standard.set(Array(removed), forKey: "removedPeople")
+        indexDirty = true
+    }
+
+    func restore(_ id: String) {
+        removed.remove(id)
+        UserDefaults.standard.set(Array(removed), forKey: "removedPeople")
+        indexDirty = true
     }
     @ObservationIgnored private var indexedHidden: Set<String> = []
 
