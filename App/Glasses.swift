@@ -1810,8 +1810,11 @@ enum Identification {
     // say fill it in as the conversation goes (`refresh`).
 
     @ObservationIgnored private var meetNew: Bool { Tuning.bool("meetNew", true) }
-    /// Looks before a stranger is someone met (2 fps: ~2 s of looking at them).
-    @ObservationIgnored private var meetLooks: Int { Tuning.int("meetLooks", 4) }
+    /// Eye contact before a stranger is someone met: at least `meetLooks` analysed frames of the
+    /// same face, held for `meetSeconds` without a break. A glance or someone in the background
+    /// never gets there. Both are knobs.
+    @ObservationIgnored private var meetLooks: Int { Tuning.int("meetLooks", 8) }
+    @ObservationIgnored private var meetSeconds: TimeInterval { TimeInterval(Tuning.float("meetSeconds", 3)) }
     /// Below this best score against everyone known, a face is nobody we know. ArcFace puts
     /// strangers near 0 and the same person at 0.4+.
     @ObservationIgnored private var strangerBelow: Float { Tuning.float("strangerBelow", 0.22) }
@@ -1831,6 +1834,11 @@ enum Identification {
               let track = inView.max(by: { $0.best.attention < $1.best.attention }),
               metTracks[track.id] == nil, track.looks >= meetLooks, track.weight >= minEvidence,
               facePx(track) >= minAnnouncePx else { return }
+        // Sustained: the same face, unbroken, for meetSeconds, and still there this frame.
+        let now = Date()
+        guard now.timeIntervalSince(track.firstSeen) >= meetSeconds, now.timeIntervalSince(track.updated) < 0.5 else { return }
+        // Face to face, not the room: near the centre of the frame, with nobody in front of them.
+        guard centred(track.box), !behindSomeone(track, in: inView, store: store) else { return }
         let best = store.ranked(track.probe).first?.score ?? 0
         guard best < strangerBelow else { return }
         let photo = headshot(image, box: track.box)
@@ -1841,6 +1849,32 @@ enum Identification {
         if replaying { replayMet.append(id) }
         SpeedLog.record(["event": "metNew", "person": id, "track": track.id, "looks": track.looks,
                          "facePx": Int(facePx(track)), "closest": (Double(best) * 1000).rounded() / 1000])
+    }
+
+    /// Within `meetCentre` of the frame's middle (a fraction of the frame): the person you are
+    /// facing, not whoever is off to the side.
+    @ObservationIgnored private var meetCentre: CGFloat { CGFloat(Tuning.float("meetCentre", 0.22)) }
+
+    private func centred(_ box: CGRect) -> Bool {
+        let dx = box.midX - 0.5, dy = box.midY - 0.5
+        return (dx * dx + dy * dy).squareRoot() <= meetCentre
+    }
+
+    /// Someone is in front of this face, or it sits behind a face already known: a bigger face
+    /// overlapping it, or a recognised face that covers it. Those are the people in the room with
+    /// you; this one is in the background.
+    @ObservationIgnored private var meetCloser: Float { Tuning.float("meetCloser", 0.85) }
+
+    private func behindSomeone(_ track: FaceTracker.Track, in inView: [FaceTracker.Track], store: Store) -> Bool {
+        let size = facePx(track)
+        for other in inView where other.id != track.id {
+            let overlap = track.box.intersection(other.box)
+            guard !overlap.isNull, overlap.width * overlap.height > 0.3 * min(track.box.width * track.box.height,
+                                                                              other.box.width * other.box.height) else { continue }
+            if Float(facePx(other)) >= Float(size) * meetCloser { return true }
+            if (store.ranked(other.probe).first?.score ?? 0) >= store.minScore { return true }
+        }
+        return false
     }
 
     /// The first photo of someone met is whatever frame they were met on. A clearly sharper,
