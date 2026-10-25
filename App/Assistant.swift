@@ -577,6 +577,7 @@ import Observation
     func resetDemo() {
         guard let crm, let store else { return }
         for contact in crm.contacts { crm.forgetPerson(contact.id); store.forget(contact.id) }
+        store.rosterHidden = true
         newcomers = []
         joined = [:]
         met = nil

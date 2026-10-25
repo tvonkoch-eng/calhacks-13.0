@@ -246,8 +246,13 @@ struct Match {
     /// holder was kept out of matching, but both phones ship the same people.json, so the flag
     /// made whoever it named unrecognizable on every device at once. Per-device identity, if we
     /// want it later, belongs in UserDefaults — not in a file identical for the whole team.
+    /// Demo reset: the roster sits out (not matched, not listed) so everyone walks up as new.
+    /// Back on when demo mode is turned off.
+    var rosterHidden: Bool = UserDefaults.standard.bool(forKey: "rosterHidden") {
+        didSet { UserDefaults.standard.set(rosterHidden, forKey: "rosterHidden"); indexDirty = true }
+    }
     var contacts: [Person] {
-        people + saved.map { edits[$0.id] ?? met[$0.id] ?? $0 } + met.values.filter { m in !saved.contains { $0.id == m.id } }
+        (rosterHidden ? [] : people) + saved.map { edits[$0.id] ?? met[$0.id] ?? $0 } + met.values.filter { m in !saved.contains { $0.id == m.id } }
     }
     /// People met in conversation whom the wearer chose to keep (`CRM.keep`). They match like the
     /// roster once they have face photos; people met but not kept are never here, so never matched.

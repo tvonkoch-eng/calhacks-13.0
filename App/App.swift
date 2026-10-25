@@ -1829,20 +1829,29 @@ struct DemoControls: View {
     var body: some View {
         @Bindable var demo = glasses.demo
         HStack(spacing: 12) {
-            Toggle(isOn: $demo.on) {
+            Toggle(isOn: Binding(get: { demo.on }, set: { on in
+                demo.on = on
+                // Off: the roster is back in face ID and People.
+                if !on { assistant.store?.rosterHidden = false }
+            })) {
                 Text(demo.on ? (demo.prompt ?? "Demo done") : "Demo mode")
                     .lineLimit(2)
             }
             if demo.on {
                 Button("Next step") { glasses.demoNext() }
                     .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                    .foregroundStyle(.white)
                     .disabled(demo.prompt == nil)
             }
             Button("Reset", role: .destructive) {
                 assistant.resetDemo()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .foregroundStyle(.white)
         }
+        .tint(.blue)
         .font(.subheadline)
     }
 }
