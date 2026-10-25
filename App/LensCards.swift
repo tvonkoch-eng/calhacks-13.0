@@ -95,7 +95,7 @@ enum LensCards {
     /// with the space between filled so the card reads as tall as the half it sits in.
     static func personCard(_ person: Person, shot: LensShot, avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .column, spacing: 10) {
-            header(photo: avatar(person.id), name: person.name, headline: person.headline, bright: true)
+            header(photo: avatar(person.id), name: person.name, width: LensFit.personWidth, bright: true)
             // Why they matter, straight under the header: every bullet that fits.
             for line in shot.primary {
                 Text(line, style: .body).flexShrink(1)
@@ -166,7 +166,7 @@ enum LensCards {
             for member in group.prefix(2) {
                 FlexBox(direction: .column, spacing: 8) {
                     header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
-                           headline: member.headline, bright: member.speaking)
+                           width: LensFit.memberWidth, bright: member.speaking)
                     for line in member.lines {
                         Text(line, style: .meta).flexShrink(1)
                     }
@@ -180,15 +180,20 @@ enum LensCards {
         }
     }
 
-    /// Photo on the left, full name over what they do on the right.
-    private static func header(photo: UIImage?, name: String, headline: String, bright: Bool) -> FlexBox {
-        FlexBox(direction: .row, spacing: 14) {
-            if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-            FlexBox(direction: .column, spacing: 2) {
-                Text(name, style: .heading, color: bright ? .primary : .secondary).flexShrink(1)
-                Text(headline, style: .meta, color: .secondary).flexShrink(1)
+    /// The photo on the left, sized to stand as tall as the full name beside it; everything else
+    /// is bullets below. The lens has only icon-sized or filling images, so the photo fills a
+    /// share of the row.
+    private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool) -> FlexBox {
+        let share = Float(LensFit.photoShare(width))
+        return FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
+            if let photo {
+                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
+                    .flexGrow(share).flexShrink(0)
             }
-            .flexShrink(1)
+            FlexBox(direction: .column) {
+                Text(name, style: .heading, color: bright ? .primary : .secondary).flexShrink(1)
+            }
+            .flexGrow(1 - share).flexShrink(1)
         }
     }
 
@@ -413,12 +418,16 @@ enum LensCards {
 
     /// Everything worth a line about someone, most telling first: recall, tie, highlights, details.
     static func info(_ person: Person) -> [String] {
-        var pool: [String] = []
-        if let recall = recall?(person.id), !recall.isEmpty { pool.append(recall) }
-        if let tie = person.tie, !tie.isEmpty { pool.append(tie) }
+        // What they do now leads; then how you know them, what you owe them, their best work,
+        // and the rest of their background, each once.
+        var pool: [String] = [person.headline]
+        if let tie = person.tie { pool.append(tie) }
+        if let recall = recall?(person.id) { pool.append(recall) }
         pool += person.highlights ?? []
-        pool += person.details.map(\.text).filter { !$0.isEmpty }
-        return pool.map { "\u{2022} " + $0 }
+        pool += person.details.map(\.text)
+        if let personal = person.personal { pool.append(personal) }
+        var seen = Set<String>()
+        return pool.filter { !$0.isEmpty && seen.insert($0).inserted }.map { "\u{2022} " + $0 }
     }
 
     /// The phone's stand-in for an aid card's lens icon.
@@ -536,20 +545,28 @@ enum LensFit {
     /// A person card's lines: those from `pool` that fit its height measured as they wrap, and the
     /// height left over, which goes between the photo and the name.
     static func person(_ person: Person, lines pool: [String]) -> (lines: [String], left: CGFloat) {
-        take(pool, name: person.name, headline: person.headline, width: panel - 44, font: body, gap: 10)
+        take(pool, name: person.name, width: personWidth, font: body, gap: 10)
     }
 
     /// The same for one of two side-by-side cards.
     static func member(_ member: Member, lines pool: [String]) -> (lines: [String], left: CGFloat) {
-        take(pool, name: member.fullName.isEmpty ? member.name : member.fullName, headline: member.headline,
-             width: (panel - 12) / 2 - 44, font: meta, gap: 8)
+        take(pool, name: member.fullName.isEmpty ? member.name : member.fullName,
+             width: memberWidth, font: meta, gap: 8)
     }
 
-    private static func take(_ pool: [String], name: String, headline: String, width: CGFloat,
+    /// Inner widths of the one-person card and of each of two side-by-side cards.
+    static let personWidth: CGFloat = panel - 44
+    static let memberWidth: CGFloat = (panel - 12) / 2 - 44
+    static let photoGap: CGFloat = 14
+
+    /// The photo's share of the header row: tall enough for a full name on two heading lines.
+    static func photoShare(_ width: CGFloat) -> CGFloat { width > 400 ? 0.2 : 0.38 }
+
+    private static func take(_ pool: [String], name: String, width: CGFloat,
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
-        // Padding, then the header: the photo, or the name over the headline beside it if taller.
-        let beside = width - 70
-        let header = max(56, (lines(name, heading, beside) + lines(headline, meta, beside)) * slack + 2)
+        // Padding, then the header: the photo, or the name beside it if taller.
+        let photo = (width - photoGap) * photoShare(width)
+        let header = max(photo, lines(name, heading, width - photoGap - photo) * slack)
         var left = half - (44 + header + gap)
         var out: [String] = []
         for line in pool {
