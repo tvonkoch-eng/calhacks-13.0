@@ -1960,8 +1960,10 @@ enum Identification {
     /// closer look later in the conversation replaces it (at most every few seconds).
     private func betterLooks(_ inView: [FaceTracker.Track], hits: [FaceHit], image: CIImage, store: Store) {
         for track in inView {
-            // Anyone face ID knows, on the track they were met on or recognised on a later one.
-            let known = metTracks[track.id] ?? store.confidentMatch(track.probe).map(\.person.id)
+            // Anyone face ID knows, on the track they were met on or recognised on a later one. People met
+            // here start with one sample, so they're held to the ordinary bar, not the confident one.
+            let loose = store.match(track.probe).map(\.person.id).flatMap { store.isMet($0) ? $0 : nil }
+            let known = metTracks[track.id] ?? store.confidentMatch(track.probe).map(\.person.id) ?? loose
             guard let id = known, let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
             // Every couple of seconds in view, everyone (named or not, roster or not): another look
             // into their gallery, photo and sample, so they're recognised better each time.

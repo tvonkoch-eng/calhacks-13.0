@@ -803,7 +803,7 @@ struct PhotoPick: View {
 
 // MARK: - Face photos
 
-/// Everyone's face photos as a grid: tap one to delete it, + (top left) to take or pick another.
+/// Everyone's face photos as a grid: tap one to delete it, the + tile (first) to take or pick another.
 /// Each photo is also a sample face ID matches against, so deleting a bad one helps.
 struct FaceGallery: View {
     @Environment(Store.self) private var store
@@ -814,29 +814,25 @@ struct FaceGallery: View {
     var body: some View {
         let shots = store.shots[person.id] ?? []
         ScrollView {
-            if shots.isEmpty {
-                Text("No photos yet. Tap + to take one.")
-                    .font(.subheadline).foregroundStyle(.secondary).padding(.top, 40)
-            }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 6)], spacing: 6) {
+                // First tile: add a photo.
+                Button { adding = true } label: {
+                    Color(.secondarySystemBackground).aspectRatio(1, contentMode: .fit)
+                        .overlay(Image(systemName: "plus").font(.title2.weight(.medium)).foregroundStyle(.secondary))
+                }
+                .buttonStyle(.plain)
                 ForEach(shots.reversed()) { shot in
-                    Button { doomed = shot } label: {
-                        Image(uiImage: shot.image).resizable().scaledToFill()
-                            .frame(minWidth: 0, maxWidth: .infinity).aspectRatio(1, contentMode: .fit)
-                            .clipped()
-                    }
-                    .buttonStyle(.plain)
+                    Button { doomed = shot } label: { tile(shot.image) }.buttonStyle(.plain)
+                }
+                // The bundled photos face ID was built from; part of the app, so not deletable here.
+                ForEach(Array(store.referencePhotos(person.id).enumerated()), id: \.offset) { _, image in
+                    tile(image)
                 }
             }
             .padding(6)
         }
         .navigationTitle("Face photos · \(store.samples(person.id))")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button { adding = true } label: { Image(systemName: "plus") }
-            }
-        }
         .navigationDestination(isPresented: $adding) { EnrollView(person: person) }
         .confirmationDialog("Delete this photo?", isPresented: Binding(get: { doomed != nil }, set: { if !$0 { doomed = nil } }),
                             titleVisibility: .visible) {
@@ -845,5 +841,11 @@ struct FaceGallery: View {
                 doomed = nil
             }
         }
+    }
+
+    private func tile(_ image: UIImage) -> some View {
+        Image(uiImage: image).resizable().scaledToFill()
+            .frame(minWidth: 0, maxWidth: .infinity).aspectRatio(1, contentMode: .fit)
+            .clipped()
     }
 }

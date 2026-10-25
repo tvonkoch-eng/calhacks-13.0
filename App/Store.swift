@@ -253,7 +253,7 @@ struct Match {
         // Kept from the start (asked for, Oct 24): they persist, their looks build up, and they
         // wait in People to be named. Remove them there to forget them.
         if !saved.contains(where: { $0.id == person.id }) { saved.append(person) }
-        if let photo { addShot(person.id, embedding: nil, image: photo) }
+        if let photo { addShot(person.id, embedding: face, image: photo) }
     }
 
     // MARK: Face photos
@@ -266,6 +266,17 @@ struct Match {
     }
 
     private(set) var shots: [String: [Shot]] = [:]
+    @ObservationIgnored private var references: [String: [UIImage]] = [:]
+
+    /// The bundled reference photos (the repo's App/References) for someone, read-only in the gallery.
+    func referencePhotos(_ id: String) -> [UIImage] {
+        if let cached = references[id] { return cached }
+        let images = referenceURLs(id).compactMap { url in
+            Self.readable(url).flatMap { CIContext().createCGImage($0, from: $0.extent) }.map { UIImage(cgImage: $0) }
+        }
+        references[id] = images
+        return images
+    }
     private func shotsDir(_ person: String) -> URL { docs.appendingPathComponent("shots/\(person)", isDirectory: true) }
 
     /// A face photo for someone's gallery, and its sample for matching. The newest 30 are kept.

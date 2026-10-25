@@ -292,32 +292,27 @@ struct SavedConversation: Codable, Identifiable, Equatable {
         assistant.endConversation()
     }
 
-    /// Every voice is Person A, B, C, D in order of first speaking, and keeps its letter (and its
-    /// side) for the whole conversation: A and C on the right, B and D on the left. The wearer's
-    /// voice is just one more letter.
+    /// Every voice is Person A, B, C, D in order of first speaking: A and C on the right, B and D
+    /// on the left. On the glasses mic the wearer (the loud voice) is held as Person A. A line's
+    /// label is decided once, when it's final, and never redrawn, so nobody changes side or name
+    /// mid-conversation; words still being heard aren't shown until they're final.
+    private static var letters: [String: Int] = [:]
+    private static var frozen: [Int: (String, Bool)] = [:]
+
     static func lines(_ assistant: Assistant) -> [SavedLine] {
-        var letters: [String: Int] = [:]
-        func person(_ key: String) -> (String, Bool) {
-            let index = letters[key] ?? letters.count
-            letters[key] = index
-            return ("Person " + String(UnicodeScalar(UInt8(65 + min(index, 25)))), index % 2 == 0)
-        }
-        func key(_ line: Line) -> String {
-            line.speaker == Assistant.me ? "me" : (assistant.voices[line.id] ?? line.speaker ?? "?")
-        }
         let spoken = assistant.aid.lines.filter { !$0.command }
-        var out = spoken.map { line in
-            let (who, right) = person(key(line))
+        if spoken.isEmpty { letters = [:]; frozen = [:] }
+        if letters.isEmpty, assistant.mic != .phone { letters["me"] = 0 }
+        return spoken.map { line in
+            if frozen[line.id] == nil {
+                let key = line.speaker == Assistant.me ? "me" : (assistant.voices[line.id] ?? line.speaker ?? "?")
+                let index = letters[key] ?? letters.count
+                letters[key] = index
+                frozen[line.id] = ("Person " + String(UnicodeScalar(UInt8(65 + min(index, 25)))), index % 2 == 0)
+            }
+            let (who, right) = frozen[line.id]!
             return SavedLine(id: "\(line.id)", who: who, text: line.text, me: right)
         }
-        // The words still coming in stay with whoever spoke last until Muse finalises them, so the
-        // bubble never hops sides mid-sentence.
-        let partial = assistant.aid.partial
-        if !partial.isEmpty {
-            let (who, right) = person(spoken.last.map(key) ?? "me")
-            out.append(SavedLine(id: "live", who: who, text: partial, me: right, speaking: true))
-        }
-        return out
     }
 }
 
