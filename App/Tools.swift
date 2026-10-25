@@ -97,7 +97,8 @@ enum Tools {
     /// Where the answer lives decides who answers. The web knows public things, not these two
     /// people: "what's the latest on the GENIUS Act" is research; "what did she say her company
     /// does" is the conversation; "how's her fundraise going" is nobody's to look up.
-    private static func prompt(research: Bool, personal: Bool = false) -> String {
+    /// Where answers live, as a list for a system prompt.
+    static func sources(research: Bool, personal: Bool = false) -> String {
         var sources = "- the conversation, or what's known about the person they're talking to: answer from that;"
         if personal {
             sources += "\n" + """
@@ -106,8 +107,6 @@ enum Tools {
             that, by name, speaking to them as "you". "Who here works at Google?" means the people \
             on that record. If the record doesn't have it, say so in a few words rather than guess;
             - something they ask you to remember, follow up on, or save someone: call that tool;
-            Your answer is also read aloud in their ear: one sentence, at most 20 words, names \
-            first, no hedging about the record ("Nobody yet", not "Based on your record…");
             """
         }
         sources += "\n" + """
@@ -123,6 +122,11 @@ enum Tools {
             their work in progress, their history together): answer that from what's known, or SKIP.
             """
         }
+        return sources
+    }
+
+    private static func prompt(research: Bool, personal: Bool = false) -> String {
+        let sources = sources(research: research, personal: personal)
         return """
         You act for someone wearing smart glasses, usually mid-conversation. Answer from wherever \
         the answer lives:
@@ -135,21 +139,17 @@ enum Tools {
     }
 
     /// One round: the model answers in a line, says SKIP, or names a tool for the caller to run.
-    /// `personal`: the wearer's own record (CRM.digest), for requests they address to Jarvis.
-    static func decide(_ request: String, context: String, personal: String = "", toolbox: any Toolbox,
+    static func decide(_ request: String, context: String, toolbox: any Toolbox,
                        provider: Provider, key: String, model: String) async throws -> Decision {
         let now = Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
         let place = await toolbox.whereabouts().map { " They are \($0)." } ?? ""
-        let user = (personal.isEmpty ? "" : "Their own record:\n\(personal)\n\n")
-            + (context.isEmpty ? "" : "Conversation so far:\n\(context)\n\n") + "Request: \(request)"
-            // Said to Jarvis: it's heard as well as read, and a long reply rambles in their ear.
-            + (personal.isEmpty ? "" : "\n\nOne spoken sentence, at most 20 words, the answer first. Never mention \"the record\".")
+        let user = (context.isEmpty ? "" : "Conversation so far:\n\(context)\n\n") + "Request: \(request)"
         var body: [String: Any] = [
             "model": model,
             "temperature": 0,
             "tool_choice": "auto",
             "messages": [
-                ["role": "system", "content": prompt(research: toolbox.definitions.contains("\"research\""), personal: !personal.isEmpty)
+                ["role": "system", "content": prompt(research: toolbox.definitions.contains("\"research\""))
                     + "\nIt is \(now), \(TimeZone.current.identifier).\(place)"],
                 ["role": "user", "content": user],
             ],
@@ -167,6 +167,89 @@ enum Tools {
         if let call = reply.calls.first { return .call(name: call.name, arguments: call.arguments) }
         let text = (reply.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty || text.uppercased().hasPrefix("SKIP") || Answerer.refuses(text) ? .skip : .answer(text)
+    }
+
+    // MARK: - Jarvis: a few rounds of thinking with the tools
+
+    /// "Jarvis, …": slower and smarter than `decide`. The model may use the tools over several
+    /// rounds (look something up, then use what it found), and answers in up to two sentences.
+    /// Each tool call is reported through `step` first, for the lens. Results go back as notes in
+    /// the next round's message, so any provider works, tool-call ids or not.
+    static func think(_ request: String, context: String, personal: String, toolbox: any Toolbox,
+                      model: Aid.Model, rounds: Int = 4,
+                      step: @escaping @Sendable (String) async -> Void) async throws -> String {
+        let now = Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
+        let place = await toolbox.whereabouts().map { " They are \($0)." } ?? ""
+        let research = toolbox.definitions.contains("\"research\"")
+        let system = """
+            You are Jarvis, the assistant in the wearer's smart glasses. They asked you by name, so \
+            take a moment and get it right: use the tools when they help, more than one if the \
+            first result raises the next question, then answer. Answer from wherever the answer lives:
+            \(sources(research: research, personal: !personal.isEmpty))
+
+            Your answer is shown on their lens and read aloud in their ear: at most two short \
+            sentences (40 words), the answer first, then the one thing that makes it useful. Speak \
+            to them as "you". US units. No preamble, no "based on", never mention notes, tools or \
+            the record. If nothing can answer it, say so in a few words.
+            It is \(now), \(TimeZone.current.identifier).\(place)
+            """
+        let tools = try? JSONSerialization.jsonObject(with: Data(toolbox.definitions.utf8))
+        var notes: [String] = []
+        for round in 0..<rounds {
+            let last = round == rounds - 1
+            var user = (personal.isEmpty ? "" : "Their own record:\n\(personal)\n\n")
+                + (context.isEmpty ? "" : "Conversation so far:\n\(context)\n\n") + "Request: \(request)"
+            if !notes.isEmpty {
+                user += "\n\nWhat you've found so far:\n" + notes.map { "- \($0)" }.joined(separator: "\n")
+                    + (last ? "\n\nAnswer now." : "\n\nAnswer, or use another tool if you still need to.")
+            }
+            var body: [String: Any] = [
+                "model": model.model,
+                "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
+            ]
+            if !last, let tools {
+                body["tools"] = tools
+                body["tool_choice"] = "auto"
+            }
+            body.merge(params(model, budget: 700, effort: "low", tools: body["tools"] != nil)) { _, new in new }
+            let reply = try await LLM.chat(model.provider.endpoint, key: model.key, body: body, timeout: 25)
+            if reply.calls.isEmpty || last {
+                let text = (reply.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty || text.uppercased().hasPrefix("SKIP") ? "I'm not sure." : text
+            }
+            // At most two calls a round; the same call twice is one.
+            var seen = Set<String>()
+            for call in reply.calls.prefix(2) where seen.insert(call.name + call.arguments).inserted {
+                await step(toolbox.working(call.name, arguments: call.arguments))
+                do {
+                    let result = try await toolbox.run(call.name, arguments: call.arguments)
+                    let found = [result.title, result.detail].filter { !$0.isEmpty }.joined(separator: ". ")
+                    notes.append("\(call.name) \(call.arguments) → \(found.isEmpty ? "nothing found" : found)")
+                } catch {
+                    notes.append("\(call.name) \(call.arguments) → failed: \(error.localizedDescription)")
+                }
+            }
+        }
+        return "I'm not sure."
+    }
+
+    /// Request fields for a model's family: reasoning models take their budget and effort
+    /// differently, and OpenAI's reject `max_tokens` and `temperature`.
+    static func params(_ model: Aid.Model, budget: Int, effort: String, tools: Bool = false) -> [String: Any] {
+        let name = model.model
+        if model.provider == .openai, name.hasPrefix("gpt-5") || name.hasPrefix("o") {
+            // gpt-5.5's chat endpoint refuses tools with reasoning (2026-10-24): "none" then.
+            return ["max_completion_tokens": budget * 4, "reasoning_effort": tools ? "none" : effort]
+        }
+        if model.provider == .openrouter, name.hasPrefix("anthropic/") || name.hasPrefix("openai/") {
+            return ["max_tokens": budget * 3, "reasoning_effort": effort]
+        }
+        if name.contains("gpt-oss") { return ["max_tokens": budget, "reasoning_effort": effort, "temperature": 0] }
+        if model.provider == .cerebras || model.provider == .openrouter, name.contains("qwen") {
+            return ["max_tokens": budget, "reasoning_effort": "none", "temperature": 0]
+        }
+        if model.provider == .anthropic { return ["max_tokens": budget, "reasoning_effort": effort] }
+        return ["max_tokens": budget, "temperature": 0]
     }
 
     // MARK: - Formatting, shared and testable

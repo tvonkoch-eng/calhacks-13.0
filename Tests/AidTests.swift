@@ -176,6 +176,25 @@ do {
     check(s4.closed == ["How large is the moon?"], "a trailing question mark closes")
 }
 
+// Jarvis's panel: steps tick off, the answer replaces them, then it goes on its own clock.
+do {
+    let t = Date(timeIntervalSince1970: 1_000_000)
+    var c = Compositor()
+    c.startJarvis("who should I follow up with?", at: t)
+    c.jarvisStep("Reading your notes", at: t)
+    c.jarvisStep("Searching: Priya Raman", at: t.addingTimeInterval(1))
+    check(c.view.jarvis?.steps.map(JarvisPanel.line) == ["\u{2713} Reading your notes", "Searching: Priya Raman\u{2026}"], "steps tick off")
+    check(c.view.jarvis?.header(at: t.addingTimeInterval(4)) == "Jarvis \u{00B7} 4s", "it counts up while it thinks")
+    c.jarvisAnswer("Priya: you owe her the deck by tomorrow.", at: t.addingTimeInterval(5))
+    check(c.view.jarvis?.thinking == false && c.view.jarvis?.header(at: t) == "Jarvis", "answered")
+    check(c.nextDeadline == t.addingTimeInterval(5 + 12), "an answer stays 12 s: \(String(describing: c.nextDeadline))")
+    c.tick(at: t.addingTimeInterval(17.1))
+    check(c.view.jarvis == nil, "then it goes")
+    c.startJarvis("x", at: t)
+    c.tick(at: t.addingTimeInterval(121))
+    check(c.view.jarvis == nil, "a think that never ends is dropped after two minutes")
+}
+
 // Tools: the wake word, what counts as a tool question, and how results read.
 do {
     check(Tools.command(in: "Lens, how far is the nearest Target?") == "how far is the nearest Target?", "wake word")

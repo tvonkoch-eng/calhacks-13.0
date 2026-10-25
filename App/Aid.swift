@@ -303,6 +303,8 @@ enum Talk {
         /// at this thing?" is about here; without this a search found a different hackathon.
         var situation = ""
         var answers: Model?
+        /// Jarvis: asked by name, so it may take a few seconds to think. Unset: `answers`.
+        var jarvis: Model?
         var coach: Model?
         /// What to say next and openers when face ID recognises someone, if they should run on a
         /// different model from the coach. Unset (the default): the coach's model. Big models
@@ -429,6 +431,7 @@ enum Talk {
             }
         }
         if !open.isEmpty, !command(open, mine: mine) { answerHeard(open, endpointed: true, mine: mine) }
+        endJarvisTurn()
         partial = ""
         saying = ""   // it's a line now
         closedInTurn = 0
@@ -526,11 +529,11 @@ enum Talk {
 
     /// Start over for a new conversation.
     func reset() {
-        answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel()
+        answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel(); jarvisTask?.cancel()
         lines = []; turns = []; events = []; them = Them(); others = []; ideas = []; roles = Roles(); partial = ""; status = ""
         compositor.clear(); defined = []; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
         coachPending = false; coachBlockedUntil = nil; closedInTurn = 0
-        wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""
+        wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""; jarvisTurn = nil
         publish()
     }
 
@@ -855,7 +858,8 @@ enum Talk {
             if wokenAt == nil || Date().timeIntervalSince(wokenAt!.at) > 2 {
                 nextCard += 1
                 wokenAt = (Date(), nextCard)
-                compositor.startWork(id: nextCard, label: "Jarvis is listening", eta: Self.wakeWindow, at: Date())
+                jarvisTask?.cancel()
+                compositor.startJarvis("Listening\u{2026}", at: Date())
                 log(.status, "Jarvis listening")
                 publish()
                 let card = nextCard
@@ -863,10 +867,19 @@ enum Talk {
                     try? await Task.sleep(for: .seconds(Self.wakeWindow))
                     guard let self, self.wokenAt?.card == card else { return }
                     self.wokenAt = nil
-                    self.compositor.endWork(id: card)
+                    self.compositor.clearJarvis()
                     self.publish()
                 }
             }
+            return true
+        }
+        // More of a turn that began "Jarvis, …": part of the request ("Marcus works at DeepMind.
+        // What did they announce?").
+        if var turn = jarvisTurn, Tools.command(in: sentence) == nil, sentence.contains(where: \.isLetter) {
+            turn.text += " " + sentence
+            jarvisTurn = turn
+            consumed = (sentence, Date())
+            jarvisHeard(turn.text)
             return true
         }
         let named = Tools.byName(sentence)
@@ -882,36 +895,62 @@ enum Talk {
             return false
         }
         let jarvis = named || wokenAt != nil
-        if let woken = wokenAt {
-            compositor.endWork(id: woken.card)
-            wokenAt = nil
-        }
+        wokenAt = nil
         guard mine || jarvis || !roles.known else { return true }   // the other person saying "lens" isn't asking us
         // The same sentence arrives twice, as a partial and as the finished line; a few seconds
         // later it's a new request.
         if let last = lastCommand, Talk.normalized(request) == Talk.normalized(last.text),
            Date().timeIntervalSince(last.at) < 8 { return true }
         lastCommand = (request, Date())
-        if Talk.asksForSuggestion(request) {
+        // Jarvis takes "what should I say?" too: it has the whole conversation and the record.
+        if !jarvis, Talk.asksForSuggestion(request) {
             suggestNow()
+        } else if jarvis {
+            jarvisTurn = (request, nil)
+            jarvisHeard(request)
         } else {
-            toolRound(request, command: true, personal: jarvis)
+            toolRound(request, command: true)
         }
         return true
+    }
+
+    /// The request said to Jarvis so far this turn, and what of it is already being worked on.
+    @ObservationIgnored private var jarvisTurn: (text: String, fired: String?)?
+
+    /// A question is complete at its "?": Jarvis starts on it (again, if more was added). A
+    /// statement waits for the rest of the turn (`endJarvisTurn`), with the panel up meanwhile.
+    private func jarvisHeard(_ text: String) {
+        if text.trimmingCharacters(in: .whitespaces).hasSuffix("?") {
+            fireJarvis()
+        } else if jarvisTurn?.fired == nil {
+            jarvisTask?.cancel()
+            compositor.startJarvis(Self.echo(text), at: Date())
+            publish()
+        }
+    }
+
+    private func fireJarvis() {
+        guard let turn = jarvisTurn, turn.fired != turn.text else { return }
+        jarvisTurn?.fired = turn.text
+        jarvisRound(turn.text)
+    }
+
+    /// The speaker stopped: whatever they said to Jarvis is the request.
+    private func endJarvisTurn() {
+        fireJarvis()
+        jarvisTurn = nil
     }
 
     /// One request that may need a tool: the model answers, skips, or names a tool; the device
     /// runs it; the result goes up as an answer card as it is, no second model call. A command
     /// shows what it's doing if the tool takes a moment; an overheard question just shows the result.
-    private func toolRound(_ request: String, command: Bool, personal: Bool = false) {
-        guard let base = config.toolbox, let primary = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
-        let toolbox: any Toolbox = personal && !jarvisTools.isEmpty ? ExtraTools(base: base, extras: jarvisTools) : base
+    private func toolRound(_ request: String, command: Bool) {
+        guard let toolbox = config.toolbox, let primary = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
         nextCard += 1
         let card = nextCard, echo = Self.echo(request), started = Date()
         if let instant = Answerer.local(request) {
             compositor.show(Card(kind: .answer, title: instant, detail: echo, id: card, icon: "clock"), at: started)
             log(.answer, instant, detail: "\(request) · local")
-            if personal { onJarvis?(instant) }
             publish()
             return
         }
@@ -920,40 +959,29 @@ enum Talk {
         // what we know and the conversation.
         let context = self.context(last: 30)
         let backup = config.backup
-        // Jarvis knows the wearer's life: who they are, who they've met, what they owe.
-        let record = personal ? ([config.background.isEmpty ? "" : "About \(config.wearer): \(config.background)", self.personal?() ?? ""]
-            .filter { !$0.isEmpty }.joined(separator: "\n")) : ""
-        // Asked by name, it says at once that it heard; a tool's own row replaces this one.
-        if personal {
-            compositor.startWork(id: card, label: "Jarvis", eta: 3, at: started)
-            publish()
-        }
         // Each request runs on its own card: their question must not cancel the wearer's command.
         Task { [weak self] in
-            defer { if personal { self?.compositor.endWork(id: card); self?.publish() } }
             var used = primary
             do {
                 var decision: Tools.Decision
                 do {
-                    decision = try await Tools.decide(request, context: context, personal: record, toolbox: toolbox, provider: primary.provider,
+                    decision = try await Tools.decide(request, context: context, toolbox: toolbox, provider: primary.provider,
                                                       key: primary.key, model: primary.model)
                 } catch LLM.Failure.rateLimited(let wait) {
                     guard let backup, backup != primary else { throw LLM.Failure.rateLimited(retryAfter: wait) }
                     self?.answersBlockedUntil = Date().addingTimeInterval(60)
                     used = backup
-                    decision = try await Tools.decide(request, context: context, personal: record, toolbox: toolbox, provider: backup.provider,
+                    decision = try await Tools.decide(request, context: context, toolbox: toolbox, provider: backup.provider,
                                                       key: backup.key, model: backup.model)
                 }
                 guard !Task.isCancelled, let self else { return }
                 switch decision {
                 case .skip:
                     if command { self.put(Card(kind: .answer, title: "Not sure", detail: echo, id: card)) }
-                    if personal { self.onJarvis?("I'm not sure.") }
                     return
                 case .answer(let text):
                     self.put(Card(kind: .answer, title: text, detail: echo, id: card))
                     self.log(.answer, text, detail: "\(request) · \(self.ms(since: started)) ms · \(used.model)")
-                    if personal { self.onJarvis?(text) }
                 case .call(let name, let arguments):
                     // A slow one gets a working row with a countdown, not the card slot: a quick
                     // answer or a definition can still show while it runs.
@@ -971,7 +999,6 @@ enum Talk {
                     // Research that found nothing ("Not yet announced") isn't worth a glance.
                     guard !result.title.isEmpty else {
                         if command { self.put(Card(kind: .answer, title: "Couldn't find that", detail: echo, id: card)) }
-                        if personal { self.onJarvis?("I couldn't find that.") }
                         self.log(.lookup, request, detail: "no answer found")
                         return
                     }
@@ -980,7 +1007,6 @@ enum Talk {
                     let answer = name == "research" && !Self.explains(request) ? result.title
                         : Self.tidy(result.title, result.detail, asked: request)
                     self.put(Card(kind: .answer, title: answer, detail: echo, id: card, icon: result.icon))
-                    if personal { self.onJarvis?(answer) }
                     self.log(.answer, result.title, detail: "\(request) · \(name) · \(self.ms(since: started)) ms · \(used.model)")
                 }
                 self.timings["tool", default: []].append(self.ms(since: started))
@@ -989,6 +1015,61 @@ enum Talk {
                 if command { self?.put(Card(kind: .answer, title: "Couldn't do that", detail: echo, id: card, icon: "exclamationCircle")) }
                 self?.log(.status, "Tool failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    // MARK: - Jarvis: asked by name, thinks, shows its work
+
+    @ObservationIgnored private var jarvisTask: Task<Void, Never>?
+
+    /// The wearer asked Jarvis: its panel goes up at once, every step shows as it happens, and
+    /// the answer lands in the panel (and in their ear, `onJarvis`). A new request replaces one
+    /// still thinking. Runs on `config.jarvis`, a bigger model than the passing answers.
+    private func jarvisRound(_ request: String) {
+        guard let base = config.toolbox, let model = config.jarvis ?? config.answers ?? config.backup else { return }
+        let toolbox: any Toolbox = jarvisTools.isEmpty ? base : ExtraTools(base: base, extras: jarvisTools)
+        let started = Date()
+        jarvisTask?.cancel()
+        compositor.startJarvis(Self.echo(request), at: started)
+        // Jarvis knows the wearer's life: who they are, who they've met, what they owe.
+        let record = [config.background.isEmpty ? "" : "About \(config.wearer): \(config.background)", personal?() ?? ""]
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+        if personal != nil { compositor.jarvisStep("Reading your notes", at: started) }
+        publish()
+        let context = self.context(last: 30)
+        let fallback = config.jarvis != nil ? config.answers : nil
+        jarvisTask = Task { [weak self] in
+            let step: @Sendable (String) async -> Void = { label in
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else { return }
+                    self.compositor.jarvisStep(label, at: Date())
+                    self.publish()
+                }
+            }
+            var used = model
+            var answer: String
+            do {
+                do {
+                    answer = try await Tools.think(request, context: context, personal: record, toolbox: toolbox, model: model, step: step)
+                } catch where fallback != nil && !Task.isCancelled {
+                    // The big model is down or rate-limited: the fast one still answers.
+                    await MainActor.run { self?.log(.status, "Jarvis on the fast model: \(error.localizedDescription)") }
+                    used = fallback!
+                    answer = try await Tools.think(request, context: context, personal: record, toolbox: toolbox, model: used, step: step)
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.log(.status, "Jarvis failed: \(error.localizedDescription)")
+                answer = "I couldn't do that."
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.compositor.jarvisAnswer(answer, at: Date())
+            self.answeredAt = Date()
+            self.answeredText = answer
+            self.publish()
+            self.log(.answer, answer, detail: "\(request) · jarvis · \(self.ms(since: started)) ms · \(used.model)")
+            self.timings["jarvis", default: []].append(self.ms(since: started))
+            self.onJarvis?(answer)
         }
     }
 
@@ -1459,6 +1540,10 @@ extension Aid.Config {
         let backupProvider = Provider(rawValue: value("BackupProvider")?.lowercased() ?? "") ?? .openai
         let backup = value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) }
         let answers = answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) }
+        let jarvisProvider = Provider(rawValue: value("JarvisProvider")?.lowercased() ?? "")
+        let jarvis = jarvisProvider.flatMap { provider in
+            value("JarvisAPIKey").map { Aid.Model(provider: provider, key: $0, model: value("JarvisModel") ?? provider.model) }
+        }
         // Cutting a finding down to a card wants the fastest model with calls to spare: the answer
         // model when it's uncapped (qwen on Cerebras: 450/min), else the backup.
         let capped = value("AnswerPerMinute").flatMap { Int($0) } != nil
@@ -1494,6 +1579,7 @@ extension Aid.Config {
             background: value("WearerBackground") ?? "",
             situation: value("Situation") ?? "",
             answers: answers,
+            jarvis: jarvis,
             // Same provider as the answers: same model too (the provider's default was gpt-oss,
             // whose 5/min cap rate-limited the coach in the first replay on qwen).
             coach: coachKey.map { Aid.Model(provider: coachProvider, key: $0, model: value("CoachModel")

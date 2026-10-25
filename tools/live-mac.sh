@@ -35,6 +35,7 @@ if [ ! -x "$out/live" ] || [ -n "$(find App tools Secrets.xcconfig -newer "$out/
     echo '<key>NSRemindersFullAccessUsageDescription</key><string>Sets reminders when you ask.</string>'
     echo '<key>NSCalendarsFullAccessUsageDescription</key><string>Tells you what is next on your calendar.</string>'
     for pair in MuseAPIKey:MUSE_API_KEY AnswerProvider:ANSWER_PROVIDER AnswerAPIKey:ANSWER_API_KEY AnswerModel:ANSWER_MODEL \
+                JarvisProvider:JARVIS_PROVIDER JarvisAPIKey:JARVIS_API_KEY JarvisModel:JARVIS_MODEL \
                 CoachProvider:COACH_PROVIDER CoachAPIKey:COACH_API_KEY CoachModel:COACH_MODEL \
                 SuggestProvider:SUGGEST_PROVIDER SuggestAPIKey:SUGGEST_API_KEY SuggestModel:SUGGEST_MODEL \
                 BackupProvider:BACKUP_PROVIDER BackupAPIKey:BACKUP_API_KEY BackupModel:BACKUP_MODEL \

@@ -1078,12 +1078,14 @@ enum Identification {
         renderLens()
         countdown?.cancel()
         countdown = nil
-        guard !view.working.isEmpty else { return }
+        // Jarvis's clock ticks too while it thinks.
+        let ticking: (LensView) -> Bool = { !$0.working.isEmpty || $0.jarvis?.thinking == true }
+        guard ticking(view) else { return }
         // The countdown ticks on the lens: one re-send a second while something is in flight.
         countdown = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
-                guard let self, !Task.isCancelled, !self.aidLens.working.isEmpty else { return }
+                guard let self, !Task.isCancelled, ticking(self.aidLens) else { return }
                 if self.lensMode == .split { self.renderLens() }
             }
         }

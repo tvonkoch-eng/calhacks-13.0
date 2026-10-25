@@ -72,6 +72,11 @@ func drawLens(_ view: LensView) {
         for (i, line) in wrap(title, width - 4).enumerated() { rows.append((i == 0 ? "\(mark)  " : "   ") + Style.bold + line + Style.reset) }
         for line in wrap(card.detail, width - 4) { rows.append("   " + Style.dim + line + Style.reset) }
     }
+    if let jarvis = view.jarvis {
+        rows.append(Style.dim + "\u{2726}  " + jarvis.header(at: Date()) + "  " + jarvis.request + Style.reset)
+        if jarvis.thinking { for step in jarvis.steps { rows.append("   " + JarvisPanel.line(step)) } }
+        for (i, line) in wrap(jarvis.answer ?? "", width - 4).enumerated() { rows.append((i == 0 ? "J  " : "   ") + Style.bold + line + Style.reset) }
+    }
     for work in view.working {
         rows.append(Style.dim + "\u{22EF}  " + work.label + (work.remaining(at: Date()).map { " · \($0) s" } ?? "") + Style.reset)
     }

@@ -57,6 +57,12 @@
 	<string>$(COACH_MODEL)</string>
 	<key>CoachProvider</key>
 	<string>$(COACH_PROVIDER)</string>
+	<key>JarvisAPIKey</key>
+	<string>$(JARVIS_API_KEY)</string>
+	<key>JarvisModel</key>
+	<string>$(JARVIS_MODEL)</string>
+	<key>JarvisProvider</key>
+	<string>$(JARVIS_PROVIDER)</string>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>MWDAT</key>
