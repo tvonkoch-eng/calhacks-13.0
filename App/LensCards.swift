@@ -487,9 +487,9 @@ enum LensFit {
     static let slack: CGFloat = 1.1
     static let margin: CGFloat = 16
 
-    /// The aid's cards take the top half of the lens when there are people to show, and the people
-    /// the bottom half: one card, or two, a quarter each. `half` is what the bottom takes.
-    static var half: CGFloat { available / 2 }
+    /// The aid's cards take the top third of the lens when there are people to show, and the people
+    /// the bottom two-thirds, so their cards carry the most. `half` is what the bottom takes.
+    static var half: CGFloat { available * 2 / 3 }
     /// Padding, photo, name and one headline line: what a person card takes before its fill.
     static let cardBase: CGFloat = 190
 
