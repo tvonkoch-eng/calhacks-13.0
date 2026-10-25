@@ -642,11 +642,12 @@ struct TagRow: View {
 
 struct SearchField: View {
     @Binding var text: String
+    var prompt = "Search people, schools, companies"
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search people, schools, companies", text: $text)
+            TextField(prompt, text: $text)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             if !text.isEmpty {

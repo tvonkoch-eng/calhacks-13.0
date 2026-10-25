@@ -82,7 +82,7 @@ struct NotesHome: View {
         }
         // Same look as People: search, a "+ New" row, then 46 pt rows with a hairline under each.
         return List {
-            SearchField(text: $query)
+            SearchField(text: $query, prompt: "Search notes, people, what was said")
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 6, trailing: 16))
                 .listRowSeparator(.hidden)
             Button { Transcripts.shared.start(assistant) } label: {

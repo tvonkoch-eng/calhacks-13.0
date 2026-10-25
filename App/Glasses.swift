@@ -1960,14 +1960,17 @@ enum Identification {
     /// closer look later in the conversation replaces it (at most every few seconds).
     private func betterLooks(_ inView: [FaceTracker.Track], hits: [FaceHit], image: CIImage, store: Store) {
         for track in inView {
-            // Someone met here, on the track they were met on or recognised again on a later one.
+            // Anyone face ID knows, on the track they were met on or recognised on a later one.
             let known = metTracks[track.id] ?? store.confidentMatch(track.probe).map(\.person.id)
-            guard let id = known, store.isMet(id), let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
-            // Every couple of seconds in view: another look into their gallery (photo and sample).
+            guard let id = known, let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
+            // Every couple of seconds in view, everyone (named or not, roster or not): another look
+            // into their gallery, photo and sample, so they're recognised better each time.
             if !hit.embedding.isEmpty, clockNow.timeIntervalSince(lastLook[id] ?? .distantPast) >= 2 {
                 lastLook[id] = clockNow
                 store.addShot(id, embedding: hit.embedding, image: UIImage(cgImage: hit.crop))
             }
+            // The profile photo only upgrades itself for people met here; the roster keeps theirs.
+            guard store.isMet(id) else { continue }
             let score = lookScore(hit.box, hit)
             let last = photoLook[id] ?? (0, .distantPast)
             guard score > last.score * 1.25, Date().timeIntervalSince(last.at) > 3,
