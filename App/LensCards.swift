@@ -466,8 +466,14 @@ enum LensCards {
         shot.name = person?.name ?? view.header
         shot.headline = person?.headline
         shot.photo = person?.id
-        shot.cards = view.cards.map { LensShot.CardText(title: $0.title, detail: $0.detail.isEmpty ? nil : $0.detail, icon: $0.icon,
-                                                        asked: $0.kind == .answer) }
+        shot.cards = view.cards.map { card in
+            // A definition reads like an answer: the term small and grey on top, what it is below.
+            if card.kind == .definition, !card.detail.isEmpty {
+                return LensShot.CardText(title: card.detail, detail: card.title, icon: card.icon, asked: true)
+            }
+            return LensShot.CardText(title: card.title, detail: card.detail.isEmpty ? nil : card.detail, icon: card.icon,
+                                     asked: card.kind == .answer)
+        }
         if let card = view.card {
             shot.answer = card.title
             shot.echo = card.detail.isEmpty ? nil : card.detail
