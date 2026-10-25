@@ -208,13 +208,13 @@ import Observation
     /// "Lens, what should I ask?" or when a face is recognised. `aidCoach` false turns it off live.
     private static func makeAid(wearer: String) -> Aid {
         var config = Aid.Config.fromBundle(wearer: wearer)
-        config.explicitOnly = Tuning.bool("aidExplicitOnly", true)
+        config.explicitOnly = Tuning.bool("aidExplicitOnly", false)
         if !Tuning.bool("aidCoach", true) { config.coach = nil }
-        // Off since the 2026-10-24 test: the lines to say were bad. The coach keeps defining terms
-        // and catching questions the fast lane missed.
-        config.suggestions = Tuning.bool("aidSuggest", false)
+        // Eager by default (2026-10-25): answers before the "?", suggestions in every lull, and
+        // definitions for the wearer's own lines too. Each one has its Tuning switch to turn it back off.
+        config.suggestions = Tuning.bool("aidSuggest", true)
         config.answerMine = Tuning.bool("aidAnswerMine", true)
-        config.defineMine = Tuning.bool("aidDefineMine", false)
+        config.defineMine = Tuning.bool("aidDefineMine", true)
         return Aid(config: config)
     }
 

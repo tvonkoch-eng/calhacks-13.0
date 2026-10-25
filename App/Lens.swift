@@ -115,7 +115,7 @@ struct Compositor {
     /// expire waiting for a slot. LensFit drops the oldest when they don't fit the top half.
     static let maxCards = 3
     static let ttl: [Card.Kind: TimeInterval] = [.answer: 15, .definition: 10, .insight: 10]
-    static let minDwell: TimeInterval = 2.5
+    static let minDwell: TimeInterval = 1.5
     static let answerDwell: TimeInterval = 5
     /// How long a card may wait for a place (or for the wearer to stop talking) before it is
     /// stale. In a fast conversation a definition is worth little five seconds on.

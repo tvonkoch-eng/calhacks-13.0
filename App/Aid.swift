@@ -1403,7 +1403,7 @@ enum Talk {
 
     @ObservationIgnored private var lastInsight = Date.distantPast
     /// At most one insight this often: the least urgent card mustn't crowd out the rest.
-    private static let insightGap: TimeInterval = 2
+    private static let insightGap: TimeInterval = 0.5
     /// Later than this after the line, the conversation has moved on: dropped.
     private static let insightLate: TimeInterval = 10
 
@@ -1482,8 +1482,8 @@ enum Talk {
     /// Everything shown so far, so none comes round twice.
     @ObservationIgnored private var suggested: [String] = []
 
-    /// Seconds of quiet after a line that count as a lull. Two keeps suggestions eager.
-    private static let lull: TimeInterval = 2
+    /// Seconds of quiet after a line that count as a lull. One: very eager.
+    private static let lull: TimeInterval = 1
 
     /// The wearer asks what to say: a pinch on the glasses, "Lens, what should I ask?", `s` on the Mac.
     func suggestNow() {
