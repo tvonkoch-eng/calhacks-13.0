@@ -566,9 +566,18 @@ import Observation
     private func rename(_ id: String, _ name: String) {
         guard var person = person(id) else { return }
         person.name = name
-        // A teammate's name: their roster profile fills the card, as in the lens test.
-        if store?.linkToRoster(&person, heard: name) == true {
-            SpeedLog.record(["event": "metLinked", "person": id, "roster": person.name])
+        // A teammate's name (Toby, Avi, Mirabelle): they're on the roster. The stand-in contact goes,
+        // the roster comes back into face ID, and from the next frame they (and the rest of the crew)
+        // are recognised as themselves, with their own formatted card, as in the lens test.
+        if let roster = store?.rosterMatch(name) {
+            SpeedLog.record(["event": "metLinked", "person": id, "roster": roster.id])
+            glasses?.demo.named(id)
+            crm?.forgetPerson(id)
+            store?.forget(id)
+            newcomers.removeAll { $0 == id }
+            store?.rosterHidden = false
+            glasses?.demoClear()
+            return
         }
         crm?.named(id, person.name)
         store?.updateMet(person)
@@ -588,11 +597,8 @@ import Observation
         } else if crm.renamable(id), person.name != CRM.newName {
             glasses?.demo.named(id)
         }
-        // Linked to a teammate on the roster: their profile stays, the notes don't replace it.
-        if store?.linkedToRoster.contains(id) == true {
-            SpeedLog.record(["event": "metLearned", "person": id, "linked": true])
-            return
-        }
+        // Swapped for a teammate on the roster (`rename`): nothing of the stand-in left to fill.
+        guard self.person(id) != nil else { return }
         if let label = glance.label { person.role = label }
         let facts = crm.facts(about: id).map(\.text)
         person.tie = facts.first
@@ -642,6 +648,8 @@ import Observation
             }
         case "name":
             if let id = newcomers.last { rename(id, arg("n")) }
+            // The simulator has no face ID to bring the teammate back: put them up as a sighting would.
+            if let roster = store?.rosterMatch(arg("n")) { glasses?.demoShow(roster) }
         case "fact":
             // Filed in the CRM as a glance would, then onto the card the way `learned` puts it.
             guard let id = newcomers.last, let crm, var person = person(id) else { return }

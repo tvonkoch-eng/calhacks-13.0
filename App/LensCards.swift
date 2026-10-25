@@ -510,6 +510,11 @@ enum LensCards {
         // A long answer used to take the people off the lens. Now it is cut to the words that fit
         // beside them, so the person stays and the answer ends in an ellipsis.
         // Jarvis's answer takes the band it needs, up to `maxBand`; the people's half shrinks to match.
+        // Nothing up top (no answer, Jarvis, work or suggestion): the people take the lens, full size,
+        // and the top keeps only its one blank line.
+        if shot.cards.isEmpty, shot.jarvis == nil, shot.working.isEmpty, shot.followup == nil, wanted != .none {
+            shot.band = LensFit.emptyBand
+        }
         if shot.jarvis?.answer != nil, wanted != .none {
             shot.band = min(max(LensFit.answersBand, LensFit.content(answerOnly, bottom: wanted) + 8), LensFit.maxBand)
         }
@@ -748,6 +753,8 @@ enum LensFit {
     static var maxBand: CGFloat { available - minPeople }
     /// The answers' and definitions' band at the top, fixed.
     static let answersBand: CGFloat = 132
+    /// The top with nothing in it: the blank line's box and its gap, and no more.
+    static let emptyBand: CGFloat = 92
     /// Padding, photo, name and one headline line: what a person card takes before its fill.
     static let cardBase: CGFloat = 190
 
@@ -859,14 +866,15 @@ enum LensFit {
         let pad = full(width) && photoSide == nil ? 44 : 2 * splitPad
         var left = room - (pad + header + gap)
         var out: [String] = []
-        // Rigid: a bullet is at most two lines, cut with "…" by a character count that assumes
-        // Meta's wider face, and its height is budgeted as if it wrapped wide. So no card can run
-        // taller than its half, whatever the glasses' font does.
-        let perLine = Int(width / (font.pointSize * 0.66))
+        // One line per bullet (Oct 25): each cut with "…" to the width it has, measured with the
+        // usual slack for Meta's wider face, so every bullet is one row and as many fit as possible.
+        let fits = { (text: String) in (text as NSString).size(withAttributes: [.font: font]).width * slack <= width }
         for raw in pool {
-            let line = raw.count > perLine * 2 ? String(raw.prefix(perLine * 2 - 1)) + "\u{2026}" : raw
-            let rows = min(2, (line.count + perLine - 1) / max(1, perLine))
-            let h = CGFloat(rows) * font.lineHeight * 1.35 + gap
+            var line = raw
+            while !fits(line), line.count > 4 {
+                line = String(line.dropLast(2).trimmingCharacters(in: .whitespaces)) + "\u{2026}"
+            }
+            let h = font.lineHeight * 1.2 + gap
             // Too tall here, but a shorter one further down may still fit.
             if h > left { continue }
             left -= h
