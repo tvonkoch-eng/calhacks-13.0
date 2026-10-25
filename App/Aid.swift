@@ -371,6 +371,9 @@ enum Talk {
     /// The wearer's own record (CRM.digest: people met, what was said, promises, the roster), for
     /// what they ask Jarvis. Read per request, so it's always current.
     @ObservationIgnored var personal: (() -> String)?
+    /// The person the wearer is talking to right now (face ID or the last one they looked at): their
+    /// record line, so Jarvis knows who "they" are without a search. Empty when nobody is in front.
+    @ObservationIgnored var currentPerson: (() -> String)?
     /// A Jarvis answer, to say out loud (Voice). Only answers to "Jarvis, …": the rest of the aid
     /// is silent on the lens.
     @ObservationIgnored var onJarvis: ((String) -> Void)?
@@ -1090,7 +1093,13 @@ enum Talk {
         jarvisTask?.cancel()
         compositor.startJarvis(Self.echo(request), at: started)
         // Jarvis knows the wearer's life: who they are, who they've met, what they owe.
-        let record = [config.background.isEmpty ? "" : "About \(config.wearer): \(config.background)", personal?() ?? ""]
+        // Where they are and what they're doing, the person in front of them, then their whole record.
+        let here = config.situation.isEmpty ? "" : "Where and what: \(config.situation)"
+        let front = currentPerson?() ?? ""
+        let record = [here,
+                      config.background.isEmpty ? "" : "About \(config.wearer): \(config.background)",
+                      front.isEmpty ? "" : "Talking with them now:\n\(front)",
+                      personal?() ?? ""]
             .filter { !$0.isEmpty }.joined(separator: "\n")
         if personal != nil { compositor.jarvisStep("Reading your notes", at: started) }
         publish()

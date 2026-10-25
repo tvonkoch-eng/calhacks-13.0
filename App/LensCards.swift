@@ -229,7 +229,7 @@ enum LensCards {
                     .flexGrow(Float(LensFit.markShare))
                 }
                 FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
-                    FlexBox(direction: .column) { Image(image: photo ?? placeholder ?? UIImage(), sizePreset: .fill, cornerRadius: .none) }
+                    FlexBox(direction: .column) { Image(image: photo ?? placeholder ?? UIImage(), sizePreset: .fill, cornerRadius: .medium) }
                         .flexGrow(Float(LensFit.splitPhotoShare)).flexShrink(0)
                     Text(LensFit.nameText(name, width: width), style: .heading,
                          color: bright ? .primary : .secondary).flexGrow(Float(1 - LensFit.splitPhotoShare)).flexShrink(1)
@@ -241,7 +241,7 @@ enum LensCards {
             // The photo's box is always there, a grey square until the photo lands, so the name and
             // bullets never move when it arrives.
             if let photo = photo ?? placeholder {
-                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .none) }
+                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
                     .flexGrow(share).flexShrink(0)
             }
             FlexBox(direction: .column) {
@@ -250,8 +250,9 @@ enum LensCards {
                      color: bright ? .primary : .secondary).flexShrink(1)
             }
             .flexGrow(1 - share).flexShrink(1)
-            // In focus: the glasses' own icon, beside the name. Vector, so nothing heavy to send.
-            if focused, let mark = glassesMark { Image(image: mark, sizePreset: .icon, cornerRadius: .none) }
+            // In focus: the glasses' own icon, beside the name. Out of focus a blank square of the same preset
+            // takes its place, so the photo and the name never move when focus does (no opacity to fade with).
+            if let mark = (focused ? glassesMark : blankMark) { Image(image: mark, sizePreset: .icon, cornerRadius: .none) }
         }
     }
 
@@ -613,18 +614,22 @@ enum LensCards {
     /// The in-focus mark: a small pair of glasses, drawn white on clear (the mockup's outline glyph).
     /// One fixed image, so it's the same bytes every write; the phone mirror shows this same image.
     static let glassesMark: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 56, height: 56)).image { _ in
+        // Bigger than the first cut and heavier: fills the square, so it reads at a glance.
         UIColor.white.setStroke()
         let path = UIBezierPath()
-        path.lineWidth = 3
+        path.lineWidth = 4.2
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        path.append(UIBezierPath(ovalIn: CGRect(x: 8, y: 24, width: 15, height: 13)))
-        path.append(UIBezierPath(ovalIn: CGRect(x: 33, y: 24, width: 15, height: 13)))
-        path.move(to: CGPoint(x: 23, y: 29)); path.addQuadCurve(to: CGPoint(x: 33, y: 29), controlPoint: CGPoint(x: 28, y: 25))
-        path.move(to: CGPoint(x: 8, y: 29)); path.addLine(to: CGPoint(x: 4, y: 21))
-        path.move(to: CGPoint(x: 48, y: 29)); path.addLine(to: CGPoint(x: 52, y: 21))
+        path.append(UIBezierPath(ovalIn: CGRect(x: 4, y: 21, width: 21, height: 17)))
+        path.append(UIBezierPath(ovalIn: CGRect(x: 31, y: 21, width: 21, height: 17)))
+        path.move(to: CGPoint(x: 25, y: 28)); path.addQuadCurve(to: CGPoint(x: 31, y: 28), controlPoint: CGPoint(x: 28, y: 23))
+        path.move(to: CGPoint(x: 4, y: 27)); path.addLine(to: CGPoint(x: 1, y: 18))
+        path.move(to: CGPoint(x: 52, y: 27)); path.addLine(to: CGPoint(x: 55, y: 18))
         path.stroke()
     }
+
+    /// The same square as the mark with nothing drawn in it: it takes the mark's place out of focus.
+    static let blankMark: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 56, height: 56)).image { _ in }
 
     /// Holds the photo's place while it's on its way: the same grey as the mirror's.
     static let placeholder: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96)).image { _ in
@@ -760,10 +765,17 @@ enum LensFit {
     /// First name over last, each line clipped to what that layout holds ("Alexandria" fits; a
     /// longer word ends in "…"), so a name never wraps mid-word or changes size.
     static func nameText(_ name: String, width: CGFloat) -> String {
+        // Full width: first and last on one line whenever the whole name fits beside the photo.
+        if full(width), oneLine(name, width: width) { return name }
         let most = full(width) ? 18 : 8
         return LensCards.twoLines(name).split(separator: "\n").map { line in
             line.count > most ? line.prefix(most - 1) + "\u{2026}" : String(line)
         }.joined(separator: "\n")
+    }
+
+    /// The whole name on one heading line, with slack for Meta's face running wider than the system font.
+    static func oneLine(_ name: String, width: CGFloat) -> Bool {
+        (name as NSString).size(withAttributes: [.font: heading]).width * 1.25 <= beside(width) - iconRoom
     }
 
     static func nameFits(_ name: String, width: CGFloat) -> Bool {

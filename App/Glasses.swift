@@ -277,8 +277,10 @@ enum Identification {
     /// frame rate at addCamera time; changing the defaults alone does nothing until then.
     @ObservationIgnored private var liveStreamSettings: String?
     private var streamSettings: String { "\(streamFps)/\(streamRes)" }
+    /// Off (`glassesCamera: false`, read at each connect): lens and mic only, no camera stream.
+    private var cameraWanted: Bool { Tuning.bool("glassesCamera", true) }
     var streamRes: String { UserDefaults.standard.string(forKey: "streamRes") ?? "high" }
-    var streamFps: Int { Tuning.int("streamFps", 7) }
+    var streamFps: Int { Tuning.int("streamFps", 2) }
     /// Names a recorded run. A simulated pair ignores the knobs (see `streamConfig`), so say so.
     private var streamLabel: String {
         #if DEBUG
@@ -412,6 +414,9 @@ enum Identification {
     private(set) var benching = false
     /// The card is on the lens with a placeholder; its photo is the next write.
     @ObservationIgnored private var photoPending = false
+    /// Whose photo is already on the lens. Their next card goes up with it, in one write: a card sent
+    /// without it first is what made the photo drop out and come back. Cleared when the glasses drop.
+    @ObservationIgnored private var photoOnLens: String?
     /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
     @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
@@ -607,10 +612,7 @@ enum Identification {
             guard let found else {
                 // What the SDK does know: an empty list means Meta AI isn't handing us the glasses at
                 // all; a listed pair says which state (link, hinge, worn) kept it from being active.
-                let known = wearables.devices.map { id -> String in
-                    guard let d = wearables.deviceForIdentifier(id) else { return "\(id): gone" }
-                    return "\(d.nameOrId()): link=\(d.linkState) hinge=\(d.hingeState) don=\(d.donState) compat=\(d.compatibility())"
-                }
+                let known = deviceStates()
                 SpeedLog.record(["event": "connectError", "error": "noGlassesFound", "waitedS": 15,
                                  "registration": "\(wearables.registrationState)", "devices": known])
                 scheduleRecovery(reason: "noGlassesFound")
@@ -700,22 +702,34 @@ enum Identification {
             // Standalone photo capture failed instantly on every scan (0 bytes in ~20 ms), so frames come
             // from the stream. Medium (504x896) keeps Bluetooth load down; faces at talking distance
             // are still ~150 px.
-            guard let camera = try session.addCamera(config: streamConfig) else {
-                status = "Glasses camera unavailable"
-                session.stop()
-                self.session = nil
-                tokens = []
-                scheduleRecovery(reason: "noCamera")
-                return
+            // `glassesCamera: false` connects for the lens and the mic only: on Oct 25 the camera
+            // stream timed out on every start and took the session (and the lens) down with it, so
+            // the aid never reached the glasses. No face ID then; everything else works.
+            if cameraWanted {
+                guard let camera = try session.addCamera(config: streamConfig) else {
+                    status = "Glasses camera unavailable"
+                    session.stop()
+                    self.session = nil
+                    tokens = []
+                    scheduleRecovery(reason: "noCamera")
+                    return
+                }
+                attachCamera(camera)
+                // Bring the stream up now, not on the first press: spinning it up cost ~830 ms of
+                // every identify, and it is the single biggest item on the clock.
+                startStream()
+                cameraRestartTried = false
+                watchFrames()
+            } else {
+                SpeedLog.record(["event": "cameraOff", "reason": "glassesCamera knob"])
             }
-            attachCamera(camera)
-            // Bring the stream up now, not on the first press: spinning it up cost ~830 ms of
-            // every identify, and it is the single biggest item on the clock.
-            startStream()
-            cameraRestartTried = false
-            watchFrames()
 
-            if wearables.deviceForIdentifier(found)?.supportsDisplay() == true {
+            // Each part can be left out from the phone's tuning file (`glassesDisplay`, `glassesInputs`,
+            // `glassesCamera`, `glassesSpeech`) to find which one ends the session. Read at connect.
+            let displayWanted = Tuning.bool("glassesDisplay", true)
+            SpeedLog.record(["event": "parts", "camera": cameraWanted, "display": displayWanted,
+                             "inputs": Tuning.bool("glassesInputs", true), "speech": wantsSpeech])
+            if displayWanted, wearables.deviceForIdentifier(found)?.supportsDisplay() == true {
                 let display = try session.addDisplay()
                 tokens.append(display.statePublisher.listen { [weak self] state in
                     Task { @MainActor in
@@ -727,7 +741,7 @@ enum Identification {
                 display.start()
                 self.display = display
             }
-            attachInputs(session)
+            if Tuning.bool("glassesInputs", true) { attachInputs(session) }
             attachSpeech(session)
 
             connected = true
@@ -747,6 +761,15 @@ enum Identification {
             session?.stop()
             teardown(status: status, keepContext: true)
             scheduleRecovery(reason: "connectError")
+        }
+    }
+
+    /// The SDK's view of each paired device: link, hinge (open or folded), worn, compatibility.
+    private func deviceStates() -> [String] {
+        let wearables = Wearables.shared
+        return wearables.devices.map { id -> String in
+            guard let d = wearables.deviceForIdentifier(id) else { return "\(id): gone" }
+            return "\(d.nameOrId()): link=\(d.linkState) hinge=\(d.hingeState) don=\(d.donState) compat=\(d.compatibility())"
         }
     }
 
@@ -772,6 +795,8 @@ enum Identification {
     /// glasses). Log every transition; an unexpected stop is recovered like any other fault.
     private func sessionChanged(_ state: String, stopped: Bool) {
         SpeedLog.record(["event": "session", "state": state])
+        // What the glasses were doing when the device ended the session: link, hinge, worn.
+        if stopped { SpeedLog.record(["event": "sessionStoppedDevices", "devices": deviceStates()]) }
         guard stopped, connected else { return }
         teardown(status: "Reconnecting to your glasses…", keepContext: true)
         scheduleRecovery(reason: "sessionStopped")
@@ -1136,6 +1161,7 @@ enum Identification {
     /// `keepContext`: a reconnect, not a goodbye. The person on the card and the aid's lens survive
     /// it, so the lens comes back showing what it showed.
     private func teardown(status: String, keepContext: Bool = false) {
+        photoOnLens = nil   // the glasses lose the lens with the session: the next card carries its photo again
         inputTask?.cancel()
         inputTask = nil
         tokens = []
@@ -1312,6 +1338,8 @@ enum Identification {
                 guard self.connected, self.recoveryTask == nil else { continue }
                 // A still in flight can pause video for a moment; don't call that a stall.
                 guard !self.photoBusy, Date().timeIntervalSince(self.lastPhotoAt) > 4 else { continue }
+                // Camera off on purpose: nothing to watch, nothing to recover.
+                guard self.cameraWanted else { continue }
                 guard self.camera != nil else {
                     self.scheduleRecovery(reason: "noCamera")
                     continue
@@ -2216,6 +2244,11 @@ enum Identification {
             return
         }
         guard display != nil, displayReady, !benching else { return }
+        if photoOnLens == person.id {
+            photoPending = false
+            renderLens()
+            return
+        }
         photoPending = true
         let start = CFAbsoluteTimeGetCurrent()
         guard renderLens() else { photoPending = false; return }
@@ -2229,6 +2262,7 @@ enum Identification {
                 if self.renderLens() {
                     log["photoOK"] = await self.writesDone()
                     log["photoMs"] = ms(since: photoStart)
+                    if log["photoOK"] as? Bool == true { self.photoOnLens = person.id }
                 }
             }
             SpeedLog.record(log)
