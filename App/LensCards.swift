@@ -77,7 +77,8 @@ enum LensCards {
         let gap = LensFit.gap(shot, bottom: bottom(person: person, group: group))
         return FlexBox(direction: .column, spacing: LensFit.spacing) {
             for (index, card) in shot.cards.enumerated() { cardBox(card, newest: index == 0) }
-            if !shot.working.isEmpty || shot.followup != nil { extrasBox(shot) }
+            // Always up, blank until there's something to say: the top third is the suggestions'.
+            extrasBox(shot)
             // The aid has the top half. The people have the bottom half: one card taking all of it,
             // or two, a quarter of the lens each.
             FlexBox(direction: .column) {}.padding(.top, gap).flexGrow(1)
@@ -152,6 +153,9 @@ enum LensCards {
                     Icon(name: .speechBubble, style: .outline)
                     Text(followup, style: .body).flexShrink(1)
                 }
+            }
+            if shot.working.isEmpty && shot.followup == nil {
+                FlexBox(direction: .column) {}.padding(.top, LensFit.blank)
             }
         }
         .padding(20)
@@ -503,9 +507,11 @@ enum LensFit {
     }
 
     /// The person card's height in the split: the bottom half, grown into whatever the aid leaves.
-    static func personRoom(_ shot: LensShot) -> CGFloat {
-        max(half, available - content(shot, bottom: .person) - spacing)
-    }
+    /// Fixed at the bottom share: the top is the suggestions', so the person never grows into it.
+    static func personRoom(_ shot: LensShot) -> CGFloat { half }
+
+    /// The empty suggestions box's inner height: one body line.
+    static let blank: CGFloat = 30
 
     /// Detail lines that fit under the name in `room`.
     static func maxLines(room: CGFloat) -> Int {
@@ -542,7 +548,9 @@ enum LensFit {
             if let detail = card.detail { h += 4 + lines(detail, newest ? body : meta, width) }
             return h
         }
-        if !shot.working.isEmpty || shot.followup != nil {
+        if shot.working.isEmpty && shot.followup == nil {
+            pieces.append(40 + blank)
+        } else {
             var h: CGFloat = 40
             h += shot.working.map { lines($0, meta, width - 38) + 10 }.reduce(0, +)
             if let followup = shot.followup { h += lines(followup, body, width - 38) } else { h -= 10 }

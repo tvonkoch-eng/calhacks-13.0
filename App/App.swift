@@ -1119,8 +1119,10 @@ struct LensMirror: View {
                         .padding(m.pad)
                         .modifier(LensCardBackground(radius: m.radius))
                 }
-                if !shot.working.isEmpty || shot.followup != nil {
+                // Always up, blank until there's a suggestion: the top third is reserved for it.
+                do {
                     extrasBody
+                        .frame(minHeight: LensFit.blank, alignment: .topLeading)
                         .padding(m.pad)
                         .modifier(LensCardBackground(radius: m.radius))
                 }
