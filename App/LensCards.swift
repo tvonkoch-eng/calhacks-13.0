@@ -630,7 +630,8 @@ enum LensFit {
 
     /// The aid's cards take the top third of the lens when there are people to show, and the people
     /// the bottom two-thirds, so their cards carry the most. `half` is what the bottom takes.
-    static var half: CGFloat { available * 2 / 3 }
+    /// The people's share, fixed: every people card starts at the same height and never grows past it.
+    static var half: CGFloat { available * 0.64 }
     /// Padding, photo, name and one headline line: what a person card takes before its fill.
     static let cardBase: CGFloat = 190
 
@@ -684,7 +685,7 @@ enum LensFit {
     /// First name over last, each line clipped to what that layout holds ("Alexandria" fits; a
     /// longer word ends in "…"), so a name never wraps mid-word or changes size.
     static func nameText(_ name: String, width: CGFloat) -> String {
-        let most = full(width) ? 18 : 9
+        let most = full(width) ? 18 : 8
         return LensCards.twoLines(name).split(separator: "\n").map { line in
             line.count > most ? line.prefix(most - 1) + "\u{2026}" : String(line)
         }.joined(separator: "\n")
@@ -716,10 +717,17 @@ enum LensFit {
         let header = !full(width) ? markSide + 4 + max(splitPhoto, lines(nameText(name, width: width), heading, width - photoGap - splitPhoto) * slack)
             : max(photo, lines(nameText(name, width: width), heading,
                                       width - photoGap - photo - iconRoom) * slack)
-        var left = half - (44 + header + gap)
+        let pad = full(width) ? 44 : 2 * splitPad
+        var left = half - (pad + header + gap)
         var out: [String] = []
-        for line in pool {
-            let h = lines(line, font, width) * slack + gap
+        // Rigid: a bullet is at most two lines, cut with "…" by a character count that assumes
+        // Meta's wider face, and its height is budgeted as if it wrapped wide. So no card can run
+        // taller than its half, whatever the glasses' font does.
+        let perLine = Int(width / (font.pointSize * 0.62))
+        for raw in pool {
+            let line = raw.count > perLine * 2 ? String(raw.prefix(perLine * 2 - 1)) + "\u{2026}" : raw
+            let rows = min(2, (line.count + perLine - 1) / max(1, perLine))
+            let h = CGFloat(rows) * font.lineHeight * 1.3 + gap
             // Too tall here, but a shorter one further down may still fit.
             if h > left { continue }
             left -= h
