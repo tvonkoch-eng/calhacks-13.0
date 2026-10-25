@@ -158,6 +158,7 @@ await MainActor.run {
 
 // 3. Pending contacts expire; saved ones and the roster don't. Nothing transcript-like on disk.
 let file = FileManager.default.temporaryDirectory.appendingPathComponent("crm-test-\(UUID()).json")
+UserDefaults.standard.set(false, forKey: "keepMetFaces")   // the pending rule; the default keeps met people
 await MainActor.run {
     let crm = makeCRM(nil, url: file)
     let stranger = crm.save(Encounter(name: "Sam", summary: "Met at the badge line.", at: t0))!
@@ -170,7 +171,16 @@ await MainActor.run {
     let disk = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
     check(!disk.contains("\"lines\"") && !disk.contains("transcript"), "no transcript on disk")
 }
+UserDefaults.standard.removeObject(forKey: "keepMetFaces")
 try? FileManager.default.removeItem(at: file)
+
+// Met by face, the default: kept from the start, so recognition still works after a relaunch.
+UserDefaults.standard.removeObject(forKey: "keepMetFaces")
+await MainActor.run {
+    let crm = makeCRM(nil, url: nil)
+    let id = crm.meet(at: t0)
+    check(crm.consent(id) == .saved && crm.name(id) == CRM.newName, "met by face: kept from the start by default")
+}
 
 // 4. The recorder: opens on the first line, attributed to the face in view, closes after two
 // minutes of quiet, recap becomes the record.
@@ -229,6 +239,7 @@ await MainActor.run {
 // and the conversation files under them with the name they gave.
 check(Glance.parse("{\"name\": \"Priya Patel\", \"label\": \"evals startup founder\", \"facts\": [\"Building an evals startup\", null]}")
         == Glance(name: "Priya Patel", label: "evals startup founder", facts: ["Building an evals startup"]), "glance parse")
+UserDefaults.standard.set(false, forKey: "keepMetFaces")
 let meeting = await MainActor.run { () -> CRM in
     let crm = makeCRM(Recap.Result(summary: "Talked evals.", label: "evals startup founder", name: "Priya", facts: ["Building an evals startup"]))
     UserDefaults.standard.set(0, forKey: "glanceEvery")
@@ -238,7 +249,7 @@ let meeting = await MainActor.run { () -> CRM in
         return Glance(name: "Priya", label: "evals startup founder", facts: ["Building an evals startup"])
     }
     let id = crm.meet(at: at(0))
-    check(crm.consent(id) == .pending && crm.name(id) == CRM.newName, "met: pending, unnamed")
+    check(crm.consent(id) == .pending && crm.name(id) == CRM.newName, "met (switch off): pending, unnamed")
     crm.facing(id)
     crm.heard("Hi, I'm Toby.", speaker: "A", at: at(1))
     // The aid resolves a face-identified speaker to "p:<id>" before the CRM hears the line.
