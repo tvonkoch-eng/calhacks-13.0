@@ -444,17 +444,21 @@ struct AidOverlay: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(view.cards.enumerated()), id: \.element.id) { index, card in
                 VStack(alignment: .leading, spacing: 4) {
+                    if card.kind == .answer, !card.detail.isEmpty {
+                        Text(card.detail).font(.system(size: m.meta)).foregroundStyle(Color(white: 0.83))
+                    }
                     Text(card.title).font(.system(size: index == 0 ? m.heading : m.body, weight: index == 0 ? .semibold : .regular))
-                    if !card.detail.isEmpty {
+                    if card.kind != .answer, !card.detail.isEmpty {
                         Text(card.detail).font(.system(size: index == 0 ? m.body : m.meta)).foregroundStyle(Color(white: 0.83))
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
             }
             if let work = view.working.first {
                 Label(work.label, systemImage: "sparkles").font(.system(size: m.meta))
             }
             if let followup = view.followup {
-                Label(followup, systemImage: "bubble.left").font(.system(size: m.body))
+                Label(followup, systemImage: "bubble.left").font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(m.pad)
@@ -1013,7 +1017,7 @@ struct LensMirror: View {
         VStack(alignment: .leading, spacing: 10) {
             header(id: id, name: shot.name ?? "", width: LensFit.personWidth, bright: true)
             ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
-                Text(line).font(.system(size: m.body))
+                Text(line).font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
@@ -1031,7 +1035,7 @@ struct LensMirror: View {
                     header(id: member.id, name: member.fullName.isEmpty ? member.name : member.fullName,
                            width: LensFit.memberWidth, bright: member.speaking)
                     ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: m.meta))
+                        Text(line).font(.system(size: m.meta)).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
@@ -1095,14 +1099,19 @@ struct LensMirror: View {
     /// Mirror of `LensCards.cardBox`: the newest card as heading over body, older ones a step down.
     private func cardBody(_ card: LensShot.CardText, newest: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
+            if card.asked, let detail = card.detail {
+                Text(detail).font(.system(size: m.meta)).foregroundStyle(secondary)
+            }
             HStack(spacing: 10) {
                 if let icon = card.icon { Image(systemName: LensCards.symbol(lensIcon: icon)).font(.system(size: m.glyph)) }
                 Text(card.title).font(.system(size: newest ? m.heading : m.body, weight: newest ? .semibold : .regular))
             }
-            if let detail = card.detail {
+            if !card.asked, let detail = card.detail {
                 Text(detail).font(.system(size: newest ? m.body : m.meta)).foregroundStyle(secondary)
             }
         }
+        // Wrap as the lens does: every line down, nothing cut short.
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Mirror of `LensCards.extrasBox`: work in flight, the line to say next.
@@ -1117,7 +1126,7 @@ struct LensMirror: View {
             if let followup = shot.followup {
                 HStack(spacing: 10) {
                     Image(systemName: "bubble.left").font(.system(size: m.glyph))
-                    Text(followup).font(.system(size: m.body))
+                    Text(followup).font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

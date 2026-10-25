@@ -24,6 +24,8 @@ struct LensShot: Equatable {
         var title: String
         var detail: String?
         var icon: String?
+        /// An answer: `detail` is the question, written small and grey above the answer.
+        var asked = false
     }
 
     /// The aid's cards, newest first. `answer`/`echo`/`cardIcon` repeat the newest one.
@@ -116,6 +118,10 @@ enum LensCards {
     /// (title as body, detail as meta), so the eye lands on what just came in.
     private static func cardBox(_ card: LensShot.CardText, newest: Bool) -> FlexBox {
         FlexBox(direction: .column, spacing: 4) {
+            // An answer: the question small and grey on top, the answer under it.
+            if card.asked, let detail = card.detail {
+                Text(detail, style: .meta, color: .secondary).flexShrink(1)
+            }
             if let icon = card.icon.flatMap(IconName.init(rawValue:)) {
                 FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
                     Icon(name: icon, style: .outline)
@@ -124,7 +130,7 @@ enum LensCards {
             } else {
                 Text(card.title, style: newest ? .heading : .body).flexShrink(1)
             }
-            if let detail = card.detail {
+            if !card.asked, let detail = card.detail {
                 Text(detail, style: newest ? .body : .meta, color: .secondary).flexShrink(1)
             }
         }
@@ -386,7 +392,8 @@ enum LensCards {
         shot.name = person?.name ?? view.header
         shot.headline = person?.headline
         shot.photo = person?.id
-        shot.cards = view.cards.map { LensShot.CardText(title: $0.title, detail: $0.detail.isEmpty ? nil : $0.detail, icon: $0.icon) }
+        shot.cards = view.cards.map { LensShot.CardText(title: $0.title, detail: $0.detail.isEmpty ? nil : $0.detail, icon: $0.icon,
+                                                        asked: $0.kind == .answer) }
         if let card = view.card {
             shot.answer = card.title
             shot.echo = card.detail.isEmpty ? nil : card.detail
@@ -631,7 +638,7 @@ enum LensFit {
             let newest = index == 0
             let titleWidth = card.icon == nil ? width : width - 38
             var h = 40 + lines(card.title, newest ? heading : body, titleWidth)
-            if let detail = card.detail { h += 4 + lines(detail, newest ? body : meta, width) }
+            if let detail = card.detail { h += 4 + lines(detail, newest && !card.asked ? body : meta, width) }
             return h
         }
         if shot.working.isEmpty && shot.followup == nil {
