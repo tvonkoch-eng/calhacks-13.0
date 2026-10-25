@@ -354,6 +354,11 @@ enum Talk {
     /// The wearer's own record (CRM.digest: people met, what was said, promises, the roster), for
     /// what they ask Jarvis. Read per request, so it's always current.
     @ObservationIgnored var personal: (() -> String)?
+    /// A Jarvis answer, to say out loud (Voice). Only answers to "Jarvis, …": the rest of the aid
+    /// is silent on the lens.
+    @ObservationIgnored var onJarvis: ((String) -> Void)?
+    /// Tools only Jarvis gets: writing to the wearer's record (CRM.jarvisTools).
+    @ObservationIgnored var jarvisTools: [ExtraTool] = []
     /// A speaker label's first name when the host knows who that is (face ID: "p:<id>"), so with
     /// three people the transcript says who said what instead of THEM twice.
     @ObservationIgnored var nameFor: ((String) -> String?)?
@@ -899,12 +904,14 @@ enum Talk {
     /// runs it; the result goes up as an answer card as it is, no second model call. A command
     /// shows what it's doing if the tool takes a moment; an overheard question just shows the result.
     private func toolRound(_ request: String, command: Bool, personal: Bool = false) {
-        guard let toolbox = config.toolbox, let primary = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
+        guard let base = config.toolbox, let primary = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
+        let toolbox: any Toolbox = personal && !jarvisTools.isEmpty ? ExtraTools(base: base, extras: jarvisTools) : base
         nextCard += 1
         let card = nextCard, echo = Self.echo(request), started = Date()
         if let instant = Answerer.local(request) {
             compositor.show(Card(kind: .answer, title: instant, detail: echo, id: card, icon: "clock"), at: started)
             log(.answer, instant, detail: "\(request) · local")
+            if personal { onJarvis?(instant) }
             publish()
             return
         }
@@ -941,10 +948,12 @@ enum Talk {
                 switch decision {
                 case .skip:
                     if command { self.put(Card(kind: .answer, title: "Not sure", detail: echo, id: card)) }
+                    if personal { self.onJarvis?("I'm not sure.") }
                     return
                 case .answer(let text):
                     self.put(Card(kind: .answer, title: text, detail: echo, id: card))
                     self.log(.answer, text, detail: "\(request) · \(self.ms(since: started)) ms · \(used.model)")
+                    if personal { self.onJarvis?(text) }
                 case .call(let name, let arguments):
                     // A slow one gets a working row with a countdown, not the card slot: a quick
                     // answer or a definition can still show while it runs.
@@ -962,6 +971,7 @@ enum Talk {
                     // Research that found nothing ("Not yet announced") isn't worth a glance.
                     guard !result.title.isEmpty else {
                         if command { self.put(Card(kind: .answer, title: "Couldn't find that", detail: echo, id: card)) }
+                        if personal { self.onJarvis?("I couldn't find that.") }
                         self.log(.lookup, request, detail: "no answer found")
                         return
                     }
@@ -970,6 +980,7 @@ enum Talk {
                     let answer = name == "research" && !Self.explains(request) ? result.title
                         : Self.tidy(result.title, result.detail, asked: request)
                     self.put(Card(kind: .answer, title: answer, detail: echo, id: card, icon: result.icon))
+                    if personal { self.onJarvis?(answer) }
                     self.log(.answer, result.title, detail: "\(request) · \(name) · \(self.ms(since: started)) ms · \(used.model)")
                 }
                 self.timings["tool", default: []].append(self.ms(since: started))

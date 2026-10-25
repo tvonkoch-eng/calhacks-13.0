@@ -66,6 +66,8 @@ targets:
         BackupAPIKey: $(BACKUP_API_KEY)
         BackupModel: $(BACKUP_MODEL)
         ResearchProvider: $(RESEARCH_PROVIDER)
+        CartesiaAPIKey: $(CARTESIA_API_KEY)
+        CartesiaVoice: $(CARTESIA_VOICE)
         ResearchAPIKey: $(RESEARCH_API_KEY)
         ResearchModel: $(RESEARCH_MODEL)
         OpenAIAPIKey: $(OPENAI_API_KEY)

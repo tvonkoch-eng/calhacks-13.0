@@ -47,6 +47,10 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>CartesiaAPIKey</key>
+	<string>$(CARTESIA_API_KEY)</string>
+	<key>CartesiaVoice</key>
+	<string>$(CARTESIA_VOICE)</string>
 	<key>CoachAPIKey</key>
 	<string>$(COACH_API_KEY)</string>
 	<key>CoachModel</key>

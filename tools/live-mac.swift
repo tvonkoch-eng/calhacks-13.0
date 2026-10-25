@@ -22,6 +22,8 @@ func option(_ name: String) -> String? {
 let file = option("--file").map { URL(fileURLWithPath: $0) }
 /// --record people.txt: what Jarvis knows of the wearer's life (CRM.digest() on the phone).
 let recordFile = option("--record")
+/// --crm people.json: a real, writable CRM (the phone's format), so "Jarvis, remember…" is kept.
+let crmFile = option("--crm")
 let typing = arguments.contains("--type")
 arguments.removeAll { $0 == "--type" }
 /// --trace x.jsonl: every line, event and lens state with its time in the recording, for
@@ -92,6 +94,7 @@ func drawLens(_ view: LensView) {
 @MainActor final class Session {
     let listener = Listener()
     let aid: Aid
+    var crm: CRM?
     var lensDraw: Task<Void, Never>?
     var drawn = LensView()
 
@@ -109,6 +112,18 @@ func drawLens(_ view: LensView) {
         listener.keywords = [wearer, "Lens", "Jarvis"]
         // --record people.txt: the wearer's record for Jarvis, as CRM.digest() writes it on the phone.
         if let path = recordFile { aid.personal = { (try? String(contentsOfFile: path, encoding: .utf8)) ?? "" } }
+        if let path = crmFile {
+            let crm = CRM(url: URL(fileURLWithPath: path))
+            let roster = ((try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: "App/people.json")))) as? [[String: Any]] ?? [])
+                .filter { $0["isMe"] as? Bool != true }
+            crm.rosterIDs = roster.compactMap { $0["id"] as? String }
+            crm.roster = { id in
+                roster.first { $0["id"] as? String == id }.map { CRM.Known(name: $0["name"] as? String ?? id, about: $0["role"] as? String ?? "") }
+            }
+            self.crm = crm
+            aid.personal = { crm.digest() }
+            aid.jarvisTools = crm.jarvisTools(current: { nil })
+        }
         listener.file = file
 
         listener.onPartial = { [weak self] text in

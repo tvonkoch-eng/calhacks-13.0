@@ -68,6 +68,7 @@ import Observation
             crm.models = Self.recapModels(aid.config)
             crm.glanceModels = Self.glanceModels(aid.config)
             crm.onGlance = { [weak self] id, glance in self?.learned(id, glance) }
+            aid.jarvisTools = crm.jarvisTools(current: { [weak self] in self?.met ?? self?.glasses?.facing })
             // ME for the wearer, a first name for someone face ID knows, else THEM.
             crm.retag = { [weak self] label in
                 guard let self else { return label ?? "?" }
@@ -127,6 +128,13 @@ import Observation
         aid.onName = { [weak self] name in self?.introduced(name) }
         // Jarvis answers from everything the wearer has on record.
         aid.personal = { [weak self] in self?.crm?.digest() ?? "" }
+        // "Jarvis, remember…", "remind me to…", "save her": written to the record, about whoever
+        // was named or, by default, whoever the wearer is talking to.
+        aid.jarvisTools = crm?.jarvisTools(current: { [weak self] in self?.met ?? self?.glasses?.facing }) ?? []
+        aid.onJarvis = { [weak self] text in
+            guard Tuning.bool("jarvisVoice", true) else { return }
+            self?.voice.speak(text)
+        }
         aid.nameFor = { [weak self] label in
             guard let self, label.hasPrefix("p:"), let person = self.person(String(label.dropFirst(2))) else { return nil }
             return self.firstName(person.name)
@@ -143,6 +151,8 @@ import Observation
     @ObservationIgnored private var museLabel: [String: String] = [:]
     @ObservationIgnored private var lastPersonLine = Date.distantPast
     @ObservationIgnored private var tick: Task<Void, Never>?
+    /// Jarvis's voice in the glasses (Cartesia). Knob `jarvisVoice` false keeps it on the lens only.
+    @ObservationIgnored let voice = Voice()
 
     init() {
         // Until the roster is in, the bundle's WearerName (WEARER_NAME), else Toby.
@@ -156,6 +166,12 @@ import Observation
         listener.mic = .phone
         UserDefaults.standard.set(Listener.Mic.phone.rawValue, forKey: "mic")
         listener.onLog = { SpeedLog.record($0) }
+        Listener.speakToGlasses = voice.available
+        voice.onLog = { SpeedLog.record($0) }
+        // Deaf while it talks, and a moment after: its own voice must not become a request.
+        voice.onSpeaking = { [weak self] seconds in
+            self?.listener.mute(until: Date().addingTimeInterval((seconds ?? 0) + 0.4))
+        }
         listener.onPartial = { [weak self] text in
             guard let self else { return }
             if self.turnStarted == nil { self.turnStarted = Date().addingTimeInterval(-0.5) }
@@ -345,6 +361,7 @@ import Observation
     }
 
     private func ownSpeech(_ text: String) {
+        guard !voice.speaking else { return }   // the glasses' mics hearing Jarvis
         speakers.ownVoice(text)
         guard armed, !meSpeaking, speakers.wearerTalking() == true else { return }
         meSpeaking = true

@@ -105,6 +105,9 @@ enum Tools {
             owed, who's on their list and what those people do (the record below): answer from \
             that, by name, speaking to them as "you". "Who here works at Google?" means the people \
             on that record. If the record doesn't have it, say so in a few words rather than guess;
+            - something they ask you to remember, follow up on, or save someone: call that tool;
+            Your answer is also read aloud in their ear: one sentence, at most 20 words, names \
+            first, no hedging about the record ("Nobody yet", not "Based on your record…");
             """
         }
         sources += "\n" + """
@@ -139,6 +142,8 @@ enum Tools {
         let place = await toolbox.whereabouts().map { " They are \($0)." } ?? ""
         let user = (personal.isEmpty ? "" : "Their own record:\n\(personal)\n\n")
             + (context.isEmpty ? "" : "Conversation so far:\n\(context)\n\n") + "Request: \(request)"
+            // Said to Jarvis: it's heard as well as read, and a long reply rambles in their ear.
+            + (personal.isEmpty ? "" : "\n\nOne spoken sentence, at most 20 words, the answer first. Never mention \"the record\".")
         var body: [String: Any] = [
             "model": model,
             "temperature": 0,
@@ -605,4 +610,46 @@ actor Locator {
         manager.requestWhenInUseAuthorization()
         Self.manager = manager
     }
+}
+
+/// One more tool for the model, run by the host: the CRM's "remember" and "follow_up".
+struct ExtraTool: Sendable {
+    var name: String
+    /// The OpenAI-style function definition, as JSON text.
+    var definition: String
+    /// What the lens says while it runs.
+    var working: String
+    /// Runs with the model's arguments (JSON text).
+    var run: @Sendable (String) async throws -> ToolResult
+}
+
+/// A toolbox plus the host's own tools. Jarvis gets these; an overheard question never does, so
+/// only something the wearer asked for by name writes to their record.
+final class ExtraTools: Toolbox, @unchecked Sendable {
+    let base: any Toolbox
+    let extras: [ExtraTool]
+
+    init(base: any Toolbox, extras: [ExtraTool]) {
+        self.base = base
+        self.extras = extras
+    }
+
+    var definitions: String {
+        var all = (try? JSONSerialization.jsonObject(with: Data(base.definitions.utf8)) as? [Any]) ?? []
+        all += extras.compactMap { try? JSONSerialization.jsonObject(with: Data($0.definition.utf8)) }
+        guard let data = try? JSONSerialization.data(withJSONObject: all) else { return base.definitions }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func working(_ name: String, arguments: String) -> String {
+        extras.first { $0.name == name }?.working ?? base.working(name, arguments: arguments)
+    }
+
+    func run(_ name: String, arguments: String) async throws -> ToolResult {
+        if let extra = extras.first(where: { $0.name == name }) { return try await extra.run(arguments) }
+        return try await base.run(name, arguments: arguments)
+    }
+
+    func prefetch(_ request: String) { base.prefetch(request) }
+    func whereabouts() async -> String? { await base.whereabouts() }
 }
