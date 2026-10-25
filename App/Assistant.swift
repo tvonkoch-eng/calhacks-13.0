@@ -234,7 +234,7 @@ import Observation
         guard !armed else { return }
         armed = true
         // A new conversation starts clean; the last one stays readable on the phone until then.
-        aid.reset()
+        aid.reset(trigger: "listening started (mic on, or app back to the foreground)")
         aid.warm()
         aid.assume(wearer: Self.me)
         speakers = Speakers(wearer: aid.config.wearer)
@@ -273,9 +273,9 @@ import Observation
 
     /// One conversation is over (ended by hand, or 30 s of quiet): its notes are filed and the aid
     /// starts clean, still listening, for the next.
-    func endConversation() {
+    func endConversation(trigger: String) {
         crm?.tick(force: true)
-        aid.reset()
+        aid.reset(trigger: "end of conversation: \(trigger)")
         voiceLevels = [:]
         voices = [:]
     }

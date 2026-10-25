@@ -229,6 +229,11 @@ struct SavedConversation: Codable, Identifiable, Equatable {
     private(set) var people: [String] = []
     private var started: Date?
     private var lastHere = Date()
+    /// When nobody was last in front of the glasses; nil while someone is.
+    @ObservationIgnored private var absentSince: Date?
+    /// How long nobody may be in front of the glasses before the conversation is over (a few
+    /// seconds away is not the end of it, and clearing the lens on a flicker is worse than waiting).
+    private static let absentReset: TimeInterval = 20
     /// A conversation is running. One starts only when someone is in front of the glasses and a
     /// line is loud enough to be the wearer talking; until then what the mic hears is dropped.
     var active: Bool { started != nil }
@@ -248,9 +253,14 @@ struct SavedConversation: Codable, Identifiable, Equatable {
         guard let first = lines.first else { return }
         if started == nil {
             let here = assistant.glasses?.someoneHere ?? false
+            // Nobody in front of the glasses for a while, not just a glance away, ends it.
+            if here { absentSince = nil } else if absentSince == nil { absentSince = Date() }
             guard here, Date().timeIntervalSince(assistant.lastLoud) < 5 else {
                 // Room noise with nobody to talk to: let it go, don't start a conversation.
-                if Date().timeIntervalSince(first.at) > 8, assistant.aid.partial.isEmpty { assistant.endConversation() }
+                if let gone = absentSince, Date().timeIntervalSince(gone) > Self.absentReset,
+                   Date().timeIntervalSince(first.at) > 8, assistant.aid.partial.isEmpty {
+                    assistant.endConversation(trigger: "nobody in front of the glasses for \(Int(Date().timeIntervalSince(gone))) s")
+                }
                 return
             }
             started = first.at
@@ -289,7 +299,7 @@ struct SavedConversation: Codable, Identifiable, Equatable {
         }
         people = []
         started = nil
-        assistant.endConversation()
+        assistant.endConversation(trigger: "ended from Notes")
     }
 
     /// Every voice is Person A, B, C, D in order of first speaking: A and C on the right, B and D

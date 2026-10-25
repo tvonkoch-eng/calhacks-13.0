@@ -543,7 +543,8 @@ enum Talk {
     private(set) var others: [Them] = []
 
     /// Start over for a new conversation.
-    func reset() {
+    func reset(trigger: String = "unknown") {
+        SpeedLog.record(["event": "reset", "trigger": trigger, "cards": "\(compositor.view.cards.map(\.title))"])
         answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel(); jarvisTask?.cancel()
         lines = []; turns = []; events = []; them = Them(); others = []; ideas = []; roles = Roles(); partial = ""; status = ""
         compositor.clear(); defined = []; noted = []; lastInsight = .distantPast; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
