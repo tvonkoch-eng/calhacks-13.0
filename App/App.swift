@@ -41,6 +41,11 @@ struct CalHacksApp: App {
                     crm.onCancelled = { Nudges.cancel($0) }
                     crm.onSaved = { kept in store.saved = kept.map { crm.person($0) } }
                     crm.onForgot = { store.forget($0) }
+                    crm.onDetails = { id, details in
+                        guard let base = store.contacts.first(where: { $0.id == id })
+                                ?? crm.contacts.first(where: { $0.id == id }).map(crm.person) else { return }
+                        store.fill(base, with: details)
+                    }
                     // Listening is on from launch; the mic pill turns it off.
                     Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
@@ -91,7 +96,9 @@ struct CalHacksApp: App {
                             summary: "Calibrating LLM judges is her hardest problem; hiring two eval engineers.",
                             hook: "asked about hiring", topics: ["LLM judges", "hiring", "UCSB"],
                             at: .now.addingTimeInterval(-3 * 3600), ended: .now.addingTimeInterval(-3 * 3600 + 540),
-                            place: "near Sproul Plaza, Berkeley"))
+                            place: "near Sproul Plaza, Berkeley",
+                            details: Recap.Details(work: "Founder at Judgeable", from: "Taipei", phone: "4155550134",
+                                                   email: "maya@judgeable.ai", linkedin: "mayachen")))
                         let dana = crm.save(Encounter(
                             name: "Dana Ruiz", label: "ICU nurse at UCSF",
                             facts: ["Back from her sister's wedding in Lisbon"],

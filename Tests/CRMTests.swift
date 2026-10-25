@@ -30,6 +30,22 @@ check(Recap.parse("{\"skip\": true}")?.skip == true, "skip needs no summary")
 check(Recap.parse("{\"skip\": false, \"topics\": []}") == nil, "no summary and no skip is unusable")
 check(Recap.parse("sorry") == nil, "no JSON")
 
+// Details: spoken contact info cleaned, mishearings dropped, unknown keys ignored.
+let detailed = Recap.parse("""
+{"skip": false, "summary": "Talked evals.", "details": {"work": "ML engineer at Stripe", "phone": "+1 (415) 555-0134",
+ "email": "Priya@Gmail.com", "linkedin": "https://www.linkedin.com/in/priya-shah/", "instagram": "@priya.s",
+ "website": "https://priya.dev/", "school": null, "shoe": "9"}, "outdated": ["Works at Ramp"]}
+""")
+let d = detailed?.details
+check(d?.work == "ML engineer at Stripe" && d?.school == nil, "work kept, null school dropped")
+check(d?.phone == "+14155550134" && d?.email == "priya@gmail.com", "phone digits, email lowercased")
+check(d?.linkedin == "priya-shah" && d?.instagram == "priya.s" && d?.website == "priya.dev", "handles from URLs")
+check(detailed?.outdated == ["Works at Ramp"], "outdated facts")
+check(Recap.Details.phone("five five five") == nil && Recap.Details.phone("555 12") == nil, "a misheard number is dropped")
+check(Recap.Details.email("priya at gmail") == nil, "not an address")
+check(Recap.Details.handle("priya shah", after: "/in/") == nil && Recap.Details.handle("priya-shah", after: "/in/") == "priya-shah", "bare handle")
+check(Recap.parse("{\"skip\": false, \"summary\": \"Hi.\"}")?.details.isEmpty == true, "no details by default")
+
 check(CRM.due(0, from: t0) == at(7200), "due today = two hours later")
 check(CRM.due(1, from: t0) == tomorrow9, "due tomorrow = 9 am")
 check(Recap.message(Recap.Input(wearer: "Toby", when: t0, with: nil, name: "Priya", known: [], owed: [], transcript: []))
@@ -210,6 +226,26 @@ await MainActor.run {
     meeting.forgetPerson(c?.person ?? "")
     check(forgot == [c?.person ?? "-"], "forgetting tells the face store")
     UserDefaults.standard.removeObject(forKey: "glanceEvery")
+}
+
+// A conversation that changes what's true: the old fact goes, details go to the contact card.
+await MainActor.run {
+    var result = Recap.Result(summary: "Caught up.", facts: ["Works at Stripe now"])
+    result.details = Recap.Details(work: "ML engineer at Stripe", email: "avi@x.com")
+    result.outdated = ["works at ramp"]
+    let crm = makeCRM(result)
+    crm.learn("avi", "Works at Ramp", at: t0)
+    crm.learn("avi", "Plays cricket", at: t0)
+    var got: [(String, Recap.Details)] = []
+    crm.onDetails = { got.append(($0, $1)) }
+    var encounter = Encounter(at: at(60), match: "avi")
+    encounter.apply(result)
+    crm.save(encounter)
+    let texts = crm.facts(about: "avi").map(\.text)
+    check(!texts.contains("Works at Ramp") && texts.contains("Plays cricket") && texts.contains("Works at Stripe now"), "outdated fact retired, others kept")
+    check(got.count == 1 && got.first?.0 == "avi" && got.first?.1.email == "avi@x.com", "details handed to the contact card")
+    crm.save(Encounter(summary: "Again.", at: at(3600), match: "avi"))
+    check(got.count == 1, "no details, no hand-off")
 }
 
 // Someone met by face who never speaks was in the background: nothing is filed, the contact goes.

@@ -63,6 +63,10 @@ struct Encounter: Equatable {
     var place: String?
     /// The roster or saved-contact id face ID matched, if any.
     var match: String?
+    /// Where they work, how to reach them: what they said out loud.
+    var details = Recap.Details()
+    /// Things known about them before that this conversation showed are no longer true.
+    var outdated: [String] = []
 }
 
 /// A kept conversation: notes only.
@@ -148,6 +152,9 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// Tried in order; the first that answers wins.
     @ObservationIgnored var models: [Aid.Model] = []
     @ObservationIgnored var wearer = "the wearer"
+    /// A conversation turned up how to reach someone or where they work: onto their contact card,
+    /// filling blanks only (what the wearer typed always wins).
+    @ObservationIgnored var onDetails: ((String, Recap.Details) -> Void)?
     /// A reminder was added or moved (schedule a notification), or finished (cancel it).
     @ObservationIgnored var onScheduled: ((Reminder) -> Void)?
     @ObservationIgnored var onCancelled: ((UUID) -> Void)?
@@ -232,6 +239,8 @@ struct Reminder: Codable, Identifiable, Equatable {
                                         hook: encounter.hook, topics: Array(encounter.topics.prefix(3)), recap: recap)
         conversations.insert(conversation, at: 0)
         let when = encounter.ended ?? encounter.at
+        // "Moved to Stripe" retires "works at Ramp": the record says what's true now.
+        facts.removeAll { fact in fact.person == person && encounter.outdated.contains { Talk.same($0, fact.text) } }
         for text in encounter.facts.prefix(3) where !text.isEmpty {
             guard !facts.contains(where: { $0.person == person && Talk.same($0.text, text) }) else { continue }
             facts.append(Fact(id: UUID(), person: person, text: text, learned: when, conversation: conversation.id))
@@ -244,6 +253,7 @@ struct Reminder: Codable, Identifiable, Equatable {
             onScheduled?(reminder)
         }
         scheduleCheckIn(person, after: when, conversation: conversation.id)
+        if !encounter.details.isEmpty { onDetails?(person, encounter.details) }
         save()
     }
 
@@ -715,6 +725,8 @@ extension Encounter {
         topics = result.topics
         facts = result.facts
         followups = result.followups
+        details = result.details
+        outdated = result.outdated
     }
 }
 
@@ -739,6 +751,68 @@ enum Recap {
         var dueInDays: Int?
     }
 
+    /// What someone said about where they are and how to reach them. Cleaned on the way in
+    /// (`Details.clean`), so a misheard "my email is" never lands as a broken address.
+    struct Details: Codable, Equatable {
+        var work: String?
+        var school: String?
+        var from: String?
+        var phone: String?
+        var email: String?
+        /// The profile slug: "priya-shah" for linkedin.com/in/priya-shah.
+        var linkedin: String?
+        /// Without the @.
+        var instagram: String?
+        var website: String?
+
+        var isEmpty: Bool { self == Details() }
+
+        static func clean(_ raw: [String: String]) -> Details {
+            var d = Details()
+            d.work = raw["work"]
+            d.school = raw["school"]
+            d.from = raw["from"]
+            d.phone = phone(raw["phone"])
+            d.email = email(raw["email"])
+            d.linkedin = handle(raw["linkedin"], after: "/in/")
+            d.instagram = handle(raw["instagram"], after: "instagram.com/")
+            d.website = website(raw["website"])
+            return d
+        }
+
+        /// Keeps the digits and a leading +; fewer than 7 digits is a mishearing.
+        static func phone(_ raw: String?) -> String? {
+            guard let raw else { return nil }
+            let digits = raw.filter(\.isNumber)
+            guard (7...15).contains(digits.count) else { return nil }
+            return raw.trimmingCharacters(in: .whitespaces).hasPrefix("+") ? "+" + digits : digits
+        }
+
+        /// "priya at gmail dot com" is the model's job; this only rejects what isn't an address.
+        static func email(_ raw: String?) -> String? {
+            guard let raw = raw?.lowercased().replacingOccurrences(of: " ", with: ""),
+                  let at = raw.firstIndex(of: "@"), raw[at...].contains("."), at != raw.startIndex else { return nil }
+            return raw
+        }
+
+        /// A URL, "@name" or a bare name, down to the name.
+        static func handle(_ raw: String?, after marker: String) -> String? {
+            guard var s = raw?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return nil }
+            if let r = s.range(of: marker, options: .caseInsensitive) { s = String(s[r.upperBound...]) }
+            s = String(s.split(whereSeparator: { "/?#".contains($0) }).first ?? "")
+            s = s.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
+            guard !s.isEmpty, !s.contains(" "), s.count <= 60 else { return nil }
+            return s
+        }
+
+        static func website(_ raw: String?) -> String? {
+            guard var s = raw?.trimmingCharacters(in: .whitespaces).lowercased(), s.contains("."), !s.contains(" ") else { return nil }
+            for prefix in ["https://", "http://", "www."] where s.hasPrefix(prefix) { s.removeFirst(prefix.count) }
+            while s.hasSuffix("/") { s.removeLast() }
+            return s.isEmpty ? nil : s
+        }
+    }
+
     struct Result: Equatable {
         var skip = false
         var summary: String?
@@ -748,6 +822,8 @@ enum Recap {
         var name: String?
         var facts: [String] = []
         var followups: [Followup] = []
+        var details = Details()
+        var outdated: [String] = []
     }
 
     static let prompt = """
@@ -788,6 +864,17 @@ enum Recap {
     "Avi sends you his deck", "Avi intros you to Priya" (owner them). Whoever said "I'll" owns it. \
     "due_in_days" only when a time was said, counted from the conversation's date (tomorrow = 1, \
     next week = 7, later today = 0); else null. At most 3. Usually [].
+
+    "details": {"work", "school", "from", "phone", "email", "linkedin", "instagram", "website"}
+      Only what THEM said about themselves in this conversation; leave out every key they didn't \
+    say. "work": role and company, "ML engineer at Stripe". "school": "Berkeley EECS '27". \
+    "from": a city or country. Contact details only when spelled out or clearly given: write \
+    spoken forms as written ("priya at gmail dot com" = "priya@gmail.com", "four one five..." = \
+    digits), "linkedin" and "instagram" are the handle or URL they gave. Often {}.
+
+    "outdated": entries of "Known" that this conversation showed are no longer true (they \
+    changed jobs, moved, graduated), copied exactly. Their replacement goes in "facts" or \
+    "details". Usually [].
     """
 
     static func message(_ input: Input) -> String {
@@ -858,6 +945,10 @@ enum Recap {
             let days = (object["due_in_days"] as? Int) ?? (object["due_in_days"] as? String).flatMap { Int($0) }
             return Followup(text: text, mine: (clean(object["owner"]) ?? "me").lowercased() != "them", dueInDays: days)
         }.prefix(3).map { $0 }
+        if let details = json["details"] as? [String: Any] {
+            result.details = Details.clean(details.compactMapValues { clean($0) ?? ($0 as? NSNumber).map { "\($0)" } })
+        }
+        result.outdated = ((json["outdated"] as? [Any]) ?? []).compactMap(clean)
         if !result.skip, result.summary == nil { return nil }
         return result
     }
