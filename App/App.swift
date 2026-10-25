@@ -1779,14 +1779,20 @@ struct HomeHeader: View {
             }
             Spacer()
             // Demo video: tap as someone asks "How was FaceTag built?".
+            // One tap freezes the lens on the answer; a second tap gives it back.
             Button {
-                let scripted = Aid.builtWith
-                assistant.aid.showScripted(scripted.question, scripted.answer)
+                if glasses.still {
+                    glasses.clearStill()
+                } else {
+                    let scripted = Aid.builtWith
+                    glasses.showStill(title: scripted.question, lines: scripted.answer.components(separatedBy: "\n"))
+                }
             } label: {
-                Image(systemName: "hammer")
+                Image(systemName: glasses.still ? "hammer.fill" : "hammer")
                     .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(glasses.still ? Color.white : Color.accentColor)
                     .frame(width: 34, height: 34)
-                    .background(Color(.secondarySystemBackground), in: Circle())
+                    .background(glasses.still ? Color.accentColor : Color(.secondarySystemBackground), in: Circle())
             }
             NavigationLink { StreamLabView() } label: {
                 Image(systemName: "camera.aperture")
