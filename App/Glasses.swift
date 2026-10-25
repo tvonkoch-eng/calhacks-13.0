@@ -1918,7 +1918,10 @@ enum Identification {
         guard now.timeIntervalSince(track.firstSeen) >= meetSeconds, now.timeIntervalSince(track.updated) < 0.5 else { return }
         // Face to face, not the room: near the centre of the frame, with nobody in front of them.
         guard centred(track.box), !behindSomeone(track, in: inView, store: store) else { return }
-        let best = store.ranked(track.probe).first?.score ?? 0
+        let top = store.ranked(track.probe).first
+        let best = top?.score ?? 0
+        // Close to someone already met here: that's them again, never a second "New person".
+        if let top, best >= strangerBelow, store.isMet(top.person.id) { metTracks[track.id] = top.person.id }
         guard best < strangerBelow else { return }
         let photo = headshot(image, box: track.box)
         guard let id = onStranger(track.probe, photo) else { return }

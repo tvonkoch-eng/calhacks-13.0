@@ -41,6 +41,12 @@ struct CalHacksApp: App {
                     crm.onCancelled = { Nudges.cancel($0) }
                     crm.onSaved = { kept in store.saved = kept.map { crm.person($0) } }
                     crm.onForgot = { store.forget($0) }
+                    // Once: the duplicate unnamed people from before go, keeping only the newest.
+                    if !UserDefaults.standard.bool(forKey: "dedupedNewPeople") {
+                        UserDefaults.standard.set(true, forKey: "dedupedNewPeople")
+                        let unnamed = crm.contacts.filter { $0.name == CRM.newName }.sorted { $0.created > $1.created }
+                        for contact in unnamed.dropFirst() { crm.forgetPerson(contact.id) }
+                    }
                     // Listening is on from launch; the mic pill turns it off.
                     Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
