@@ -96,7 +96,8 @@ struct Answerer {
     "Frank Herbert", "June 1944"), no sentence, no punctuation at the end. Only when the question \
     truly needs explaining (how or why something works) give one or two short sentences, at most \
     25 words: the core idea only, no list of every factor. \
-    Never a preamble or the question restated. A number keeps its unit, in US units (miles, feet, °F, pounds, gallons). Plain facts only. If the \
+    Never a preamble or the question restated. A number keeps its unit, always in US units: miles, feet, °F, pounds, gallons; never km, \
+    meters, °C or kg, and never both. Plain facts only. If the \
     conversation or what's known about them answers it, answer from that.
 
     Stable facts (distances between places, sizes, dates, definitions, history) come from memory, \

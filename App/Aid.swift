@@ -752,6 +752,7 @@ enum Talk {
             // The same question again within 15 s (asked twice, or re-fired as the transcript grew):
             // what's up stays up. A different question is the only reason to change it.
             if let last = settled, last.card != turn.card, now.timeIntervalSince(last.at) < 15,
+               compositor.view.cards.contains(where: { $0.id == last.card }),   // only while it's still up
                Talk.echoes(turn.question, last.question) || Talk.echoes(last.question, turn.question) {
                 return
             }

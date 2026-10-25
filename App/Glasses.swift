@@ -2315,7 +2315,10 @@ enum Identification {
             var members = inView.count >= 2 ? inView : []
             // A new face while the last one is still about: both go up at once, rather than the new
             // one alone until the conversation's group catches up a second later.
-            if person?.id != cardPerson?.id { priorPerson = cardPerson; cardPerson = person }
+            // Face ID clears the card between faces; the people stay while they're still about.
+            if let person, person.id != cardPerson?.id { priorPerson = cardPerson; cardPerson = person }
+            let recent = { (p: Person?) in p.flatMap { p in self.sighted[p.id].map { self.clockNow.timeIntervalSince($0) < self.groupHolds } } ?? false }
+            let person = person ?? (recent(cardPerson) ? cardPerson : nil)
             if members.isEmpty, let person, let prior = priorPerson, prior.id != person.id,
                let seen = sighted[prior.id], clockNow.timeIntervalSince(seen) < groupHolds {
                 members = [member(person, share: 0.55), member(prior, share: 0.45)]
