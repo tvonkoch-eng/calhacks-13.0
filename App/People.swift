@@ -482,32 +482,6 @@ struct ContactView: View {
         }
     }
 
-    // MARK: LinkedIn
-
-    /// What they do, where they studied, where they're from: filled from their LinkedIn, never by
-    /// hand on this page. The profile link opens it; Edit is where the link is set.
-    @ViewBuilder private func linkedin(_ person: Person) -> some View {
-        if let link = person.linkedin.flatMap({ URL(string: $0.hasPrefix("http") ? $0 : "https://" + $0) }) {
-            Link(destination: link) {
-                HStack {
-                    Text("Open profile").font(.subheadline)
-                    Spacer()
-                    Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-            about(person)
-        } else {
-            Button { editing = true } label: {
-                Text("Add their LinkedIn to fill in where they work and study").font(.subheadline)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.vertical, 6)
-        }
-    }
-
     // MARK: About
 
     @ViewBuilder private func about(_ person: Person) -> some View {
