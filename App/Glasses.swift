@@ -280,7 +280,7 @@ enum Identification {
     /// Off (`glassesCamera: false`, read at each connect): lens and mic only, no camera stream.
     private var cameraWanted: Bool { Tuning.bool("glassesCamera", true) }
     var streamRes: String { UserDefaults.standard.string(forKey: "streamRes") ?? "high" }
-    var streamFps: Int { Tuning.int("streamFps", 2) }
+    var streamFps: Int { Tuning.int("streamFps", 15) }
     /// Names a recorded run. A simulated pair ignores the knobs (see `streamConfig`), so say so.
     private var streamLabel: String {
         #if DEBUG
