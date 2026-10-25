@@ -939,7 +939,8 @@ enum Talk {
             coachPending = true
             return
         }
-        let moment = wanted
+        // Suggestions off (`aidSuggest`, the default): every call is for definitions and missed questions.
+        let moment = config.suggestions ? wanted : nil
         // Spend a capped primary on what the wearer will see: a suggestion for this moment gets it
         // (gpt-oss writes far better lines than the backup); the background calls after each
         // sentence (a definition) go to the backup. Uncapped, everything uses the primary.
@@ -1027,8 +1028,7 @@ enum Talk {
         case .lull: "a silence; revive the best thread"
         case .asked: "the wearer asks what to say next"
         case .recognised: "face ID just recognised THEM; pick up where you left off last time"
-        // Every sentence of theirs: something that makes the wearer sound informed, while they talk.
-        case nil: "THEM is talking; something informed the wearer could add about what was just said: a relevant fact, a connection, or a sharp follow-up question"
+        case nil: nil
         }
         return Coach.Input(wearer: config.wearer, background: config.background, situation: config.situation, known: known,
                            defined: defined, suggested: suggested, moment: why, transcript: transcript)
@@ -1081,9 +1081,6 @@ enum Talk {
             let pick = ([advice.suggest].compactMap { $0 } + advice.alternatives.map(\.say))
                 .first { line in usable(line) && !promises.contains { Talk.asksAbout($0, in: line) } }
             if let text = pick, good { suggest(text) } else if wanted == moment { wanted = nil }
-        } else if moment == nil, (advice.score ?? 3) >= 2,
-                  let text = ([advice.suggest].compactMap { $0 } + advice.alternatives.map(\.say)).first(where: usable) {
-            suggest(text)
         }
         // The runners-up wait for the next lull, which then needs no call at all.
         if moment != nil {
@@ -1161,6 +1158,7 @@ enum Talk {
 
     private func suggest(_ text: String) {
         wanted = nil
+        guard config.suggestions else { return }   // definitions and answers only
         suggestedAt = Date()
         suggested.append(text)
         compositor.pin(text, at: Date())
