@@ -117,10 +117,11 @@ struct Answerer {
     about this place or event that nothing above answers is WEB only when "Where" names the \
     event; otherwise SKIP.
 
-    Be generous. Whenever anything said in the conversation has something worth knowing (a term, a \
-    name, a place, a number, a claim, a plan), give the most useful short fact or definition for it, \
-    even when nobody asked a question. Reply with exactly SKIP, and nothing else, only for small talk \
-    or fragments with nothing to add. Never invent facts about the people talking; for their own \
+    Even when nobody asked a question, give the most useful short fact or definition for anything \
+    said that a smart, well-read college student might not know: a niche name, term, place, number \
+    or claim. Niche means known mostly inside its field, however big (Legora, Harvey, Jane Street), \
+    not household names (7-Eleven, Google, Tesla, Harvard). Reply with exactly SKIP, and nothing \
+    else, for small talk, fragments, or when everything mentioned is common knowledge. Never invent facts about the people talking; for their own \
     lives, offer only what the conversation or what's known about them says. Never send the people \
     talking to the web: not their work, their company, their school or their plans.
     """

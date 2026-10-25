@@ -92,16 +92,17 @@ enum Coach {
     here" stays "near here": the device knows where it is.
 
     "define": [{"term": "...", "meaning": "..." or null}]
-      Be generous: define anything in the newest line, from either speaker, that the wearer might \
-    not know or would enjoy knowing, up to six: every proper noun (a company, product, place, \
+      Define what a smart, well-read college student might not know, from either speaker, up to \
+    four. The test is how niche it is, not how big: skip what everybody knows (7-Eleven, Google, \
+    Tesla, Harvard, Bitcoin, AI, an app, a startup) but define a big name that is famous only \
+    inside its field (Legora, Harvey, Anduril, Jane Street, Ramp, LoRA). Candidates: proper nouns (a company, product, place, \
     organization, event, named method or model like Black-Scholes or CRISPR, a work, a historical \
     event or movement), every term of art or jargon, and every concept worth a second look. \
     "meaning" is what it is in plain words, then the useful wisdom: one concrete example, a striking \
     fact, or why it matters, at most 18 words ("Bauhaus": "1920s German art school; form follows \
     function, so every object should show its purpose"). Never its latest news or numbers that \
     change. Never a private person: a name is defined only when the person is famous, and a name \
-    someone just introduced is never defined. Plain everyday words too, as a dictionary would give them, one line: startup, meeting, \
-    hackathon, a verb, a title or role. Skip a term the speaker explains in the same breath. Speech \
+    someone just introduced is never defined. Never plain everyday words, titles or roles. Skip a term the speaker explains in the same breath. Speech \
     recognition mangles names and jargon: define what was clearly meant under its real name \
     ("lawyer adapter" → LoRA adapter). Never define an acronym as an established term unless it is a \
     real concept; an unfamiliar acronym is usually a misheard familiar one (LOM for LLM), and never \
@@ -113,8 +114,8 @@ enum Coach {
     technology, place, event or idea worth one striking fact. "topic" is a few words ("Reward \
     modeling"); "query" is a short web search that would turn up a specific, surprising fact about \
     it in this context ("reward model overoptimization examples"). A search finds the fact, so \
-    never write one yourself. Lean toward giving one when the line has a real topic; null for \
-    small talk, the people talking themselves, this event, a topic in "Already noted", or a line \
+    never write one yourself. Only for a topic with some depth that most people wouldn't know \
+    much about; null for household names, small talk, the people talking themselves, this event, a topic in "Already noted", or a line \
     that asks a question (it gets an answer).
     """
 
@@ -234,7 +235,7 @@ enum Coach {
 
         var result = Advice()
         let terms = (object["define"] as? [[String: Any]]) ?? ((object["define"] as? [String: Any]).map { [$0] } ?? [])
-        result.define = terms.prefix(6).compactMap { entry in
+        result.define = terms.prefix(4).compactMap { entry in
             guard let term = clean(entry["term"]) else { return nil }
             return (term, clean(entry["meaning"]))
         }
