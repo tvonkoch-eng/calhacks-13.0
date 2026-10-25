@@ -505,7 +505,12 @@ enum LensCards {
             group = []
         }
         // What doesn't fit goes here, once, so the glass and the mirror drop the same thing.
+        let before = shot.cards.map(\.title)
         _ = LensFit.fit(&shot, bottom: bottom(person: person, group: group))
+        // Dropped at render, after the compositor showed them: the lens never had room for these.
+        for title in before where !shot.cards.contains(where: { $0.title == title }) {
+            SpeedLog.record(["event": "card", "action": "fitDropped", "title": title, "reason": "no room on the lens"])
+        }
         if group.count >= 2 {
             // Each card gets every line that fits its own height as it wraps, and no more.
             shot.group = shot.group.map { member in

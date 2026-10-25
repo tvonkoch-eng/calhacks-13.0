@@ -1615,6 +1615,7 @@ enum Talk {
     @ObservationIgnored private var tickTask: Task<Void, Never>?
 
     private func publish() {
+        for entry in compositor.drainJournal() { SpeedLog.record(entry.merging(["event": "card"]) { $1 }) }
         let view = compositor.view
         if view != lens {
             lens = view
