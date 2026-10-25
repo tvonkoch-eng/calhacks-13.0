@@ -435,6 +435,7 @@ enum Talk {
             coachSoon()
         }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
+        closeBuriedQuestion(open, mine: mine)
         publish()
         // Muse can take seconds to close a turn that ends in silence, and a lull is exactly that:
         // the clock starts at the last word, not at the closed line.
@@ -469,6 +470,7 @@ enum Talk {
         closedInTurn = 0
         coachedOpenWords = 0
         wakeShownThisTurn = false
+        openQuestion = nil
         compositor.hold(false, at: Date())
 
         if let speaker {
@@ -569,9 +571,33 @@ enum Talk {
         // The cards are not cleared here: each one runs out on its own clock, so a conversation ending
         // doesn't take a Jarvis answer or a card with it.
         defined = []; noted = []; lastInsight = .distantPast; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
-        coachPending = false; coachBlockedUntil = nil; closedInTurn = 0
+        coachPending = false; coachBlockedUntil = nil; closedInTurn = 0; openQuestion = nil
         wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""; jarvisTurn = nil
         publish()
+    }
+
+    /// A question said mid-flow with no pause after it ("…how many moons does Jupiter have and
+    /// anyway I was saying…") never gets a full stop, so it would wait for the whole turn to end.
+    /// Once the question is complete and the next words start something else, that is its endpoint.
+    @ObservationIgnored private var openQuestion: String?
+    private static let moveOn: Set<String> = [
+        "and", "so", "but", "anyway", "i", "im", "like", "because", "cause", "then", "um", "uh",
+        "yeah", "okay", "ok", "we", "it", "its", "or", "also", "wait", "actually",
+    ]
+
+    private func closeBuriedQuestion(_ open: String, mine: Bool) {
+        let now = QuestionGate.candidate(in: open)
+        if let asked = openQuestion {
+            let extra = now.flatMap { $0.text.hasPrefix(asked) ? String($0.text.dropFirst(asked.count)).trimmed : nil }
+            let first = extra?.split(separator: " ").first.map(String.init)
+            // Gone (the clause changed) or carried on into a new thought: the question was whole.
+            if extra == nil || first.map(Self.moveOn.contains) == true {
+                openQuestion = nil
+                answerHeard(asked + "?", endpointed: true, mine: mine)
+                return
+            }
+        }
+        if let now, now.confidence == .strong { openQuestion = now.text }
     }
 
     // MARK: - Answers: the fast lane
@@ -614,7 +640,7 @@ enum Talk {
             if endpointed { commit(nil) }
             return
         }
-        if config.explicitOnly, endpointed, !text.trimmed.hasSuffix("?") {
+        if config.explicitOnly, endpointed, !text.trimmed.hasSuffix("?"), candidate.confidence != .strong {
             abandon()
             return
         }

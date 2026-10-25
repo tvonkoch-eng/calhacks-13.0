@@ -104,6 +104,19 @@ enum QuestionGate {
                 clause = words[at...].joined(separator: " ")
             }
         }
+        // A question buried in run-on talk with no full stop before it ("so I was telling him
+        // about it how many moons does Jupiter have"): start at the last question word that is
+        // followed by an auxiliary within three words, so "what you mean" or "how much it cost"
+        // never count.
+        if !peeled {
+            let words = clause.split(separator: " ").map(String.init)
+            if let first = words.first, !wh.contains(first), !aux.contains(first), words.count >= 5,
+               let at = words.indices.last(where: { i in
+                   i > 0 && wh.contains(words[i]) && words[(i + 1)..<min(words.count, i + 4)].contains { aux.contains($0) }
+               }), words.count - at >= 4 {
+                clause = words[at...].joined(separator: " ")
+            }
+        }
         if personal.contains(where: { clause == $0 || clause.hasPrefix($0 + " ") }) { return nil }
 
         let words = clause.split(separator: " ").map(String.init)
