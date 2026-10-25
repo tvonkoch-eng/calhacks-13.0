@@ -78,29 +78,36 @@ enum LensCards {
         return FlexBox(direction: .column, spacing: LensFit.spacing) {
             for (index, card) in shot.cards.enumerated() { cardBox(card, newest: index == 0) }
             if !shot.working.isEmpty || shot.followup != nil { extrasBox(shot) }
+            // The aid has the top half. The people have the bottom half: one card taking all of it,
+            // or two, a quarter of the lens each.
             FlexBox(direction: .column) {}.padding(.top, gap).flexGrow(1)
             if group.count >= 2 {
                 groupCards(group, avatar: avatar)
             } else if let person {
-                FlexBox(direction: .row, spacing: 16, crossAlignment: .start) {
-                    if let photo = avatar(person.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                    FlexBox(direction: .column, spacing: 4) {
-                        Text(person.name, style: .heading)
-                        Text(person.headline, style: .body).flexShrink(1)
-                        // Why they matter: the tie and highlights, the same lines the full card shows.
-                        for line in shot.primary {
-                            Text(line, style: .meta, color: .secondary).flexShrink(1)
-                        }
-                        if let context = shot.context, shot.primary.isEmpty {
-                            Text(context, style: .meta, color: .secondary).flexShrink(1)
-                        }
-                    }.flexShrink(1)
-                }
-                .padding(22)
-                .background(.card)
+                personCard(person, shot: shot, avatar: avatar)
             }
         }
         .flexGrow(1)
+    }
+
+    /// The bottom half, one person: the photo at the top, the name and what they do at the foot,
+    /// with the space between filled so the card reads as tall as the half it sits in.
+    static func personCard(_ person: Person, shot: LensShot, avatar: (String) -> UIImage?) -> FlexBox {
+        FlexBox(direction: .column, spacing: 10) {
+            if let photo = avatar(person.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+            FlexBox(direction: .column) {}.padding(.top, LensFit.fill(lines: shot.primary.count + (shot.primary.isEmpty && shot.context != nil ? 1 : 0)))
+            Text(person.name, style: .heading)
+            Text(person.headline, style: .body).flexShrink(1)
+            // Why they matter: the tie and highlights, the same lines the full card shows.
+            for line in shot.primary {
+                Text(line, style: .meta, color: .secondary).flexShrink(1)
+            }
+            if let context = shot.context, shot.primary.isEmpty {
+                Text(context, style: .meta, color: .secondary).flexShrink(1)
+            }
+        }
+        .padding(22)
+        .background(.card)
     }
 
     enum Bottom { case none, person, group }
@@ -152,19 +159,16 @@ enum LensCards {
     /// Everyone you're talking to, in one row: a photo and a first name each, the speech bubble in
     /// place of the photo for whoever is talking, names dimmed for the rest. Past three, "+N".
     /// "You" leads the row while the wearer talks, so the row always says who has the floor.
-    /// A conversation of several: a small card each, side by side, two at most (the caller orders
-    /// them, talking first). Photo, first name, one short line; the one talking gets the speech
-    /// bubble beside their photo.
+    /// A conversation of several: one card each, a quarter of the lens, side by side. Photo at the
+    /// top, name and headline at the foot. Whoever is talking has the brighter name; no bubble.
     static func groupCards(_ group: [Member], avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .row, spacing: 12) {
             for member in group.prefix(2) {
                 FlexBox(direction: .column, spacing: 10) {
-                    FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
-                        if let photo = avatar(member.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                        if member.speaking { Icon(name: .speechBubble, style: .outline) }
-                    }
-                    Text(member.name, style: .heading)
-                    Text(short(member.headline, max: 28), style: .body, color: .secondary).flexShrink(1)
+                    if let photo = avatar(member.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                    FlexBox(direction: .column) {}.padding(.top, LensFit.fill(lines: 2))
+                    Text(member.name, style: .heading, color: member.speaking ? .primary : .secondary)
+                    Text(short(member.headline, max: 20), style: .body, color: .secondary).flexShrink(1)
                 }
                 .padding(22)
                 .background(.card)
@@ -186,16 +190,11 @@ enum LensCards {
         let shown = Array(group.prefix(3))
         return FlexBox(direction: .row, spacing: 18, crossAlignment: .center) {
             if meSpeaking {
-                FlexBox(direction: .row, spacing: 6, crossAlignment: .center) {
-                    Icon(name: .speechBubble, style: .outline)
-                    Text("You", style: .meta)
-                }
+                Text("You", style: .meta)
             }
             for member in shown {
                 FlexBox(direction: .row, spacing: 8, crossAlignment: .center) {
-                    if member.speaking {
-                        Icon(name: .speechBubble, style: .outline)
-                    } else if let photo = avatar(member.id) {
+                    if let photo = avatar(member.id) {
                         Image(image: photo, sizePreset: .icon, cornerRadius: .medium)
                     }
                     Text(member.name, style: .meta, color: member.speaking ? .primary : .secondary)
@@ -487,26 +486,41 @@ enum LensFit {
     static let slack: CGFloat = 1.1
     static let margin: CGFloat = 16
 
-    /// Drops what won't fit (an older card's detail, then the older card) and returns the
-    /// spacer's height.
+    /// The aid's cards take the top half of the lens when there are people to show, and the people
+    /// the bottom half: one card, or two, a quarter each. `half` is what the bottom takes.
+    static var half: CGFloat { available / 2 }
+    /// Padding, photo, name and one headline line: what a person card takes before its fill.
+    static let cardBase: CGFloat = 190
+
+    /// Room left for the aid's cards: the top half when there are people, the whole lens when not.
+    static func room(_ bottom: LensCards.Bottom) -> CGFloat { bottom == .none ? available : available - half }
+
+    /// The space a people card needs filling down to the half: its base, plus a line for each text
+    /// line that sits between the photo and the name.
+    static func fill(lines: Int) -> CGFloat {
+        max(0, half - cardBase - 26 * CGFloat(lines))
+    }
+
+    /// Drops what won't fit in the aid's room (an older card's detail, then the older card) and
+    /// returns the spacer's height.
     static func fit(_ shot: inout LensShot, bottom: LensCards.Bottom) -> CGFloat {
-        while shot.cards.count > 1, content(shot, bottom: bottom) > available {
+        while shot.cards.count > 1, content(shot, bottom: bottom) > room(bottom) {
             if shot.cards[shot.cards.count - 1].detail != nil {
                 shot.cards[shot.cards.count - 1].detail = nil
             } else {
                 shot.cards.removeLast()
             }
         }
-        return max(0, (available - content(shot, bottom: bottom)).rounded(.down))
+        return gap(shot, bottom: bottom)
     }
 
     static func gap(_ shot: LensShot, bottom: LensCards.Bottom) -> CGFloat {
-        max(0, (available - content(shot, bottom: bottom)).rounded(.down))
+        max(0, (room(bottom) - content(shot, bottom: bottom)).rounded(.down))
     }
 
     private static var available: CGFloat { panel - floor - margin }
 
-    /// Everything but the spacer, spacing included.
+    /// The aid's part only: the cards and the extras, spacing included.
     static func content(_ shot: LensShot, bottom: LensCards.Bottom) -> CGFloat {
         let width = panel - 40
         var pieces: [CGFloat] = shot.cards.enumerated().map { index, card in
@@ -521,18 +535,6 @@ enum LensFit {
             h += shot.working.map { lines($0, meta, width - 38) + 10 }.reduce(0, +)
             if let followup = shot.followup { h += lines(followup, body, width - 38) } else { h -= 10 }
             pieces.append(h)
-        }
-        switch bottom {
-        case .none: break
-        case .group:
-            // Photo, name, headline, with the card's padding: the tallest of the two.
-            pieces.append(44 + 56 + 10 + 40 + 3 + 32)
-        case .person:
-            let textWidth = width - 56 - 16
-            var text = lines(shot.name ?? "", heading, textWidth) + 4 + lines(shot.headline ?? "", body, textWidth)
-            for line in shot.primary { text += 4 + lines(line, meta, textWidth) }
-            if shot.primary.isEmpty, let context = shot.context { text += 4 + lines(context, meta, textWidth) }
-            pieces.append(44 + max(56, text))
         }
         // The spacer sits between them, so it adds one more gap.
         let gaps = CGFloat(pieces.count) * spacing
