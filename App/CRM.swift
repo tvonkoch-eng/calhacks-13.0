@@ -351,7 +351,11 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// glanced on the words as they come, so the card fills in while they're still talking.
     func heardPartial(_ text: String, at now: Date = .now) {
         let words = text.split(separator: " ").count
-        guard newcomer != nil, words >= 1, text != partialText else { return }
+        // Only while they're still "New person": words as they're said are for the name, the one
+        // thing worth having mid-sentence. Bullets wait for the finished sentence (Oct 25: "I work on
+        // a software" became a bullet before the sentence was done).
+        guard let newcomer, renamable(newcomer), name(newcomer) == Self.newName,
+              words >= 1, text != partialText else { return }
         partialText = text
         glanceIfDue(now: now, partial: text)
     }
@@ -382,9 +386,11 @@ struct Reminder: Codable, Identifiable, Equatable {
                                 transcript: conversation.lines.dropFirst(id == newcomer ? metAtLine : 0)
                                     .map { "\(selfTest ? "SPEAKER" : label(retag($0.speaker))): \($0.text)" }
                                     + (partial.map { ["SPEAKER (still talking): \($0)"] } ?? []))
+        let nameOnly = partial != nil
         Task {
             defer { glancing = false }
-            guard let glance = await look(input), roster(id) != nil || contacts.contains(where: { $0.id == id }) else { return }
+            guard var glance = await look(input), roster(id) != nil || contacts.contains(where: { $0.id == id }) else { return }
+            if nameOnly { glance = Glance(name: glance.name) }
             // First name only: "Toby Von Koch" reads "Toby" on the card.
             if let name = glance.name?.split(separator: " ").first.map({ $0.prefix(1).uppercased() + $0.dropFirst() }),
                renamable(id) { named(id, name) }

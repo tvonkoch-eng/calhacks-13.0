@@ -128,7 +128,9 @@ import Observation
         if let openrouter = [config.backup, config.answers, config.coach].compactMap(\.self).first(where: { $0.provider == .openrouter }) {
             models.append(Aid.Model(provider: .openrouter, key: openrouter.key,
                                     model: Tuning.string("glanceModel", "google/gemini-2.5-flash-lite")))
-            // If a call stalls past its 2.5 s cap: GPT-4.1 nano, 1.6 s and right on the same transcript.
+            // Flash Lite gets rate-limited on OpenRouter (14 of 16 burst calls were 429s on Oct 25):
+            // Gemini 2.5 Flash next (its own quota, 0.4 s), then GPT-4.1 nano (1.1 s).
+            models.append(Aid.Model(provider: .openrouter, key: openrouter.key, model: "google/gemini-2.5-flash"))
             models.append(Aid.Model(provider: .openrouter, key: openrouter.key, model: "openai/gpt-4.1-nano"))
         }
         for model in [config.backup, config.answers, config.coach].compactMap(\.self) where !models.contains(model) {
