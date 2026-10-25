@@ -1318,6 +1318,8 @@ private struct LensCardBackground: ViewModifier {
     var glow = false
     /// Measured (39, 40, 45) on the real renderer. Not black, and slightly blue.
     static let fill = Color(red: 39 / 255, green: 40 / 255, blue: 45 / 255)
+    /// The in-focus rim: greenish yellow.
+    static let glow = Color(red: 0.80, green: 0.95, blue: 0.25)
 
     func body(content: Content) -> some View {
         content
@@ -1327,16 +1329,19 @@ private struct LensCardBackground: ViewModifier {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .fill(Self.fill.opacity(Double(Tuning.float("lensCardAlpha", 0.6))))
             )
-            .overlay(alignment: .top) {
-                if glow {
-                    Capsule().fill(Color.white.opacity(0.95)).frame(height: 8).padding(.horizontal, radius * 0.6).padding(.top, 6)
-                }
-            }
             .overlay {
                 if glow {
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.85), lineWidth: 3)
-                        .shadow(color: .white.opacity(0.8), radius: 10)
+                    // Edge light: a soft wide bloom under a crisp greenish-yellow rim.
+                    let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    ZStack {
+                        shape.strokeBorder(Self.glow.opacity(0.55), lineWidth: 14).blur(radius: 8)
+                        shape.strokeBorder(
+                            LinearGradient(colors: [Self.glow, Self.glow.opacity(0.7), Self.glow],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            lineWidth: 6)
+                    }
+                    .shadow(color: Self.glow.opacity(0.7), radius: 12)
+                    .allowsHitTesting(false)
                 }
             }
     }

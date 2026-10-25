@@ -514,9 +514,13 @@ enum LensCards {
 
     /// The in-focus mark: the lens draws no borders or glows, so a thin bright bar across the top
     /// of the card, drawn as an image, stands in for one.
-    static let glowBar: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 600, height: 8)).image { _ in
-        UIColor(white: 1, alpha: 0.95).setFill()
-        UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: 600, height: 8), cornerRadius: 4).fill()
+    /// Greenish yellow, bright in the middle and fading out at the ends, like edge light.
+    static let glowBar: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 600, height: 12)).image { context in
+        let glow = UIColor(red: 0.80, green: 0.95, blue: 0.25, alpha: 1)
+        let colors = [glow.withAlphaComponent(0).cgColor, glow.cgColor, glow.cgColor, glow.withAlphaComponent(0).cgColor] as CFArray
+        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.2, 0.8, 1]) else { return }
+        UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: 600, height: 12), cornerRadius: 6).addClip()
+        context.cgContext.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 600, y: 0), options: [])
     }
 
     /// A small green tag with the count in it. The lens text has no colors, so the tag is drawn.
