@@ -979,7 +979,8 @@ struct LensMirror: View {
                 // The split lens fills the panel: the aid's cards at the very top, the person on
                 // the floor. Every other card sits on the floor and hugs its content.
                 if shot.kind != .split { Spacer(minLength: 0) }
-                card
+                // The split fills the panel: the aid on top, the people in the bottom half.
+                card.frame(maxHeight: shot.kind == .split ? .infinity : nil, alignment: .top)
                 Color.clear.frame(height: m.bottom)
             }
             .frame(width: LensMetrics.canvas, height: LensMetrics.canvas, alignment: shot.kind == .split ? .top : .bottom)
@@ -989,25 +990,49 @@ struct LensMirror: View {
         }
     }
 
-    /// Mirror of `LensCards.groupCards`: two small cards side by side.
+    /// Mirror of `LensCards.personCard`: photo at the top, name and what they do at the foot.
+    private func personCard(id: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let photo = avatar(id) {
+                Image(uiImage: photo)
+                    .resizable().aspectRatio(contentMode: .fill)
+                    .frame(width: m.icon, height: m.icon)
+                    .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+            }
+            Spacer(minLength: 0)
+            Text(shot.name ?? "").font(.system(size: m.heading, weight: .semibold))
+            Text(shot.headline ?? "").font(.system(size: m.body))
+            ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
+                Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
+            }
+            if let context = shot.context, shot.primary.isEmpty {
+                Text(context).font(.system(size: m.meta)).foregroundStyle(secondary)
+            }
+        }
+        .padding(m.pad)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .modifier(LensCardBackground(radius: m.radius))
+    }
+
+    /// Mirror of `LensCards.groupCards`: a quarter of the lens each, photo at the top, name and
+    /// headline at the foot. The talker's name is the brighter one; no bubble.
     private var groupCards: some View {
         HStack(alignment: .top, spacing: 12) {
             ForEach(shot.group.prefix(2), id: \.id) { member in
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 10) {
-                        if let photo = avatar(member.id) {
-                            Image(uiImage: photo)
-                                .resizable().aspectRatio(contentMode: .fill)
-                                .frame(width: m.icon, height: m.icon)
-                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
-                        }
-                        if member.speaking { Image(systemName: "bubble.left").font(.system(size: m.glyph)) }
+                    if let photo = avatar(member.id) {
+                        Image(uiImage: photo)
+                            .resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: m.icon, height: m.icon)
+                            .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
                     }
+                    Spacer(minLength: 0)
                     Text(member.name).font(.system(size: m.heading, weight: .semibold))
-                    Text(LensCards.short(member.headline, max: 28)).font(.system(size: m.body)).foregroundStyle(secondary)
+                        .foregroundStyle(member.speaking ? Color.white : secondary)
+                    Text(LensCards.short(member.headline, max: 20)).font(.system(size: m.body)).foregroundStyle(secondary)
                 }
-                .padding(22)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(m.pad)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .modifier(LensCardBackground(radius: m.radius))
             }
         }
@@ -1017,10 +1042,7 @@ struct LensMirror: View {
     private var groupRow: some View {
         HStack(spacing: 18) {
             if shot.meSpeaking {
-                HStack(spacing: 6) {
-                    Image(systemName: "bubble.left").font(.system(size: m.glyph))
-                    Text("You").font(.system(size: m.meta))
-                }
+                Text("You").font(.system(size: m.meta))
             }
             ForEach(shot.group.prefix(3), id: \.id) { member in
                 HStack(spacing: 8) {
@@ -1036,9 +1058,7 @@ struct LensMirror: View {
     }
 
     @ViewBuilder private func memberMark(_ member: Member) -> some View {
-        if member.speaking {
-            Image(systemName: "bubble.left").font(.system(size: m.glyph))
-        } else if let photo = avatar(member.id) {
+        if let photo = avatar(member.id) {
             Image(uiImage: photo)
                 .resizable().aspectRatio(contentMode: .fill)
                 .frame(width: m.icon, height: m.icon)
@@ -1088,7 +1108,8 @@ struct LensMirror: View {
     @ViewBuilder private var card: some View {
         switch shot.kind {
         case .split:
-            // The lens split: the aid's card on top, who you're talking to at the bottom.
+            // The lens split, laid out as LensCards.split: the aid's cards in the top half, the
+            // person (or two, a quarter each) in the bottom half.
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(Array(shot.cards.enumerated()), id: \.offset) { index, card in
                     cardBody(card, newest: index == 0)
@@ -1102,31 +1123,9 @@ struct LensMirror: View {
                 }
                 Spacer(minLength: 0)
                 if shot.group.count >= 2 {
-                    groupCards
+                    groupCards.frame(height: LensFit.half)
                 } else if let id = shot.photo {
-                    // Same content and order as LensCards.split: photo, name, headline, the tie and
-                    // highlights (or one context line).
-                    HStack(alignment: .top, spacing: 16) {
-                        if let photo = avatar(id) {
-                            Image(uiImage: photo)
-                                .resizable().aspectRatio(contentMode: .fill)
-                                .frame(width: m.icon, height: m.icon)
-                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
-                        }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(shot.name ?? "").font(.system(size: m.heading, weight: .semibold))
-                            Text(shot.headline ?? "").font(.system(size: m.body))
-                            ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
-                                Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
-                            }
-                            if let context = shot.context, shot.primary.isEmpty {
-                                Text(context).font(.system(size: m.meta)).foregroundStyle(secondary)
-                            }
-                        }
-                    }
-                    .padding(22)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .modifier(LensCardBackground(radius: m.radius))
+                    personCard(id: id).frame(height: LensFit.half)
                 }
             }
 
