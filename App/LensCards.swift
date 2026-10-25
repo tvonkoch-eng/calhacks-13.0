@@ -174,7 +174,6 @@ enum LensCards {
             }
             if let followup = shot.followup {
                 FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
-                    Icon(name: .speechBubble, style: .outline)
                     Text(followup, style: .body).flexShrink(1)
                 }
             }

@@ -1229,7 +1229,6 @@ struct LensMirror: View {
             }
             if let followup = shot.followup {
                 HStack(spacing: 10) {
-                    Image(systemName: "bubble.left").font(.system(size: m.glyph))
                     Text(followup).font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
                 }
             }
