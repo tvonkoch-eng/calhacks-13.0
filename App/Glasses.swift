@@ -414,6 +414,7 @@ enum Identification {
     /// else. Same person ~0.4+, anyone else ~0.1, so a blurred look of the same face rarely trips it.
     /// `differentBelow`.
     @ObservationIgnored private var differentBelow: Float { Tuning.float("differentBelow", 0.25) }
+    @ObservationIgnored private var differentLooks: Int { Tuning.int("differentLooks", 3) }
     /// A name also goes up once the same person has been the clear top match of a track for
     /// `streakLooks` scans in a row (score >= streakScore, ahead by >= streakGap), before the full
     /// confident bar. Mirabelle was top from her first look and clear by 0.4 s, but her score took
@@ -1614,7 +1615,11 @@ enum Identification {
     /// True when the main face is clearly not the card's person: it isn't the track that was
     /// announced as them, and its latest look doesn't resemble them.
     private func isDifferentFace(_ main: FaceTracker.Track, from card: String, store: Store) -> Bool {
-        guard announced[main.id] != card, main.best.usable, main.looks > 0 else { return false }
+        // `differentLooks` sharp-enough looks, fused, before the card comes down: one blurred look
+        // of the card's own person on a fresh track used to clear it (Joaquin, four times in a
+        // minute, Oct 24) and he then had to be recognised from scratch. A face that is
+        // recognised as someone else doesn't wait for this: naming them replaces the card.
+        guard announced[main.id] != card, main.best.usable, main.looks >= differentLooks else { return false }
         let score = store.ranked(main.probe).first { $0.person.id == card }?.score ?? 0
         return score < differentBelow
     }
@@ -1690,7 +1695,13 @@ enum Identification {
         // so two people about the same size don't trade the card back and forth (Avi and Joaquin
         // swapped four times in 10 s of the Oct 24 replay).
         let inView = live.filter { $0.updated == frameTime }
-        let cardTrack = onCard.flatMap { card in inView.first { announced[$0.id] == card } }
+        // The card's person, on their announced track or on a fresh one that already looks like
+        // them, stays the main face while their face is within `mainFaceSlack` of the biggest:
+        // two people the same size in frame flipped the card four times in 5 s (Oct 24).
+        let cardTrack = onCard.flatMap { card in
+            inView.first { announced[$0.id] == card }
+                ?? inView.first { $0.looks > 0 && store.ranked($0.probe).first.map { $0.person.id == card && $0.score >= streakScore } == true }
+        }
         var main = inView.max { facePx($0) < facePx($1) }
         if let cardTrack, let biggest = main, facePx(cardTrack) * mainFaceSlack >= facePx(biggest) { main = cardTrack }
         // A different face in front of you: the old card comes down now, before the new face
