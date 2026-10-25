@@ -284,9 +284,10 @@ struct SavedConversation: Codable, Identifiable, Equatable {
             let other = assistant.aid.lines.last { $0.speaker != Assistant.me && !$0.command }.flatMap { assistant.voices[$0.id] ?? $0.speaker }
             out.append(SavedLine(id: "live", who: mine ? "Me" : person(other), text: partial, me: mine, speaking: true))
         }
-        // Volume can't reliably tell the wearer from someone close (Oct 24: 13.5 dB vs up to 13.2),
-        // so the bubbles just switch sides whenever the speaker does.
-        do {
+        // Glasses mic: a line judged the wearer's (much louder at the glasses) is Me, on the right;
+        // everyone else on the left. iPhone mic: no telling by volume, so the bubbles just switch
+        // sides whenever the speaker does.
+        if assistant.mic == .phone {
             var right = false
             for index in out.indices {
                 if index > 0, out[index - 1].who != out[index].who { right.toggle() }
