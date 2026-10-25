@@ -116,6 +116,10 @@ do {
     check(QuestionGate.candidate(in: "What about you?") == nil, "\"what about you\" is social")
     check(QuestionGate.candidate(in: "Do you know how far it is from LA to Honolulu?")?.text == "how far it is from la to honolulu",
           "a real question still passes")
+    check(QuestionGate.candidate(in: "so I was telling him about the trip how many moons does Jupiter have")?.text
+          == "how many moons does jupiter have", "a question buried in run-on talk")
+    check(QuestionGate.candidate(in: "I was like I know what you mean honestly") == nil, "\"what you mean\" is not a question")
+    check(QuestionGate.candidate(in: "he told me how much it cost them last year") == nil, "\"how much it cost\" is not a question")
     check(QuestionGate.candidate(in: "Were you there?") == nil, "a real \"were\" question to the listener stays personal")
     check(QuestionGate.candidate(in: "how did you end") == nil, "\"how did you end (up…)\" is personal, even as a fragment")
     check(QuestionGate.candidate(in: "how do you say thank you in Japanese")?.confidence == .strong, "generic-you how-to still passes")
@@ -205,8 +209,8 @@ do {
     check(c.view.jarvis?.header(at: t.addingTimeInterval(4)) == "Jarvis \u{00B7} 4s", "it counts up while it thinks")
     c.jarvisAnswer("Priya: you owe her the deck by tomorrow.", at: t.addingTimeInterval(5))
     check(c.view.jarvis?.thinking == false && c.view.jarvis?.header(at: t) == "Jarvis", "answered")
-    check(c.nextDeadline == t.addingTimeInterval(5 + 20), "an answer stays 20 s: \(String(describing: c.nextDeadline))")
-    c.tick(at: t.addingTimeInterval(25.1))
+    check(c.nextDeadline == t.addingTimeInterval(5 + 12), "an answer stays 12 s: \(String(describing: c.nextDeadline))")
+    c.tick(at: t.addingTimeInterval(17.1))
     check(c.view.jarvis == nil, "then it goes")
     c.startJarvis("x", at: t)
     c.tick(at: t.addingTimeInterval(121))

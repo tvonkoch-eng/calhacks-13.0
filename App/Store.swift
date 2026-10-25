@@ -62,6 +62,8 @@ struct Match {
 /// People come from the bundled people.json; face samples and avatars live in Documents.
 @Observable final class Store {
     private(set) var people: [Person] = []
+    /// The team in people.json. Their profiles are fixed: nothing heard, edited or seen changes them.
+    func isRoster(_ id: String) -> Bool { people.contains { $0.id == id } }
     private(set) var gallery: [String: [[Float]]] = [:] { didSet { indexDirty = true } }
     private(set) var avatars: [String: UIImage] = [:]
     private(set) var lastSeen: [String: Date] = [:]
@@ -127,7 +129,13 @@ struct Match {
         }
         for data in [pushed, bundled].compactMap(\.self) {
             if let decoded = try? JSONDecoder().decode([Person].self, from: data), !decoded.isEmpty {
-                people = decoded.map { edits[$0.id] ?? $0 }
+                people = decoded
+                // An earlier build could remove a teammate; the team always stays.
+                if !removed.isDisjoint(with: people.map(\.id)) {
+                    removed.subtract(people.map(\.id))
+                    UserDefaults.standard.set(Array(removed), forKey: "removedPeople")
+                    indexDirty = true
+                }
                 return
             }
         }
@@ -300,6 +308,7 @@ struct Match {
     /// the bar climbs with the log of how many they have (a few sharp photos matter, the fortieth
     /// doesn't), and once full only a look clearly sharper than the weakest one gets in.
     func wantsShot(_ person: String, score: Float) -> Bool {
+        guard !isRoster(person) else { return false }
         let scores = (shots[person] ?? []).map(\.score).sorted()
         guard scores.count >= 4 else { return true }
         let median = scores[scores.count / 2]
@@ -417,6 +426,7 @@ struct Match {
     private var editsURL: URL { docs.appendingPathComponent("edits.json") }
 
     func update(_ person: Person) {
+        guard !isRoster(person.id) else { return }
         edits[person.id] = person
         if let i = people.firstIndex(where: { $0.id == person.id }) { people[i] = person }
         if met[person.id] != nil { met[person.id] = person }
@@ -429,7 +439,8 @@ struct Match {
 
     /// What a conversation turned up about someone, onto their card. Blanks only: a typed value
     /// or the roster's own copy is never overwritten by something heard.
-    func fill(_ base: Person, with details: Recap.Details) {
+    @discardableResult func fill(_ base: Person, with details: Recap.Details) -> Person? {
+        guard !isRoster(base.id) else { return nil }
         var person = edits[base.id] ?? base
         func blank(_ value: String?) -> Bool { value?.isEmpty != false }
         if blank(person.work) { person.work = details.work }
@@ -440,7 +451,9 @@ struct Match {
         if blank(person.linkedin) { person.linkedin = details.linkedin }
         if blank(person.instagram) { person.instagram = details.instagram }
         if blank(person.website) { person.website = details.website }
-        if person != (edits[base.id] ?? base) { update(person) }
+        guard person != (edits[base.id] ?? base) else { return nil }
+        update(person)
+        return person
     }
 
     /// Contacts, most recently seen first; people you haven't met keep their file order.
@@ -597,6 +610,7 @@ struct Match {
     private(set) var removed: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "removedPeople") ?? [])
 
     func remove(_ id: String) {
+        guard !isRoster(id) else { return }
         removed.insert(id)
         UserDefaults.standard.set(Array(removed), forKey: "removedPeople")
         indexDirty = true

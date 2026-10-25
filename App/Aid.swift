@@ -417,7 +417,7 @@ enum Talk {
             closedInTurn = closed.count
             // Coach each real sentence of theirs as it lands, so a definition is up while they're
             // still talking and the wearer is listening anyway.
-            if newest.split(separator: " ").count >= 3, Date().timeIntervalSince(lastCoach) > 1.5,
+            if newest.split(separator: " ").count >= 1, Date().timeIntervalSince(lastCoach) > 1.5,
                !isCommand(newest) { coachSoon() }
         }
         // "Jarvis" starting the sentence still being said shows the listening row now. The request
@@ -427,7 +427,15 @@ enum Talk {
             wakeShownThisTurn = true
             if wokenAt == nil { showWake() }
         }
+        // A story has few full stops, so a sentence may stay open for minutes. Coach every ten words
+        // of it as it's said, rather than holding everything for a pause.
+        let openWords = open.split(separator: " ").count
+        if openWords >= coachedOpenWords + 4, Date().timeIntervalSince(lastCoach) > 1.0, !isCommand(open) {
+            coachedOpenWords = openWords
+            coachSoon()
+        }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
+        closeBuriedQuestion(open, mine: mine)
         publish()
         // Muse can take seconds to close a turn that ends in silence, and a lull is exactly that:
         // the clock starts at the last word, not at the closed line.
@@ -460,7 +468,9 @@ enum Talk {
         partial = ""
         saying = ""   // it's a line now
         closedInTurn = 0
+        coachedOpenWords = 0
         wakeShownThisTurn = false
+        openQuestion = nil
         compositor.hold(false, at: Date())
 
         if let speaker {
@@ -558,10 +568,36 @@ enum Talk {
         SpeedLog.record(["event": "reset", "trigger": trigger, "cards": "\(compositor.view.cards.map(\.title))"])
         answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel(); jarvisTask?.cancel()
         lines = []; turns = []; events = []; them = Them(); others = []; ideas = []; roles = Roles(); partial = ""; status = ""
-        compositor.clear(); defined = []; noted = []; lastInsight = .distantPast; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
-        coachPending = false; coachBlockedUntil = nil; closedInTurn = 0
+        // The cards are not cleared here: each one runs out on its own clock, so a conversation ending
+        // doesn't take a Jarvis answer or a card with it.
+        defined = []; noted = []; lastInsight = .distantPast; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
+        coachPending = false; coachBlockedUntil = nil; closedInTurn = 0; openQuestion = nil
         wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""; jarvisTurn = nil
         publish()
+    }
+
+    /// A question said mid-flow with no pause after it ("…how many moons does Jupiter have and
+    /// anyway I was saying…") never gets a full stop, so it would wait for the whole turn to end.
+    /// Once the question is complete and the next words start something else, that is its endpoint.
+    @ObservationIgnored private var openQuestion: String?
+    private static let moveOn: Set<String> = [
+        "and", "so", "but", "anyway", "i", "im", "like", "because", "cause", "then", "um", "uh",
+        "yeah", "okay", "ok", "we", "it", "its", "or", "also", "wait", "actually",
+    ]
+
+    private func closeBuriedQuestion(_ open: String, mine: Bool) {
+        let now = QuestionGate.candidate(in: open)
+        if let asked = openQuestion {
+            let extra = now.flatMap { $0.text.hasPrefix(asked) ? String($0.text.dropFirst(asked.count)).trimmed : nil }
+            let first = extra?.split(separator: " ").first.map(String.init)
+            // Gone (the clause changed) or carried on into a new thought: the question was whole.
+            if extra == nil || first.map(Self.moveOn.contains) == true {
+                openQuestion = nil
+                answerHeard(asked + "?", endpointed: true, mine: mine)
+                return
+            }
+        }
+        if let now, now.confidence == .strong { openQuestion = now.text }
     }
 
     // MARK: - Answers: the fast lane
@@ -585,6 +621,8 @@ enum Talk {
     @ObservationIgnored private var answerTask: Task<Void, Never>?
     @ObservationIgnored private var answersBlockedUntil: Date?
     @ObservationIgnored private var closedInTurn = 0
+    /// Words of the turn still open (no full stop yet) when the coach last looked at it.
+    @ObservationIgnored private var coachedOpenWords = 0
     @ObservationIgnored private var nextCard = 0
 
     /// `mine`: the wearer is the one asking. Then the other person is about to answer, and an
@@ -602,7 +640,7 @@ enum Talk {
             if endpointed { commit(nil) }
             return
         }
-        if config.explicitOnly, endpointed, !text.trimmed.hasSuffix("?") {
+        if config.explicitOnly, endpointed, !text.trimmed.hasSuffix("?"), candidate.confidence != .strong {
             abandon()
             return
         }
@@ -970,6 +1008,9 @@ enum Talk {
         }
     }
 
+    /// The last Jarvis exchanges, most recent last, fed back to Jarvis as context.
+    @ObservationIgnored private var jarvisHistory: [(question: String, answer: String)] = []
+
     /// The request said to Jarvis so far this turn, and what of it is already being worked on.
     @ObservationIgnored private var jarvisTurn: (text: String, fired: String?)?
 
@@ -1117,7 +1158,9 @@ enum Talk {
             .filter { !$0.isEmpty }.joined(separator: "\n")
         if personal != nil { compositor.jarvisStep("Reading your notes", at: started) }
         publish()
-        let context = self.context(last: 30)
+        // The last few Jarvis exchanges, so "and in Spanish?" or "what about the second one" make sense.
+        let context = jarvisHistory.map { "Earlier, asked Jarvis: \($0.question) Answer: \($0.answer)" }.joined(separator: "\n")
+            + "\n" + self.context(last: 30)
         let fallback = config.jarvis != nil ? config.answers : nil
         jarvisTask = Task { [weak self] in
             let step: @Sendable (String) async -> Void = { label in
@@ -1146,6 +1189,9 @@ enum Talk {
             }
             guard !Task.isCancelled, let self else { return }
             self.compositor.jarvisAnswer(answer, at: Date())
+            if answer != "I couldn't do that." {
+                self.jarvisHistory = Array((self.jarvisHistory + [(request, answer)]).suffix(3))
+            }
             self.answeredAt = Date()
             self.answeredText = answer
             self.publish()
@@ -1183,6 +1229,18 @@ enum Talk {
     @ObservationIgnored private var answeredText = ""
     /// Insight topics shown this conversation.
     @ObservationIgnored private var noted: [String] = []
+    /// When each defined term and noted topic was last used, keyed "d:term" / "n:topic". Both fall out
+    /// of memory after `memoryLife`, so an old topic can come back rather than block the lens all talk.
+    @ObservationIgnored private var memoryAt: [String: Date] = [:]
+    static let memoryLife: TimeInterval = 180
+
+    private func pruneMemory(now: Date = Date()) {
+        let stale = memoryAt.filter { now.timeIntervalSince($0.value) > Self.memoryLife }.map(\.key)
+        guard !stale.isEmpty else { return }
+        for key in stale { memoryAt[key] = nil }
+        defined.removeAll { stale.contains("d:" + $0.lowercased()) }
+        noted.removeAll { stale.contains("n:" + $0.lowercased()) }
+    }
 
     /// One call at a time; anything heard meanwhile folds into one more call right after.
     private func coachSoon() {
@@ -1279,7 +1337,9 @@ enum Talk {
 
     private func coachInput(for moment: Moment?) -> Coach.Input {
         // Networking conversations are short; the whole of one fits, so nothing said early is lost.
-        var transcript = transcriptLines(last: 30)
+        pruneMemory()
+        // Definitions and insights read the last few lines; a suggestion for this moment reads more.
+        var transcript = transcriptLines(last: moment == nil ? 8 : 30)
         if !partial.isEmpty { transcript.append("\(predictedTag()) (still talking): \(partial)") }
         // The coach writes a suggestion only for a moment, and for that moment.
         let why: String? = switch moment {
@@ -1295,6 +1355,7 @@ enum Talk {
     /// `moment`: the moment this call was asked to write a suggestion for, if any.
     private func apply(_ advice: Coach.Advice, for moment: Moment?, lookedAt utterance: String, mine: Bool, finished: Bool) {
         let now = Date()
+        pruneMemory(now: now)
         let recent = Talk.normalized((lines.suffix(2).map(\.text) + [partial]).joined(separator: " "))
         // Only a term just said, of real substance, that the coach is sure of: "LO — likely
         // misheard LLM" (it was Elo) is worse than nothing.
@@ -1319,6 +1380,7 @@ enum Talk {
             && term.term.count >= 3 && Talk.mentioned(term.term, in: recent) && !Talk.mentioned(term.term, in: answered)
             && !known.contains(Talk.normalized(term.term).filter { $0 != " " }) && !quiet {
             defined.append(term.term)
+            memoryAt["d:" + term.term.lowercased()] = Date()
             // No meaning, or one the coach isn't sure of: search for it instead of guessing.
             guard let meaning = term.meaning, !unsure.contains(where: meaning.lowercased().contains) else {
                 lookUp("What is \(term.term)?")
@@ -1405,12 +1467,13 @@ enum Talk {
     /// At most one insight this often: the least urgent card mustn't crowd out the rest.
     private static let insightGap: TimeInterval = 0.5
     /// Later than this after the line, the conversation has moved on: dropped.
-    private static let insightLate: TimeInterval = 10
+    private static let insightLate: TimeInterval = 8
 
     private func ground(_ insight: (topic: String, query: String), line: String) {
         guard let researcher = config.researcher,
               let writer = (config.perMinute != nil ? config.backup : nil) ?? config.answers ?? config.backup else { return }
         noted.append(insight.topic)
+        memoryAt["n:" + insight.topic.lowercased()] = Date()
         lastInsight = Date()
         let started = Date()
         Task { [weak self] in

@@ -117,12 +117,13 @@ struct Answerer {
     about this place or event that nothing above answers is WEB only when "Where" names the \
     event; otherwise SKIP.
 
-    Reply with exactly SKIP, and nothing else, if the question is about the people talking or \
-    anything that's theirs (their work, project, product, company, school, plans, opinions, \
-    feelings), even when the conversation says the answer: they know their own lives, and an \
-    answer there speaks for them ("is it like Cluely?" about the wearer's project is SKIP). Also \
-    SKIP if it is rhetorical, a request to do something, or too fragmentary to guess at. Never send \
-    the people talking to the web.
+    Even when nobody asked a question, give the most useful short fact or definition for anything \
+    said that a smart, well-read college student might not know: a niche name, term, place, number \
+    or claim. Niche means known mostly inside its field, however big (Legora, Harvey, Jane Street), \
+    not household names (7-Eleven, Google, Tesla, Harvard). Reply with exactly SKIP, and nothing \
+    else, for small talk, fragments, or when everything mentioned is common knowledge. Never invent facts about the people talking; for their own \
+    lives, offer only what the conversation or what's known about them says. Never send the people \
+    talking to the web: not their work, their company, their school or their plans.
     """
 
     /// "I don't have real-time…", "Sorry, …": a refusal on the lens is worse than nothing, so it is

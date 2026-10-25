@@ -61,7 +61,8 @@ struct CalHacksApp: App {
                     crm.onDetails = { id, details in
                         guard let base = store.contacts.first(where: { $0.id == id })
                                 ?? crm.contacts.first(where: { $0.id == id }).map(crm.person) else { return }
-                        store.fill(base, with: details)
+                        // A new person's card on the lens fills in as they talk.
+                        if let person = store.fill(base, with: details) { glasses.refresh(person) }
                     }
                     // Listening is on from launch; the mic pill turns it off.
                     Task { await assistant.ensureListening() }

@@ -39,25 +39,23 @@ enum Tools {
         case call(name: String, arguments: String)
     }
 
-    /// "Jarvis, who did I meet today?" / "Lens, how far is the nearest Target?" → the request.
-    /// The name opens the sentence (after an "um" or "hey"), or closes it: "what's the weather,
-    /// Jarvis?". Only "Jarvis" may close one; plenty of ordinary sentences end in "lens".
+    /// "Jarvis, who did I meet today?", "hi Jarvis what's 4 plus 4", "what's the weather, Jarvis?":
+    /// the name anywhere in the sentence makes it a request, and the words around it are the
+    /// request. "Lens" counts only when it opens the sentence (it's an ordinary word elsewhere).
     static func command(in text: String) -> String? {
-        let wake = #"(?:lens|lenz|lense|"# + jarvis + ")"
-        let opening = #"^\s*(?:(?:hey|ok|okay|um|uh|so|yo)[\s,]+)*"# + wake + #"\b[\s,.:!-]*(.+)$"#
-        let closing = #"^\s*(.+?)[\s,]+(?:hey )?"# + jarvis + #"\b[\s?.!]*$"#
-        for (pattern, closes) in [(opening, false), (closing, true)] {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-                  let range = Range(match.range(at: 1), in: text) else { continue }
-            var rest = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
-            // "what's the weather, Jarvis?" asked a question: keep the mark the name took with it.
-            if closes, text.trimmingCharacters(in: .whitespaces).hasSuffix("?"), !rest.hasSuffix("?") {
-                rest = rest.trimmingCharacters(in: CharacterSet(charactersIn: ",.!")) + "?"
-            }
-            if rest.contains(where: \.isLetter) { return rest }
+        var rest: String
+        if let found = text.range(of: #"\b"# + jarvis + #"\b"#, options: [.regularExpression, .caseInsensitive]) {
+            rest = String(text[..<found.lowerBound]) + " " + String(text[found.upperBound...])
+        } else if let opening = text.range(of: #"^\s*(?:(?:hey|ok|okay|um|uh|so|yo)[\s,]+)*(?:lens|lenz|lense)\b"#,
+                                           options: [.regularExpression, .caseInsensitive]) {
+            rest = String(text[opening.upperBound...])
+        } else {
+            return nil
         }
-        return nil
+        // Greetings and punctuation the name leaves behind.
+        rest = rest.replacingOccurrences(of: #"^\s*(?:(?:hi|hey|hello|ok|okay|um|uh|so|yo)[\s,]+)*"#, with: "", options: [.regularExpression, .caseInsensitive])
+        rest = rest.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.:;!-")))
+        return rest.contains(where: \.isLetter) ? rest : nil
     }
 
     /// "Jarvis." on its own: the request comes in the next sentence.
