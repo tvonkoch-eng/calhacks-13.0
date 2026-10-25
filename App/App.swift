@@ -1056,9 +1056,6 @@ struct LensMirror: View {
                 RoundedRectangle(cornerRadius: size * 0.16, style: .continuous)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
-            } else if focused, let photo = avatar(id), let lit = LensCards.glowing(photo) {
-                // The same glowing image the lens is sent.
-                Image(uiImage: lit).resizable().frame(width: size, height: size)
             } else if let photo = avatar(id) {
                 Image(uiImage: photo)
                     .resizable().aspectRatio(contentMode: .fill)
@@ -1069,6 +1066,11 @@ struct LensMirror: View {
                 .font(.system(size: LensFit.nameFits(name, width: width) ? m.heading : m.body, weight: .semibold))
                 .foregroundStyle(bright ? Color.white : secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            // Mirror of the lens's smartGlasses icon.
+            Image(systemName: "eyeglasses").font(.system(size: m.glyph))
+                .foregroundStyle(.white).opacity(focused ? 1 : 0)
+                .frame(width: LensFit.iconRoom - LensFit.photoGap)
         }
     }
 

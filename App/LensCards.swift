@@ -196,11 +196,7 @@ enum LensCards {
         let share = Float(LensFit.photoShare(width))
         return FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
             if let photo {
-                // In focus: the photo glows (baked into the image, so the glass and the phone match).
-                FlexBox(direction: .column) {
-                    if focused, let lit = glowing(photo) { Image(image: lit, sizePreset: .fill, cornerRadius: .none) }
-                    else { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
-                }
+                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
                     .flexGrow(share).flexShrink(0)
             }
             FlexBox(direction: .column) {
@@ -209,6 +205,8 @@ enum LensCards {
                      color: bright ? .primary : .secondary).flexShrink(1)
             }
             .flexGrow(1 - share).flexShrink(1)
+            // In focus: the glasses' own icon, beside the name. Vector, so nothing heavy to send.
+            if focused { Icon(name: .smartGlasses, style: .outline) }
         }
     }
 
@@ -625,10 +623,15 @@ enum LensFit {
     /// The width beside the photo, where the name goes.
     static func beside(_ width: CGFloat) -> CGFloat { (width - photoGap) * (1 - photoShare(width)) }
 
-    /// Whether every word of the name fits beside the photo in the heading style.
+    /// Room kept beside the name for the in-focus icon, on every card, so a name's size doesn't
+    /// change as focus moves.
+    static let iconRoom: CGFloat = 40
+
+    /// Whether every word of the name fits beside the photo in the heading style. Names get extra
+    /// slack: Meta's face runs wider than the system font, and "Mirabelle" broke mid-word at 50/50.
     static func nameFits(_ name: String, width: CGFloat) -> Bool {
         name.split(separator: " ").allSatisfy {
-            (String($0) as NSString).size(withAttributes: [.font: heading]).width * slack <= beside(width)
+            (String($0) as NSString).size(withAttributes: [.font: heading]).width * 1.25 <= beside(width) - iconRoom
         }
     }
 
@@ -643,7 +646,7 @@ enum LensFit {
         // Padding, then the header: the photo, or the name beside it if taller.
         let photo = (width - photoGap) * photoShare(width)
         let header = max(photo, lines(LensCards.twoLines(name), nameFits(name, width: width) ? heading : body,
-                                      width - photoGap - photo) * slack)
+                                      width - photoGap - photo - iconRoom) * slack)
         var left = half - (44 + header + gap)
         var out: [String] = []
         for line in pool {
