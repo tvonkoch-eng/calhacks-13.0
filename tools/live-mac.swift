@@ -192,6 +192,7 @@ func drawLens(_ view: LensView) {
             out("\(s)  \(color)\(pad(tag, 5)) \(event.text)\(Style.reset)" + dim(event.detail))
         case .answer: out("\(s)  \(Style.aid)  answer   \(event.text)\(Style.reset)" + dim(event.detail))
         case .define: out("\(s)  \(Style.aid)  define   \(event.text)\(Style.reset)" + dim("— " + event.detail))
+        case .insight: out("\(s)  \(Style.aid)  insight  \(event.text)\(Style.reset)" + dim("— " + event.detail))
         case .followup:
             let note = ["used", "passed", "cleared"].contains(event.text) ? "\(event.text): \(event.detail)" : event.text
             out("\(s)  \(Style.aid)  suggest  \(note)\(Style.reset)")

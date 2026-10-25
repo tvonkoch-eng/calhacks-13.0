@@ -43,7 +43,7 @@ struct Turn: Identifiable {
 
 /// Everything the aid did, in order: the phone's timeline, the Mac tool's log.
 struct Event: Identifiable, Equatable {
-    enum Kind: Equatable { case line, answer, define, followup, research, lookup, learned, roles, status }
+    enum Kind: Equatable { case line, answer, define, insight, followup, research, lookup, learned, roles, status }
     let id: Int
     let kind: Kind
     let text: String
@@ -325,6 +325,8 @@ enum Talk {
         /// the 2026-10-24 test with Joaquin they were bad enough to drop entirely; the coach still
         /// defines and still catches missed questions.
         var suggestions = true
+        /// Insight cards: a fact or bit of context about what was just said.
+        var insights = true
         /// The wearer's own questions get answers too, not only the other person's. In testing the
         /// wearer asks as much as anyone, and an ignored question reads as "it didn't hear me".
         var answerMine = false
@@ -520,7 +522,7 @@ enum Talk {
     func reset() {
         answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel()
         lines = []; turns = []; events = []; them = Them(); others = []; ideas = []; roles = Roles(); partial = ""; status = ""
-        compositor.clear(); defined = []; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
+        compositor.clear(); defined = []; noted = []; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
         coachPending = false; coachBlockedUntil = nil; closedInTurn = 0
         wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""
         publish()
@@ -692,10 +694,11 @@ enum Talk {
                             self?.render()
                         }
                         break
-                    } catch AnswerError.http(let code) where code == 429 && !any {
-                        // Rate-limited before a word arrived: this answer and the next minute's go to the backup.
+                    } catch AnswerError.http(let code) where (code == 429 || code == 402) && !any {
+                        // Rate-limited (or out of quota: 402) before a word arrived: this answer and the
+                        // next minute's (ten, out of quota) go to the backup.
                         guard let backup, backup != using else { throw AnswerError.http(code) }
-                        self?.answersBlockedUntil = Date().addingTimeInterval(60)
+                        self?.answersBlockedUntil = Date().addingTimeInterval(code == 402 ? 600 : 60)
                         self?.log(.status, "Answers rate-limited on \(using.provider.rawValue); using \(backup.provider.rawValue) \(backup.model)")
                         using = backup
                     }
@@ -943,6 +946,8 @@ enum Talk {
     /// was about, so a definition doesn't either.
     @ObservationIgnored private var answeredAt = Date.distantPast
     @ObservationIgnored private var answeredText = ""
+    /// Insight topics shown this conversation.
+    @ObservationIgnored private var noted: [String] = []
 
     /// One call at a time; anything heard meanwhile folds into one more call right after.
     private func coachSoon() {
@@ -1043,7 +1048,7 @@ enum Talk {
         case nil: nil
         }
         return Coach.Input(wearer: config.wearer, background: config.background, situation: config.situation, known: known,
-                           defined: defined, suggested: suggested, moment: why, transcript: transcript)
+                           defined: defined, noted: noted, suggested: suggested, moment: why, transcript: transcript)
     }
 
     /// `moment`: the moment this call was asked to write a suggestion for, if any.
@@ -1064,6 +1069,17 @@ enum Talk {
             nextCard += 1
             compositor.show(Card(kind: .definition, title: term.term, detail: term.meaning, id: nextCard), at: now)
             log(.define, term.term, detail: term.meaning)
+        }
+        // A fact or bit of context about the topic: more to know, never a line to say. Once per
+        // topic, not one a definition or an answer just covered, not on a question (it gets an answer).
+        if config.insights, let insight = advice.insight, !Talk.asks(lines.last?.text ?? ""),
+           !noted.contains(where: { Talk.same($0, insight.topic) }),
+           !defined.contains(where: { Talk.same($0, insight.topic) || Talk.mentioned($0, in: Talk.normalized(insight.topic)) }),
+           !Talk.mentioned(insight.topic, in: answered) {
+            noted.append(insight.topic)
+            nextCard += 1
+            compositor.show(Card(kind: .insight, title: insight.topic, detail: insight.fact, id: nextCard), at: now)
+            log(.insight, insight.topic, detail: insight.fact)
         }
         // The recognizer garbled a request the gate or the answer model let go: the coach's clean
         // version goes to the tool model (answer, device tool or Fetch), unless something already

@@ -13,7 +13,7 @@ capped at 2.5 s: only PAUSE makes a lull.
 import json, os, re, subprocess, sys, tempfile, time
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
-SHOWN = {"answer": "answer", "define": "define", "followup": "suggest", "lookup": "lookup", "research": "research"}
+SHOWN = {"answer": "answer", "define": "define", "insight": "insight", "followup": "suggest", "lookup": "lookup", "research": "research"}
 
 
 def feed(path, pipe):
@@ -47,7 +47,7 @@ def replay(path):
             rows.append(("line", event.get("tag", "?"), event["text"]))
         elif kind in SHOWN and not event["text"].startswith(("used", "passed", "cleared")):
             detail = event.get("detail", "")
-            if kind == "define":
+            if kind in ("define", "insight"):
                 text = f"{event['text']}: {detail}"
             elif kind in ("answer", "research"):
                 text = event["text"] + (f"  [{detail.split(' · ')[0]}]" if detail else "")

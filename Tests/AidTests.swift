@@ -39,7 +39,9 @@ do {
     check(lens.view.cards.map(\.title) == ["384,400 km away"], "the older one drops off on its own clock")
     lens.show(answer("27 days", live: false, id: 3), at: at(3))
     lens.show(answer("1969", live: false, id: 4), at: at(4))
-    check(lens.view.cards.map(\.title) == ["1969", "27 days"], "a third answer pushes out the oldest")
+    check(lens.view.cards.map(\.title) == ["1969", "27 days", "384,400 km away"], "three answers up at once")
+    lens.show(answer("Apollo 11", live: false, id: 5), at: at(5))
+    check(lens.view.cards.map(\.title) == ["Apollo 11", "1969", "27 days"], "a fourth answer pushes out the oldest")
 }
 
 // An answer goes up at once and holds while live.
@@ -49,7 +51,8 @@ do {
     lens.show(answer("\u{2026}", live: true), at: at(0.5))
     check(lens.view.card?.kind == .answer && lens.view.cards.count == 2, "answer goes on top of a definition")
     lens.show(other, at: at(1))
-    check(lens.view.cards.map(\.kind) == [.answer, .definition] && lens.view.cards[1] == definition,
+    lens.show(third, at: at(1.5))
+    check(lens.view.cards.map(\.kind) == [.definition, .answer, .definition] && lens.view.cards[2] == definition,
           "a definition doesn't push out one that just went up")
     lens.tick(at: at(60))
     check(lens.view.cards.map(\.kind) == [.answer], "a live answer never times out")
@@ -65,17 +68,19 @@ do {
     lens.show(answer("1969", live: false), at: at(0))
     lens.show(definition, at: at(1))
     lens.show(other, at: at(2))
-    check(lens.view.cards == [definition, answer("1969", live: false)], "full: the next definition queues")
+    lens.show(third, at: at(2.5))
+    check(lens.view.cards == [other, definition, answer("1969", live: false)], "full: the next definition queues")
     lens.tick(at: at(Compositor.answerDwell + 0.1))
-    check(lens.view.cards == [other, definition], "then takes the finished answer's place")
+    check(lens.view.cards == [third, other, definition], "then takes the finished answer's place")
     lens.remove(id: 1, kind: .definition, at: at(6))
-    check(lens.view.cards == [other], "removing a card leaves the rest")
+    check(lens.view.cards == [third, other], "removing a card leaves the rest")
     var stale = Compositor()
     stale.show(answer("x", live: true, id: 7), at: at(0))
     stale.show(answer("y", live: true), at: at(0))
+    stale.show(answer("z", live: true, id: 8), at: at(0))
     stale.show(definition, at: at(0))
     stale.remove(id: 9, kind: .answer, at: at(Compositor.maxWait[.definition]! + 1))
-    check(stale.view.cards.map(\.title) == ["x"], "a definition that waited too long is dropped")
+    check(stale.view.cards.map(\.title) == ["z", "x"], "a definition that waited too long is dropped")
     var twice = Compositor()
     twice.show(definition, at: at(0))
     twice.show(Card(kind: .definition, title: "ColBERT", detail: "again", id: 5), at: at(1))
@@ -291,6 +296,14 @@ do {
     check(strings?.suggest == "What's next for Rillet?" && strings?.score == nil && strings?.alternatives.map(\.say) == ["Hiring?"], "a plain list of lines")
     let none = Coach.parse(#"{"suggest": [], "define": []}"#)
     check(none?.suggest == nil && none?.alternatives.isEmpty == true, "an empty list is no suggestion")
+}
+
+// Insights: a topic and a fact, or nothing.
+do {
+    let one = Coach.parse(#"{"define": [], "insight": {"topic": "Humanoid robots", "fact": "Most still rely on remote operators"}, "ask": null}"#)
+    check(one?.insight?.topic == "Humanoid robots" && one?.insight?.fact == "Most still rely on remote operators", "an insight is read")
+    check(Coach.parse(#"{"insight": null}"#)?.insight == nil, "null is no insight")
+    check(Coach.parse(#"{"insight": {"topic": "Robots"}}"#)?.insight == nil, "a topic without a fact is no insight")
 }
 
 // Claude behind the OpenAI-shaped requests every lane builds.

@@ -20,6 +20,8 @@ enum Coach {
         var situation = ""
         var known: String          // "Priya · evals startup founder; Berkeley CS; Last talked Oct 12: …"
         var defined: [String]
+        /// Insights already shown (their topics), so none comes round twice.
+        var noted: [String] = []
         /// Suggestions already shown, so none comes round twice.
         var suggested: [String]
         /// Why the wearer needs a suggestion right now ("a silence"), or nil: then none is wanted.
@@ -38,11 +40,14 @@ enum Coach {
         /// THEM asked for a fact or a task in words the recognizer mangled or left implicit: the
         /// request rebuilt as one clear question, for the answer lane to take.
         var ask: String?
+        /// A fact or bit of context about what was just said: a topic (a few words) and the fact.
+        var insight: (topic: String, fact: String)?
 
         static func == (a: Advice, b: Advice) -> Bool {
             a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
                 && a.suggest == b.suggest && a.score == b.score
                 && a.alternatives.map { "\($0.say)=\($0.score ?? 0)" } == b.alternatives.map { "\($0.say)=\($0.score ?? 0)" } && a.ask == b.ask
+                && a.insight?.topic == b.insight?.topic && a.insight?.fact == b.insight?.fact
         }
     }
 
@@ -97,6 +102,21 @@ enum Coach {
     futures, swaps"), one or two sentences, at most 35 words, with concrete examples ("Contracts whose value \
     tracks another asset, used to hedge or speculate; e.g. options, futures, swaps"). [] when the line has no such term.
 
+    "insight": {"topic": "...", "fact": "..."} or null
+      One striking, accurate fact or bit of context about what the newest line is about, that makes \
+    the topic more interesting to the wearer: a number, a comparison, a cause, a bit of history, a \
+    surprising connection ("topic": "Humanoid robots", "fact": "Figure, Tesla and Agility are \
+    racing to put them in warehouses; most still rely on remote operators"). From either speaker. \
+    Lean toward giving one whenever the line has a real topic in it (a field, company, place, \
+    technology, event, idea); when in doubt, give one. It must be specific and non-obvious: \
+    something a smart person in another field likely doesn't know, carried by a name, a number, a \
+    date or a comparison ("Jane Street trades over $17 trillion a year"), never a generic statement \
+    anyone could guess ("robots improve efficiency") and never what the term means (that is \
+    "define"). Only what you are sure of and what doesn't change week to week; never about the \
+    people talking or their lives, never about this event or place ("Where"), never advice or a \
+    line to say, never a topic in "Already noted". "topic" at most 4 words, "fact" at most 25 \
+    words. null for small talk, and null rather than something generic.
+
     "suggest": [{"say": "...", "score": 1-5}] or null
       Only when "Suggest now" is yes, otherwise null. Up to three different things the wearer \
     could say next, best first, each scored: 5 = specific to this person and moment and clearly \
@@ -128,6 +148,7 @@ enum Coach {
         Where: \(input.situation.isEmpty ? "unknown" : input.situation)
         Known about them: \(input.known.isEmpty ? "nothing yet" : input.known)
         Already defined: \(list(input.defined))
+        Already noted: \(list(input.noted))
         Already suggested: \(input.suggested.isEmpty ? "none" : input.suggested.map { "\"\($0)\"" }.joined(separator: ", "))
         Suggest now: \(input.moment.map { "yes (\($0))" } ?? "no")
 
@@ -151,7 +172,7 @@ enum Coach {
             body.merge(["max_tokens": 1200, "reasoning_effort": "low"]) { _, new in new }
         } else if provider == .cerebras || provider == .openrouter, model.contains("qwen") {
             // Room for three scored suggestions as well as a definition.
-            body.merge(["max_tokens": 320, "reasoning_effort": "none"]) { _, new in new }
+            body.merge(["max_tokens": 420, "reasoning_effort": "none"]) { _, new in new }
         } else if provider == .muse {
             body.merge(["max_tokens": 900, "reasoning_effort": "minimal"]) { _, new in new }
         } else {
@@ -197,6 +218,9 @@ enum Coach {
             result.suggest = clean(object["suggest"])
         }
         result.ask = clean(object["ask"])
+        if let insight = object["insight"] as? [String: Any], let topic = clean(insight["topic"]), let fact = clean(insight["fact"]) {
+            result.insight = (topic, fact)
+        }
         return result
     }
 }
@@ -359,6 +383,9 @@ enum LLM {
             let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "retry-after")
             throw Failure.rateLimited(retryAfter: header.flatMap(TimeInterval.init) ?? 20)
         }
+        // Out of quota ("payment required", Cerebras on 2026-10-24): the same as a long rate limit,
+        // so every lane goes to its backup instead of failing.
+        if code == 402 { throw Failure.rateLimited(retryAfter: 600) }
         guard code == 200 else {
             let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
                 .flatMap { ($0["error"] as? [String: Any])?["message"] as? String }
