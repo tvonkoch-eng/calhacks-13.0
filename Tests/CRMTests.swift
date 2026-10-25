@@ -300,5 +300,79 @@ do {
     check(crm.conversations.isEmpty, "no conversation filed under a background face")
 }
 
+// The profile: who someone is overall. Revised only when a conversation shows something more
+// central; a later niche fact neither replaces it nor jumps ahead of what matters on the card.
+let profiled = Recap.parse("""
+{"skip": false, "summary": "Talked evals.", "facts": ["Building an evals startup"],
+ "profile": {"label": "evals startup founder", "about": "Building an evals startup after three years on Stripe's ML team.",
+             "key": ["Building an evals startup", "Ex-Stripe ML engineer", "Invented fact"]}}
+""")
+check(profiled?.profile?.label == "evals startup founder" && profiled?.profile?.key.count == 3, "profile parsed")
+check(Recap.parse("{\"skip\": false, \"summary\": \"Hi.\"}")?.profile == nil, "no profile key, no profile")
+let profileFile = FileManager.default.temporaryDirectory.appendingPathComponent("crm-profile-\(UUID()).json")
+do {
+    let crm = makeCRM(nil, url: profileFile)
+    crm.learn("avi", "Ex-Stripe ML engineer", at: t0)
+    var first = Encounter(at: at(60), match: "avi")
+    first.apply(profiled!)
+    crm.save(first)
+    check(crm.label("avi") == "evals startup founder", "profile label")
+    check(crm.about("avi")?.hasPrefix("Building an evals startup") == true, "profile about")
+    check(crm.facts(about: "avi").map(\.text).prefix(2) == ["Building an evals startup", "Ex-Stripe ML engineer"],
+          "key facts lead, an invented key fact is dropped")
+
+    // A second conversation about coffee: a niche fact, a narrow label for that chat, profile kept.
+    let niche = Recap.parse("""
+    {"skip": false, "summary": "Chatted about oat milk.", "label": "oat milk fan", "facts": ["Prefers oat milk"],
+     "profile": {"label": null, "about": null, "key": ["Building an evals startup", "Ex-Stripe ML engineer", "Prefers oat milk"]}}
+    """)!
+    var second = Encounter(at: at(7200), match: "avi")
+    second.apply(niche)
+    crm.save(second)
+    check(crm.label("avi") == "evals startup founder", "a narrow chat's label doesn't replace who they are")
+    check(crm.about("avi")?.hasPrefix("Building an evals startup") == true, "null about keeps the big picture")
+    check(crm.facts(about: "avi").first?.text == "Building an evals startup", "the newest niche fact doesn't lead")
+    check(crm.record("avi").briefing.first?.hasPrefix("Who they are: Building") == true, "the aid is briefed with it first")
+    check(crm.digest().contains("Building an evals startup after"), "Jarvis sees it")
+    check(Recap.message(Recap.Input(wearer: "Toby", when: t0, with: "Avi", name: nil, picture: "evals startup founder",
+                                    known: [], owed: [], transcript: [])).contains("Who they are: evals startup founder"),
+          "the next recap starts from the current picture")
+
+    // A big change does replace it.
+    let moved = Recap.parse("""
+    {"skip": false, "summary": "Avi joined Anthropic.", "facts": ["Joined Anthropic's evals team"], "outdated": ["Building an evals startup"],
+     "profile": {"label": "anthropic evals researcher", "about": "Wound down his startup; now on Anthropic's evals team.",
+                 "key": ["Joined Anthropic's evals team", "Ex-Stripe ML engineer"]}}
+    """)!
+    var third = Encounter(at: at(86400 * 30), match: "avi")
+    third.apply(moved)
+    crm.save(third)
+    check(crm.label("avi") == "anthropic evals researcher" && crm.facts(about: "avi").first?.text == "Joined Anthropic's evals team",
+          "a central change replaces the picture")
+    check(CRM(url: profileFile).about("avi")?.hasPrefix("Wound down") == true, "profiles survive a relaunch")
+}
+try? FileManager.default.removeItem(at: profileFile)
+
+// A glance's key facts order the card while someone new is still talking.
+do {
+    let crm = CRM(url: nil)
+    UserDefaults.standard.set(0, forKey: "glanceEvery")
+    var round = 0
+    crm.glancer = { _ in
+        round += 1
+        return round == 1 ? Glance(facts: ["Founding an evals startup"], key: ["Founding an evals startup"])
+            : Glance(facts: ["Has a golden retriever"], key: ["Founding an evals startup", "Has a golden retriever"])
+    }
+    let id = crm.meet(at: at(0))
+    crm.facing(id)
+    for (i, line) in ["I'm founding an evals startup.", "Yeah, it's going well.", "I have a golden retriever.", "His name is Toast."].enumerated() {
+        crm.heard(line, speaker: "p:\(id)", at: at(Double(i + 1)))
+        await Task.yield(); await Task.yield()
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+    check(crm.facts(about: id).first?.text == "Founding an evals startup", "glance key: the dog doesn't lead the card")
+    UserDefaults.standard.removeObject(forKey: "glanceEvery")
+}
+
 print(failures == 0 ? "OK" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

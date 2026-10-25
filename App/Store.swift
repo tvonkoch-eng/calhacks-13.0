@@ -368,6 +368,14 @@ struct Match {
         indexDirty = true
     }
 
+    /// A recap revised who someone met this session is: their label and top facts onto the card.
+    func refreshMet(_ person: Person) {
+        guard var current = met[person.id] else { return }
+        current.role = person.role
+        if let highlights = person.highlights { current.highlights = highlights; current.tie = nil }
+        if current != met[person.id] { met[person.id] = current }
+    }
+
     /// What was learned about someone met this session (name, label, facts).
     func updateMet(_ person: Person) {
         guard met[person.id] != nil else { return }

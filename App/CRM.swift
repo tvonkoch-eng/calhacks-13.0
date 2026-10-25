@@ -67,6 +67,8 @@ struct Encounter: Equatable {
     var details = Recap.Details()
     /// Things known about them before that this conversation showed are no longer true.
     var outdated: [String] = []
+    /// The recap's revised big picture of them.
+    var profile: Profile?
 }
 
 /// A kept conversation: notes only.
@@ -86,6 +88,18 @@ struct Conversation: Codable, Identifiable, Equatable {
     var recap: Recap = .done
 
     var length: TimeInterval { (ended ?? started).timeIntervalSince(started) }
+}
+
+/// The big picture of someone, kept across conversations: who they are overall, not what was
+/// said last. Each recap rewrites it only when a conversation showed something more central (what
+/// they do, what they're building, a move, a new job) or that it stopped being true; a passing
+/// detail or a first impression never displaces it. `key` are their most important facts, in order.
+struct Profile: Codable, Equatable {
+    /// At most four words: "evals startup founder".
+    var label: String?
+    /// One sentence: "Building an evals startup after three years on Stripe's ML team."
+    var about: String?
+    var key: [String] = []
 }
 
 struct Fact: Codable, Identifiable, Equatable {
@@ -118,6 +132,8 @@ struct Reminder: Codable, Identifiable, Equatable {
     private(set) var contacts: [Contact] = []
     private(set) var facts: [Fact] = []
     private(set) var reminders: [Reminder] = []
+    /// Who each person is overall, by roster or contact id (`Profile`).
+    private(set) var profiles: [String: Profile] = [:]
     /// The conversation still being heard, in memory only.
     private(set) var live: Live?
     /// Why the last recap didn't happen, for the phone.
@@ -192,6 +208,7 @@ struct Reminder: Codable, Identifiable, Equatable {
     @ObservationIgnored private var watch: Task<Void, Never>?
     @ObservationIgnored private var facing: String?
     @ObservationIgnored private var lastSaved: [Contact] = []
+    @ObservationIgnored private var lastProfiles: [String: Profile] = [:]
     /// The last failed conversation's transcript, for "Summarize again". Memory only.
     @ObservationIgnored private var retry: (id: UUID, input: Recap.Input)?
     /// Someone met by face in the conversation being heard (`meet`), whose card fills in as they talk.
@@ -216,6 +233,7 @@ struct Reminder: Codable, Identifiable, Equatable {
             contacts = saved.contacts
             facts = saved.facts
             reminders = saved.reminders
+            profiles = saved.profiles ?? [:]
         }
         // Older installs met people as pending; they're kept now too.
         for i in contacts.indices where contacts[i].id.hasPrefix("met-") && contacts[i].consent == .pending {
@@ -249,6 +267,7 @@ struct Reminder: Codable, Identifiable, Equatable {
             guard !facts.contains(where: { $0.person == person && Talk.same($0.text, text) }) else { continue }
             facts.append(Fact(id: UUID(), person: person, text: text, learned: when, conversation: conversation.id))
         }
+        if let profile = encounter.profile { revise(person, with: profile) }
         for followup in encounter.followups.prefix(3) where !followup.text.isEmpty {
             let days = followup.dueInDays ?? (followup.mine ? 1 : 3)
             let reminder = Reminder(id: UUID(), kind: followup.mine ? .todo : .waiting, person: person,
@@ -312,7 +331,7 @@ struct Reminder: Codable, Identifiable, Equatable {
         glancedLines = theirs
         let input = Recap.Input(wearer: wearer, when: conversation.started,
                                 with: nil, name: contacts.first { $0.id == id && $0.name != Self.newName }?.name,
-                                known: facts(about: id).map(\.text), owed: [],
+                                picture: picture(id), known: facts(about: id).map(\.text), owed: [],
                                 transcript: conversation.lines.map { "\(label(retag($0.speaker))): \($0.text)" })
         Task {
             defer { glancing = false }
@@ -322,6 +341,7 @@ struct Reminder: Codable, Identifiable, Equatable {
                 facts.append(Fact(id: UUID(), person: id, text: text, learned: .now))
             }
             if let label = glance.label { liveLabels[id] = label }
+            if !glance.key.isEmpty { revise(id, with: Profile(key: glance.key)) }
             save()
             onGlance?(id, glance)
         }
@@ -408,6 +428,7 @@ struct Reminder: Codable, Identifiable, Equatable {
             with: match.flatMap { roster($0) ?? contacts.first { $0.id == match }.map { Known(name: $0.name, about: "") } }
                 .map { $0.about.isEmpty ? $0.name : "\($0.name) (\($0.about))" },
             name: them.name,
+            picture: picture(match),
             known: match.map { id in facts.filter { $0.person == id }.map(\.text) } ?? [],
             owed: match.map { id in open(for: id).filter { $0.kind != .checkIn }.map(\.text) } ?? [],
             transcript: conversation.lines.map { "\(label($0.who)): \($0.text)" })
@@ -534,6 +555,7 @@ struct Reminder: Codable, Identifiable, Equatable {
         conversations.removeAll { $0.person == person }
         facts.removeAll { $0.person == person }
         reminders.removeAll { $0.person == person }
+        profiles[person] = nil
         save()
     }
 
@@ -549,6 +571,7 @@ struct Reminder: Codable, Identifiable, Equatable {
         for i in conversations.indices where conversations[i].person == contact { conversations[i].person = person }
         for i in facts.indices where facts[i].person == contact { facts[i].person = person }
         for i in reminders.indices where reminders[i].person == contact { reminders[i].person = person }
+        if let profile = profiles.removeValue(forKey: contact), profiles[person] == nil { profiles[person] = profile }
         reminders.removeAll { $0.person == person && $0.kind == .checkIn }
         contacts.removeAll { $0.id == contact }
         onForgot?(contact)
@@ -604,13 +627,41 @@ struct Reminder: Codable, Identifiable, Equatable {
         save()
     }
 
+    /// The model's revised picture of someone. A nil label or about keeps what was there (the
+    /// model had nothing better); key facts are matched to the ones on record, so a key fact that
+    /// was misquoted or since retired is dropped rather than invented.
+    private func revise(_ person: String, with update: Profile) {
+        var profile = profiles[person] ?? Profile()
+        if let label = update.label { profile.label = label }
+        if let about = update.about { profile.about = about }
+        let known = facts.filter { $0.person == person }
+        let key = update.key.compactMap { text in known.first { Talk.same($0.text, text) }?.text }
+        if !key.isEmpty { profile.key = Array(key.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }.prefix(3)) }
+        profiles[person] = profile
+    }
+
+    /// The current picture, for the recap to revise: "evals startup founder. Building …".
+    private func picture(_ person: String?) -> String? {
+        guard let person, let profile = profiles[person] else { return nil }
+        let parts = [profile.label, profile.about].compactMap { $0 } + profile.key.map { "Key: \($0)" }
+        return parts.isEmpty ? nil : parts.joined(separator: ". ")
+    }
+
     // MARK: - Reading it back
 
     func name(_ person: String) -> String { roster(person)?.name ?? contacts.first { $0.id == person }?.name ?? "Someone" }
     func first(_ person: String) -> String { name(person).split(separator: " ").first.map(String.init) ?? name(person) }
 
     func conversations(with person: String) -> [Conversation] { conversations.filter { $0.person == person } }
-    func facts(about person: String) -> [Fact] { facts.filter { $0.person == person }.sorted { $0.learned > $1.learned } }
+    /// Their most important facts first (`Profile.key`), then the rest newest first.
+    func facts(about person: String) -> [Fact] {
+        let key = profiles[person]?.key ?? []
+        func rank(_ fact: Fact) -> Int { key.firstIndex { Talk.same($0, fact.text) } ?? key.count }
+        return facts.filter { $0.person == person }.sorted {
+            let (a, b) = (rank($0), rank($1))
+            return a != b ? a < b : $0.learned > $1.learned
+        }
+    }
     func open(for person: String) -> [Reminder] {
         reminders.filter { $0.open && $0.person == person }.sorted { $0.due < $1.due }
     }
@@ -626,8 +677,14 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// People the wearer kept. Recognizable once they have photos.
     var saved: [Contact] { contacts.filter { $0.consent == .saved } }
 
-    /// The most recent four-word label for them ("evals startup founder").
-    func label(_ person: String) -> String? { conversations(with: person).lazy.compactMap(\.label).first ?? liveLabels[person] }
+    /// Who they are in four words ("evals startup founder"): the profile's, else the latest
+    /// conversation's, else what a glance said during the one still going.
+    func label(_ person: String) -> String? {
+        profiles[person]?.label ?? conversations(with: person).lazy.compactMap(\.label).first ?? liveLabels[person]
+    }
+
+    /// Who they are overall, one sentence; nil until a recap has written one.
+    func about(_ person: String) -> String? { profiles[person]?.about }
 
     /// The single most useful line from last time: what you owe them, else what they owe you,
     /// else the hook, else the first topic.
@@ -650,6 +707,7 @@ struct Reminder: Codable, Identifiable, Equatable {
     struct Record {
         var name: String
         var label: String?
+        var about: String?
         var facts: [String]
         var lastSummary: String?
         var lastMet: Date?
@@ -658,7 +716,7 @@ struct Reminder: Codable, Identifiable, Equatable {
 
         /// As lines for `Aid.met(facts:)`.
         var briefing: [String] {
-            var lines = facts
+            var lines = (about.map { ["Who they are: \($0)"] } ?? []) + facts
             if let lastSummary, let lastMet {
                 lines.append("Last talked \(lastMet.formatted(.dateTime.month(.abbreviated).day())): \(lastSummary)")
             }
@@ -670,7 +728,7 @@ struct Reminder: Codable, Identifiable, Equatable {
     func record(_ person: String) -> Record {
         let last = conversations(with: person).first { $0.summary != nil }
         let open = open(for: person)
-        return Record(name: name(person), label: label(person), facts: facts(about: person).prefix(6).map(\.text),
+        return Record(name: name(person), label: label(person), about: about(person), facts: facts(about: person).prefix(6).map(\.text),
                       lastSummary: last?.summary, lastMet: last?.started,
                       youOwe: open.filter { $0.kind == .todo }.map(\.text),
                       theyOwe: open.filter { $0.kind == .waiting }.map(\.text))
@@ -699,6 +757,7 @@ struct Reminder: Codable, Identifiable, Equatable {
             else if let label = label(id) { who += " (\(label))" }
             if pending { who += ", met, not saved yet" }
             parts.append(who)
+            if let about = about(id) { parts.append(about) }
             let talks = conversations(with: id).sorted { $0.started > $1.started }
             if let last = talks.first {
                 var met = "last talked \(last.started.formatted(when))"
@@ -832,15 +891,19 @@ struct Reminder: Codable, Identifiable, Equatable {
         var contacts: [Contact]
         var facts: [Fact]
         var reminders: [Reminder]
+        /// Optional: files from before profiles were kept have none.
+        var profiles: [String: Profile]?
     }
 
     private static let decoder: JSONDecoder = { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d }()
     private static let encoder: JSONEncoder = { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e }()
 
     private func save() {
-        if saved != lastSaved { lastSaved = saved; onSaved?(saved) }
+        // A revised profile changes their card too, so it goes out like a change of contacts.
+        if saved != lastSaved || profiles != lastProfiles { lastSaved = saved; lastProfiles = profiles; onSaved?(saved) }
         guard let url else { return }
-        let saved = Saved(conversations: conversations, contacts: contacts, facts: facts, reminders: reminders)
+        let saved = Saved(conversations: conversations, contacts: contacts, facts: facts, reminders: reminders,
+                          profiles: profiles)
         try? Self.encoder.encode(saved).write(to: url, options: [.atomic, .completeFileProtection])
     }
 }
@@ -865,6 +928,7 @@ extension Encounter {
         followups = result.followups
         details = result.details
         outdated = result.outdated
+        profile = result.profile
     }
 }
 
@@ -877,6 +941,8 @@ enum Recap {
         var with: String?
         /// A name they introduced themselves with.
         var name: String?
+        /// Who they are overall so far (`CRM.picture`), for the recap to keep or revise.
+        var picture: String? = nil
         var known: [String]
         var owed: [String]
         var transcript: [String]
@@ -962,6 +1028,7 @@ enum Recap {
         var followups: [Followup] = []
         var details = Details()
         var outdated: [String] = []
+        var profile: Profile?
     }
 
     static let prompt = """
@@ -1013,6 +1080,18 @@ enum Recap {
     "outdated": entries of "Known" that this conversation showed are no longer true (they \
     changed jobs, moved, graduated), copied exactly. Their replacement goes in "facts" or \
     "details". Usually [].
+
+    "profile": {"label", "about", "key"}
+      The big picture of THEM after this conversation: who they are overall, for their contact \
+    card. Start from "Who they are" and "Known". Change it only when this conversation showed \
+    something more central (what they do, what they're building, what they care about most, a \
+    move, a new job) or showed it's no longer true. A passing detail, a one-off story, small talk \
+    or a first impression never replaces the big picture; it stays a fact at most.
+      "label": who they are overall, at most 4 words, lowercase. null to keep the current one.
+      "about": one sentence, at most 20 words, present tense, who they are overall (never what \
+    you talked about today). null to keep the current one.
+      "key": the 3 most important things to know about them overall, copied exactly from \
+    "Known" and your "facts", most important first. [] if there are none.
     """
 
     static func message(_ input: Input) -> String {
@@ -1022,6 +1101,7 @@ enum Recap {
         Conversation date: \(input.when.formatted(.dateTime.weekday(.wide).month(.wide).day().hour().minute()))
         Wearer: \(input.wearer)
         With: \(with)
+        Who they are: \(input.picture ?? "nothing yet")
         Known about them: \(input.known.isEmpty ? "nothing yet" : input.known.joined(separator: "; "))
         Open follow-ups with them: \(input.owed.isEmpty ? "none" : input.owed.joined(separator: "; "))
 
@@ -1087,6 +1167,10 @@ enum Recap {
             result.details = Details.clean(details.compactMapValues { clean($0) ?? ($0 as? NSNumber).map { "\($0)" } })
         }
         result.outdated = ((json["outdated"] as? [Any]) ?? []).compactMap(clean)
+        if let profile = json["profile"] as? [String: Any] {
+            result.profile = Profile(label: clean(profile["label"]), about: clean(profile["about"]),
+                                     key: ((profile["key"] as? [Any]) ?? []).compactMap(clean).prefix(3).map { $0 })
+        }
         if !result.skip, result.summary == nil { return nil }
         return result
     }
@@ -1097,6 +1181,8 @@ struct Glance: Equatable {
     var name: String?
     var label: String?
     var facts: [String] = []
+    /// Their most important facts so far, from "Known" and these, most important first.
+    var key: [String] = []
 
     static let prompt = """
     You fill in a contact card for the wearer of AR glasses while they talk to someone they just \
@@ -1111,6 +1197,9 @@ struct Glance: Equatable {
     "facts": up to 3 durable things THEM said about themselves (job, school, project, where \
     they're from, plans, interests), at most 8 words each, most useful first, never anything in \
     "Known", never about the wearer. Often [].
+    "key": the 3 most important things to know about THEM overall, copied exactly from "Known" \
+    and your "facts", most important first: what they do and what they're building over a \
+    passing detail. [] if there are none.
     """
 
     static func ask(_ input: Recap.Input, model: Aid.Model) async throws -> Glance {
@@ -1128,6 +1217,7 @@ struct Glance: Equatable {
             return s
         }
         return Glance(name: clean(json["name"]), label: clean(json["label"]),
-                      facts: ((json["facts"] as? [Any]) ?? []).compactMap(clean).prefix(3).map { $0 })
+                      facts: ((json["facts"] as? [Any]) ?? []).compactMap(clean).prefix(3).map { $0 },
+                      key: ((json["key"] as? [Any]) ?? []).compactMap(clean).prefix(3).map { $0 })
     }
 }

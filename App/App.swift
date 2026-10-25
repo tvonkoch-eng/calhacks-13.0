@@ -39,7 +39,12 @@ struct CalHacksApp: App {
                         }
                     }
                     crm.onCancelled = { Nudges.cancel($0) }
-                    crm.onSaved = { kept in store.saved = kept.map { crm.person($0) } }
+                    crm.onSaved = { kept in
+                        let people = kept.map { crm.person($0) }
+                        store.saved = people
+                        // Someone met this session keeps their in-memory card; it takes the new picture too.
+                        people.forEach(store.refreshMet)
+                    }
                     crm.onForgot = { store.forget($0) }
                     // Once: the duplicate unnamed people from before go, keeping only the newest.
                     if !UserDefaults.standard.bool(forKey: "dedupedNewPeople") {

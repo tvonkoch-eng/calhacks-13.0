@@ -41,8 +41,12 @@ func dueLabel(_ date: Date, now: Date = .now) -> String {
 extension CRM {
     /// A contact as a `Person`, so it opens the same record screen and, once saved, joins the
     /// matcher in `Store`.
+    /// A contact as a card: who they are overall, then their three most important facts.
     func person(_ contact: Contact) -> Person {
-        Person(id: contact.id, name: contact.name, role: label(contact.id) ?? "Met \(dayAndTime(contact.created))")
+        var person = Person(id: contact.id, name: contact.name, role: label(contact.id) ?? "Met \(dayAndTime(contact.created))")
+        let top = facts(about: contact.id).prefix(3).map(\.text)
+        if !top.isEmpty { person.highlights = top }
+        return person
     }
 }
 
