@@ -1143,14 +1143,19 @@ enum Identification {
         guard displayReady else { return }
         still = true
         benching = true
-        send(FlexBox(direction: .column, spacing: 8) {
-            Text(title, style: .heading)
-            for line in lines {
-                Text(line, style: .body).flexShrink(1)
+        // The card inset from every edge of the glass, where the display fades and clips, with
+        // its own padding inside so no line touches the card's border.
+        send(FlexBox(direction: .column) {
+            FlexBox(direction: .column, spacing: 8) {
+                Text(title, style: .heading)
+                for line in lines {
+                    Text(line, style: .body).flexShrink(1)
+                }
             }
+            .padding(28)
+            .background(.card)
         }
-        .padding(22)
-        .background(.card), still: true)
+        .padding(30), still: true)
     }
 
     func clearStill() {
