@@ -82,15 +82,21 @@ enum LensCards {
             if group.count >= 2 {
                 groupCards(group, avatar: avatar)
             } else if let person {
-                FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
+                FlexBox(direction: .row, spacing: 16, crossAlignment: .start) {
                     if let photo = avatar(person.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                    FlexBox(direction: .column, spacing: 3) {
+                    FlexBox(direction: .column, spacing: 4) {
                         Text(person.name, style: .heading)
                         Text(person.headline, style: .body).flexShrink(1)
-                        if let context = shot.context { Text(context, style: .meta, color: .secondary).flexShrink(1) }
+                        // Why they matter: the tie and highlights, the same lines the full card shows.
+                        for line in shot.primary {
+                            Text(line, style: .meta, color: .secondary).flexShrink(1)
+                        }
+                        if let context = shot.context, shot.primary.isEmpty {
+                            Text(context, style: .meta, color: .secondary).flexShrink(1)
+                        }
                     }.flexShrink(1)
                 }
-                .padding(20)
+                .padding(22)
                 .background(.card)
             }
         }
@@ -152,15 +158,15 @@ enum LensCards {
     static func groupCards(_ group: [Member], avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .row, spacing: 12) {
             for member in group.prefix(2) {
-                FlexBox(direction: .column, spacing: 6) {
+                FlexBox(direction: .column, spacing: 10) {
                     FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
                         if let photo = avatar(member.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
                         if member.speaking { Icon(name: .speechBubble, style: .outline) }
                     }
                     Text(member.name, style: .heading)
-                    Text(short(member.headline), style: .meta, color: .secondary).flexShrink(1)
+                    Text(short(member.headline, max: 28), style: .body, color: .secondary).flexShrink(1)
                 }
-                .padding(16)
+                .padding(22)
                 .background(.card)
                 .flexGrow(1)
                 .flexShrink(1)
@@ -370,8 +376,14 @@ enum LensCards {
         var shot = shot(aid: view, person: person, group: group, meSpeaking: meSpeaking)
         shot.kind = .split
         if let person, group.count < 2 {
-            // The one line that says why they matter: how you know them, else their first highlight,
-            // else their first detail (school, work…).
+            // The tie and highlights, as on the full card, so the split view and the mirror say the
+            // same things. Without them, the one line that says why they matter: how you know them,
+            // else their first detail.
+            let highlights = Array((person.highlights ?? []).prefix(Self.highlightCount))
+            var primary: [String] = []
+            if let tie = person.tie, !tie.isEmpty { primary.append(tie) }
+            primary += highlights.map { "\u{2014} " + $0 }
+            shot.primary = primary
             shot.context = [LensCards.recall?(person.id), person.tie, person.highlights?.first, person.details.first?.text]
                 .compactMap { $0 }.first { !$0.isEmpty }
         }
@@ -512,12 +524,15 @@ enum LensFit {
         }
         switch bottom {
         case .none: break
-        case .group: pieces.append(40 + 56)
+        case .group:
+            // Photo, name, headline, with the card's padding: the tallest of the two.
+            pieces.append(44 + 56 + 10 + 40 + 3 + 32)
         case .person:
-            let textWidth = width - 56 - 14
-            var text = lines(shot.name ?? "", heading, textWidth) + 3 + lines(shot.headline ?? "", body, textWidth)
-            if let context = shot.context { text += 3 + lines(context, meta, textWidth) }
-            pieces.append(40 + max(56, text))
+            let textWidth = width - 56 - 16
+            var text = lines(shot.name ?? "", heading, textWidth) + 4 + lines(shot.headline ?? "", body, textWidth)
+            for line in shot.primary { text += 4 + lines(line, meta, textWidth) }
+            if shot.primary.isEmpty, let context = shot.context { text += 4 + lines(context, meta, textWidth) }
+            pieces.append(44 + max(56, text))
         }
         // The spacer sits between them, so it adds one more gap.
         let gaps = CGFloat(pieces.count) * spacing
