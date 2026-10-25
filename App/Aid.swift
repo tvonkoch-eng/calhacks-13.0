@@ -1385,9 +1385,9 @@ enum Talk {
 
     @ObservationIgnored private var lastInsight = Date.distantPast
     /// At most one insight this often: the least urgent card mustn't crowd out the rest.
-    private static let insightGap: TimeInterval = 6
+    private static let insightGap: TimeInterval = 2
     /// Later than this after the line, the conversation has moved on: dropped.
-    private static let insightLate: TimeInterval = 8
+    private static let insightLate: TimeInterval = 10
 
     private func ground(_ insight: (topic: String, query: String), line: String) {
         guard let researcher = config.researcher,

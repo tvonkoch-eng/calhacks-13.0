@@ -74,6 +74,10 @@ enum Coach {
     LLM). Everything you write uses the intended words, never the misheard ones. Questions asked \
     out loud are answered by a separate system; never answer them here.
 
+    Be generous. The wearer would rather get a definition, a fact or some context they didn't need \
+    than miss the one that mattered: a wrong or unneeded one costs a glance, a missed one costs the \
+    moment. Give something on most lines. The rules below are the only reasons to say nothing.
+
     Reply with one JSON object with these keys:
 
     "ask": "..." or null
@@ -92,15 +96,16 @@ enum Coach {
     here" stays "near here": the device knows where it is.
 
     "define": [{"term": "...", "meaning": "..." or null}]
-      Every proper noun in the newest line, from either speaker, up to three: a company, product, \
-    place, organization, event, named method or model (Black-Scholes, transformers, CRISPR), a \
-    work, a historical event or movement, a named field. Defined by what is stable about it: \
+      Every proper noun AND every technical term, jargon or idea in the newest line, from either \
+    speaker, up to five: a company, product, place, organization, event, named method or model \
+    (Black-Scholes, transformers, CRISPR), a work, a historical event or movement, a named field, \
+    or a field's term a smart listener outside it might not know (RAG, delta hedging, tokenizer). Defined by what is stable about it: \
     "meaning" is what it is in plain words, then one concrete example or striking fact, one or two \
     sentences, at most 35 words ("Bauhaus": "1920s German art school; form follows function"). \
     Never its latest news or numbers that change. Never a private person: a name is defined only \
-    when the person is famous, and a name someone just introduced is never defined. Never plain \
-    everyday or generic business words (startup, meeting, team, money, app, AI, coding, hackathon). \
-    Skip a term the speaker explains in the same breath. Speech recognition mangles names and \
+    when the person is famous, and a name someone just introduced is never defined. Skip only plain \
+    everyday English (meeting, money, team, app); a technical word counts even when it is common in \
+    its field (AI, startup, API). Skip a term the speaker explains in the same breath. Speech recognition mangles names and \
     jargon: define what was clearly meant under its real name ("lawyer adapter" → LoRA adapter). \
     Never define an acronym as an established term unless it is a real concept; an unfamiliar \
     acronym is usually a misheard familiar one (LOM for LLM), and never invent an expansion. When a \
@@ -112,9 +117,9 @@ enum Coach {
     technology, place, event or idea worth one striking fact. "topic" is a few words ("Reward \
     modeling"); "query" is a short web search that would turn up a specific, surprising fact about \
     it in this context ("reward model overoptimization examples"). A search finds the fact, so \
-    never write one yourself. Lean toward giving one when the line has a real topic; null for \
-    small talk, the people talking themselves, this event, a topic in "Already noted", or a line \
-    that asks a question (it gets an answer).
+    never write one yourself. Give one on almost every line with any substance; null only for \
+    small talk, logistics, the people talking about themselves, this event, a topic in "Already \
+    noted", or a line that asks a question (it gets an answer).
     """
 
     private static let suggestPart = """
@@ -233,7 +238,7 @@ enum Coach {
 
         var result = Advice()
         let terms = (object["define"] as? [[String: Any]]) ?? ((object["define"] as? [String: Any]).map { [$0] } ?? [])
-        result.define = terms.prefix(3).compactMap { entry in
+        result.define = terms.prefix(5).compactMap { entry in
             guard let term = clean(entry["term"]) else { return nil }
             return (term, clean(entry["meaning"]))
         }
