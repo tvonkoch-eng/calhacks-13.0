@@ -460,11 +460,9 @@ struct AidStrip: View {
                     Text(card.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            // One last row: work in flight wins over the follow-up, so the strip is three lines.
+            // One last row: work in flight. The suggestion is on the lens, not repeated here.
             if let work = view.working.first {
                 WorkRow(work: work)
-            } else if let followup = view.followup {
-                Label(followup, systemImage: "bubble.left").font(.footnote).lineLimit(1)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
@@ -1441,7 +1439,7 @@ struct LensPanel: View {
             let y = min(max(optics.center.y - height / 2, 0), frame.height - height)
             return CGRect(x: 0, y: y, width: frame.width, height: height)
         }()
-        let shown = LensMetrics.canvas * CGFloat(Tuning.float("lensShown", 0.6))
+        let shown = LensMetrics.canvas * CGFloat(Tuning.float("lensShown", 1.0))
         return GeometryReader { geo in
             let k = geo.size.width / window.width
             let margin: CGFloat = 8
