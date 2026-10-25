@@ -2,57 +2,54 @@
   {
     "id": "joaquin",
     "name": "Joaquin Del Pego",
-    "role": "CS junior at UCSB",
-    "school": "UCSB · Computer Science, Junior",
-    "work": "LegalTime AI · timekeeping for lawyers",
+    "role": "LegalTime AI · UCSB CS junior",
+    "school": "UCSB · Computer Science, junior",
+    "work": "LegalTime AI",
     "from": "San Diego",
     "tags": [
       "UCSB",
+      "Computer Science",
       "LegalTime AI",
-      "San Diego",
       "Cal Hacks"
     ]
   },
   {
     "id": "mirabelle",
     "name": "Mirabelle Brown",
-    "role": "Renewable Finance @ Advantage Renewables",
-    "school": "UCSB · Financial Math & Stats + Env Studies",
+    "role": "Environmental sustainability finance · UCSB junior",
+    "school": "UCSB · Financial Math & Statistics (FMS), junior",
     "from": "Gresham, New York",
     "interests": "Environmental studies",
     "tags": [
-      "Advantage Renewables",
-      "GreenRoute",
-      "Climate Week",
-      "Surfrider",
-      "Investment Connection",
-      "UCSB"
+      "UCSB",
+      "FMS",
+      "Sustainability finance"
     ],
-    "work": "Renewable Finance @ Advantage Renewables"
+    "work": "Environmental sustainability finance"
   },
   {
     "id": "avi",
     "name": "Avi Shah",
-    "role": "UCSB Economics exchange student",
-    "school": "UCSB · Economics (exchange from LSE)",
+    "role": "Investment Banking · BofA London",
+    "school": "LSE · Economics, junior (year abroad at UCSB)",
     "work": "Investment Banking · BofA London",
     "from": "London",
     "tags": [
-      "UCSB",
       "LSE",
       "BofA",
-      "London"
+      "London",
+      "UCSB"
     ]
   },
   {
     "id": "toby",
     "name": "Toby von Koch",
-    "role": "CalHacks 13 teammate · iOS & device plumbing",
+    "role": "UCSB FMS junior",
     "tags": [
-      "Cal Hacks",
-      "iOS",
-      "Toby"
+      "UCSB",
+      "FMS",
+      "Cal Hacks"
     ],
-    "work": "Cal Hacks 13 · iOS and device plumbing"
+    "school": "UCSB · Financial Math & Statistics (FMS), junior"
   }
 ]

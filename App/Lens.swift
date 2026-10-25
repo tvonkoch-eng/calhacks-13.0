@@ -157,7 +157,8 @@ struct Compositor {
         }
         // Already up under another id (the same definition twice): nothing new to show.
         if slots.contains(where: { $0.card.kind == card.kind && $0.card.title == card.title }) { return }
-        if holding, card.kind != .answer {
+        // Only insights wait for the wearer to stop talking; definitions show alongside them.
+        if holding, card.kind == .insight {
             wait(card, at: now)
             return
         }

@@ -74,10 +74,6 @@ enum Coach {
     LLM). Everything you write uses the intended words, never the misheard ones. Questions asked \
     out loud are answered by a separate system; never answer them here.
 
-    Be generous. The wearer would rather get a definition, a fact or some context they didn't need \
-    than miss the one that mattered: a wrong or unneeded one costs a glance, a missed one costs the \
-    moment. Give something on most lines. The rules below are the only reasons to say nothing.
-
     Reply with one JSON object with these keys:
 
     "ask": "..." or null
@@ -97,16 +93,15 @@ enum Coach {
 
     "define": [{"term": "...", "meaning": "..." or null}]
       Be generous: define anything in the newest line, from either speaker, that the wearer might \
-    not know or would enjoy knowing, up to five: every proper noun (a company, product, place, \
+    not know or would enjoy knowing, up to six: every proper noun (a company, product, place, \
     organization, event, named method or model like Black-Scholes or CRISPR, a work, a historical \
     event or movement), every term of art or jargon, and every concept worth a second look. \
     "meaning" is what it is in plain words, then the useful wisdom: one concrete example, a striking \
     fact, or why it matters, at most 18 words ("Bauhaus": "1920s German art school; form follows \
     function, so every object should show its purpose"). Never its latest news or numbers that \
     change. Never a private person: a name is defined only when the person is famous, and a name \
-    someone just introduced is never defined. Skip only plain everyday English (meeting, money, \
-    team, app); a technical word counts even when it is common in its field (AI, startup, API). \
-    Skip a term the speaker explains in the same breath. Speech \
+    someone just introduced is never defined. Plain everyday words too, as a dictionary would give them, one line: startup, meeting, \
+    hackathon, a verb, a title or role. Skip a term the speaker explains in the same breath. Speech \
     recognition mangles names and jargon: define what was clearly meant under its real name \
     ("lawyer adapter" → LoRA adapter). Never define an acronym as an established term unless it is a \
     real concept; an unfamiliar acronym is usually a misheard familiar one (LOM for LLM), and never \
@@ -118,9 +113,9 @@ enum Coach {
     technology, place, event or idea worth one striking fact. "topic" is a few words ("Reward \
     modeling"); "query" is a short web search that would turn up a specific, surprising fact about \
     it in this context ("reward model overoptimization examples"). A search finds the fact, so \
-    never write one yourself. Give one on almost every line with any substance; null only for \
-    small talk, logistics, the people talking about themselves, this event, a topic in "Already \
-    noted", or a line that asks a question (it gets an answer).
+    never write one yourself. Lean toward giving one when the line has a real topic; null for \
+    small talk, the people talking themselves, this event, a topic in "Already noted", or a line \
+    that asks a question (it gets an answer).
     """
 
     private static let suggestPart = """
@@ -239,7 +234,7 @@ enum Coach {
 
         var result = Advice()
         let terms = (object["define"] as? [[String: Any]]) ?? ((object["define"] as? [String: Any]).map { [$0] } ?? [])
-        result.define = terms.prefix(5).compactMap { entry in
+        result.define = terms.prefix(6).compactMap { entry in
             guard let term = clean(entry["term"]) else { return nil }
             return (term, clean(entry["meaning"]))
         }
@@ -422,7 +417,7 @@ enum LLM {
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         if code == 429 {
             let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "retry-after")
-            throw Failure.rateLimited(retryAfter: header.flatMap(TimeInterval.init) ?? 20)
+            throw Failure.rateLimited(retryAfter: min(header.flatMap(TimeInterval.init) ?? 20, 60))   // a provider header can say 10+ min: a lane is retried within a minute
         }
         // Out of quota ("payment required", Cerebras on 2026-10-24): the same as a long rate limit,
         // so every lane goes to its backup instead of failing.
@@ -441,6 +436,15 @@ enum LLM {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any] else {
             throw Failure.unreadable(String(decoding: data.prefix(120), as: UTF8.self))
+        }
+        // A 200 with nothing in it (no text, no tool call) is a failure too. Say why, so the log shows
+        // what the host returned: finish reason, tokens generated, and which provider served it.
+        let finish = ((json["choices"] as? [[String: Any]])?.first?["finish_reason"] as? String) ?? "none"
+        let emptyText = ((message["content"] as? String) ?? "").isEmpty
+        if emptyText, ((message["tool_calls"] as? [[String: Any]]) ?? []).isEmpty {
+            let tokens = (json["usage"] as? [String: Any])?["completion_tokens"] ?? 0
+            let host = json["provider"] as? String ?? "unknown host"
+            throw Failure.unreadable("empty reply: finish \(finish), \(tokens) tokens, \(host)")
         }
         let raw = ((message["tool_calls"] as? [[String: Any]]) ?? []).filter {
             (($0["function"] as? [String: Any])?["name"] as? String) != nil

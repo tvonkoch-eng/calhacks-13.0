@@ -246,3 +246,4 @@ private struct Thumb: View {
             }
     }
 }
+

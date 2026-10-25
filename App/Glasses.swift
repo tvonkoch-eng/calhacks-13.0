@@ -2280,7 +2280,8 @@ enum Identification {
     /// meanwhile — frame size mix and real fps — and how long each write took. Answers whether lens
     /// writes are what push the stream off 720p, which card shape is cheap enough, and whether a
     /// lower rate holds full resolution. ~3 minutes; logged as `linkTest`.
-    func linkTest() async -> [String] {
+    func linkTest(fpsList: [Int] = [2, 7, 15], resList: [String] = ["high", "medium"],
+                  audioList: [Bool] = [false, true]) async -> [String] {
         guard connected, display != nil, displayReady, !benching, !replaying, let store, store.people.count >= 2 else {
             return ["Connect the glasses first."]
         }
@@ -2290,6 +2291,8 @@ enum Identification {
             linkSizes = nil
             linkProgress = ""
             UserDefaults.standard.removeObject(forKey: "streamFps")
+            UserDefaults.standard.removeObject(forKey: "streamRes")
+            if streamAudio { setStreamAudio(false) }
             Task { [weak self] in
                 await self?.restartCamera()
                 self?.sentShot = nil
@@ -2302,63 +2305,70 @@ enum Identification {
             LensCards.hud(result: .known(Match(person: person, score: 1), nil), avatar: photo,
                           identifying: false, confirming: false, connected: 0, photoPending: pending, identify: {})
         }
+        // Two lens loads: nothing new on the lens, and a full card with a 192 px photo (the heaviest).
         let shapes: [(String, ((Person) -> FlexBox)?)] = [
             ("none", nil),
-            ("name", { LensCards.name($0) }),
-            ("cardBox", { card($0, pending: true, photo: { _ in nil }) }),
-            ("card96", { card($0, pending: false, photo: { [store] in store.lensAvatar($0) }) }),
             ("card192", { card($0, pending: false, photo: { [store] in store.lensPhoto($0) }) }),
         ]
         var lines: [String] = []
-        for fps in [15, 7] {
-            // Restart only to change rate: a camera restart can end the stream and cost a session.
-            if streamFps != fps || liveStreamSettings != streamSettings {
-                UserDefaults.standard.set(fps, forKey: "streamFps")
-                linkProgress = "Restarting the stream at \(fps) fps…"
-                await restartCamera()
-            }
-            let ready = Date().addingTimeInterval(20)
-            while (!streamLive || Date().timeIntervalSince(lastFrameAt) > 1), Date() < ready {
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-            // The first seconds of a stream come at full size before the limiter reacts.
-            try? await Task.sleep(for: .seconds(5))
-            for (name, make) in shapes {
-                linkProgress = "\(fps) fps · \(name)"
-                linkSizes = [:]
-                var times: [Double] = []
-                var failed = 0
-                let start = Date()
-                var tick = 0
-                while Date().timeIntervalSince(start) < 12 {
-                    // The display is read fresh every time: a session recovery mid-test replaces it, and
-                    // writing to the old one failed silently in the first run.
-                    if let make {
-                        if let display, displayReady {
-                            let t0 = CFAbsoluteTimeGetCurrent()
-                            do { try await display.send(make(people[tick % 2])); times.append(ms(since: t0)) } catch { failed += 1 }
-                        } else {
-                            failed += 1
-                        }
+        for res in resList {
+            for audio in audioList {
+                for fps in fpsList {
+                    let changedVideo = streamFps != fps || streamRes != res || liveStreamSettings != "\(fps)/\(res)"
+                    UserDefaults.standard.set(fps, forKey: "streamFps")
+                    UserDefaults.standard.set(res, forKey: "streamRes")
+                    let label = "\(res) · \(fps) fps · audio \(audio ? "on" : "off")"
+                    if streamAudio != audio {
+                        linkProgress = "Switching audio \(audio ? "on" : "off")…"
+                        setStreamAudio(audio)
+                        try? await Task.sleep(for: .seconds(3))
+                    } else if changedVideo {
+                        linkProgress = "Restarting: \(label)…"
+                        await restartCamera()
                     }
-                    tick += 1
-                    let wait = start.addingTimeInterval(Double(tick)).timeIntervalSinceNow
-                    if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                    // Wait for frames, then let the limiter settle: the first seconds come at full size.
+                    let ready = Date().addingTimeInterval(40)
+                    while (!streamLive || Date().timeIntervalSince(lastFrameAt) > 1), Date() < ready {
+                        try? await Task.sleep(for: .milliseconds(200))
+                    }
+                    try? await Task.sleep(for: .seconds(5))
+                    for (name, make) in shapes {
+                        linkProgress = "\(label) · \(name)"
+                        linkSizes = [:]
+                        var times: [Double] = []
+                        var failed = 0
+                        let start = Date()
+                        var tick = 0
+                        while Date().timeIntervalSince(start) < 12 {
+                            // The display is read fresh every time: a session recovery mid-test replaces it.
+                            if let make {
+                                if let display, displayReady {
+                                    let t0 = CFAbsoluteTimeGetCurrent()
+                                    do { try await display.send(make(people[tick % 2])); times.append(ms(since: t0)) } catch { failed += 1 }
+                                } else {
+                                    failed += 1
+                                }
+                            }
+                            tick += 1
+                            let wait = start.addingTimeInterval(Double(tick)).timeIntervalSinceNow
+                            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                        }
+                        let seconds = Date().timeIntervalSince(start)
+                        let sizes = linkSizes ?? [:]
+                        let frames = sizes.values.reduce(0, +)
+                        let full = Double(sizes["720x1280"] ?? 0) / Double(max(frames, 1))
+                        let sorted = times.sorted()
+                        let p50 = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+                        let p90 = sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))]
+                        let delivered = Double(frames) / seconds
+                        SpeedLog.record(["event": "linkTest", "res": res, "fps": fps, "audio": audio, "payload": name,
+                                         "sizes": sizes.map { "\($0.key)x\($0.value)" }.sorted().joined(separator: ","),
+                                         "deliveredFps": (delivered * 10).rounded() / 10, "full720": (full * 100).rounded() / 100,
+                                         "writeP50": p50.rounded(), "writeP90": p90.rounded(), "writes": sorted.count, "failed": failed])
+                        lines.append("\(label) · \(name): \(Int((full * 100).rounded()))% at 720p, \(String(format: "%.1f", delivered)) fps"
+                                     + (make == nil ? "" : ", write \(Int(p50.rounded())) ms (p90 \(Int(p90.rounded()))), \(failed) failed"))
+                    }
                 }
-                let seconds = Date().timeIntervalSince(start)
-                let sizes = linkSizes ?? [:]
-                let frames = sizes.values.reduce(0, +)
-                let full = Double(sizes["720x1280"] ?? 0) / Double(max(frames, 1))
-                let sorted = times.sorted()
-                let p50 = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
-                let p90 = sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))]
-                let delivered = Double(frames) / seconds
-                SpeedLog.record(["event": "linkTest", "fps": fps, "payload": name,
-                                 "sizes": sizes.map { "\($0.key)x\($0.value)" }.sorted().joined(separator: ","),
-                                 "deliveredFps": (delivered * 10).rounded() / 10, "full720": (full * 100).rounded() / 100,
-                                 "writeP50": p50.rounded(), "writeP90": p90.rounded(), "writes": sorted.count, "failed": failed])
-                lines.append("\(fps) fps · \(name): \(Int((full * 100).rounded()))% at 720p, \(String(format: "%.1f", delivered)) fps"
-                             + (make == nil ? "" : ", write \(Int(p50.rounded())) ms (p90 \(Int(p90.rounded()))), \(failed) failed"))
             }
         }
         return lines
