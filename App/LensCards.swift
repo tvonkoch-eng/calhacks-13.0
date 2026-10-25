@@ -196,18 +196,24 @@ enum LensCards {
         // 50/50: the photo and the icon on one row, the name under them in the bold heading, full
         // width, as big as on the single card.
         if !LensFit.full(width) {
-            return FlexBox(direction: .row, spacing: LensFit.photoGap) {
-                if let photo = photo ?? placeholder { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                FlexBox(direction: .column, spacing: 2) {
-                    // The glasses mark sits top right, above the name, so the name keeps its width.
-                    FlexBox(direction: .row) {
-                        FlexBox(direction: .column) {}.flexGrow(1)
-                        if focused, let mark = glassesMark { Image(image: mark, sizePreset: .icon, cornerRadius: .none) }
+            // The card's top-right corner holds the glasses mark (its slot is always there, so nothing
+            // moves when focus does); under it, a square photo as tall as the two name lines, the
+            // bold name beside it.
+            return FlexBox(direction: .column, spacing: 4) {
+                FlexBox(direction: .row) {
+                    FlexBox(direction: .column) {}.flexGrow(Float(1 - LensFit.markShare))
+                    FlexBox(direction: .column) {
+                        if focused, let mark = glassesMark { Image(image: mark, sizePreset: .fill, cornerRadius: .none) }
+                        else { FlexBox(direction: .column) {}.padding(.top, LensFit.markSide) }
                     }
-                    Text(LensFit.nameText(name, width: width), style: .heading,
-                         color: bright ? .primary : .secondary).flexShrink(1)
+                    .flexGrow(Float(LensFit.markShare))
                 }
-                .flexGrow(1).flexShrink(1)
+                FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
+                    FlexBox(direction: .column) { Image(image: photo ?? placeholder ?? UIImage(), sizePreset: .fill, cornerRadius: .medium) }
+                        .flexGrow(Float(LensFit.splitPhotoShare)).flexShrink(0)
+                    Text(LensFit.nameText(name, width: width), style: .heading,
+                         color: bright ? .primary : .secondary).flexGrow(Float(1 - LensFit.splitPhotoShare)).flexShrink(1)
+                }
             }
         }
         let share = Float(LensFit.photoShare(width))
@@ -690,6 +696,12 @@ enum LensFit {
 
     /// The photo's share of the header row: tall enough for a full name on two heading lines.
     /// A narrow card (the 40% one) keeps an icon-sized photo so the name has room beside it.
+    /// 50/50 header: the mark's share of the top row and its side, and the photo's share of the row
+    /// under it (about two heading lines tall).
+    static let markShare: CGFloat = 0.12
+    static var markSide: CGFloat { ((panel - 12) / 2 - 44) * markShare }
+    static let splitPhotoShare: CGFloat = 0.3
+
     static func photoShare(_ width: CGFloat) -> CGFloat {
         width > 400 ? 0.2 : width > 260 ? 0.38 : min(0.38, 64 / (width - photoGap))
     }
@@ -698,7 +710,8 @@ enum LensFit {
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
         // Padding, then the header: the photo, or the name beside it if taller.
         let photo = (width - photoGap) * photoShare(width)
-        let header = !full(width) ? max(56, 30 + lines(nameText(name, width: width), heading, width - 56 - photoGap) * slack)
+        let splitPhoto = (width - photoGap) * splitPhotoShare
+        let header = !full(width) ? markSide + 4 + max(splitPhoto, lines(nameText(name, width: width), heading, width - photoGap - splitPhoto) * slack)
             : max(photo, lines(nameText(name, width: width), heading,
                                       width - photoGap - photo - iconRoom) * slack)
         var left = half - (44 + header + gap)

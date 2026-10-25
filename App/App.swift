@@ -1053,13 +1053,16 @@ struct LensMirror: View {
             wideHeader(id: id, name: name, width: width, bright: bright, focused: focused)
         } else {
             // Mirror of the lens's 50/50 header: photo and icon on a row, the bold name under them.
-            HStack(alignment: .top, spacing: LensFit.photoGap) {
-                photoBox(id: id, size: m.icon)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Spacer(minLength: 0)
-                        glassesMark.opacity(focused ? 1 : 0)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Spacer(minLength: 0)
+                    if let mark = LensCards.glassesMark {
+                        Image(uiImage: mark).resizable().frame(width: LensFit.markSide, height: LensFit.markSide)
+                            .opacity(focused ? 1 : 0)
                     }
+                }
+                HStack(alignment: .center, spacing: LensFit.photoGap) {
+                    photoBox(id: id, size: (width - LensFit.photoGap) * LensFit.splitPhotoShare)
                     Text(LensFit.nameText(name, width: width))
                         .font(.system(size: m.heading, weight: .semibold)).lineLimit(2)
                         .foregroundStyle(bright ? Color.white : secondary)

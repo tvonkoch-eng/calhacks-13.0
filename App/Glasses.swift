@@ -125,7 +125,7 @@ enum Identification {
     /// In view: seen in the last 3 s. Each change re-sends a photo (the glow is in the image), and
     /// at 1 s the flicker kept the link so busy the camera dropped to 504x896 (Oct 24, 8 pm).
     private func inView(_ id: String) -> Bool {
-        sighted[id].map { clockNow.timeIntervalSince($0) < 3 } ?? false
+        sighted[id].map { clockNow.timeIntervalSince($0) < 1.5 } ?? false
     }
 
     private func refreshGroupView() {
