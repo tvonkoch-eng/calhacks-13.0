@@ -99,10 +99,27 @@ enum Identification {
     /// unseen for `groupHolds` times out. First in, first out.
     @ObservationIgnored private var lensPeople: [String] = []
 
+    /// Each person's side once two share the lens (0 left, 1 right). Fixed until they leave it, so
+    /// cards never swap as people move; a newcomer takes whichever side is free.
+    @ObservationIgnored private var lensSide: [String: Int] = [:]
+
     private func updateLensPeople(seen: [String]) {
         for id in seen where !lensPeople.contains(id) { lensPeople.append(id) }
         if lensPeople.count > 2 { lensPeople.removeFirst(lensPeople.count - 2) }
         lensPeople.removeAll { id in sighted[id].map { clockNow.timeIntervalSince($0) >= groupHolds } ?? true }
+        lensSide = lensSide.filter { lensPeople.contains($0.key) }
+        guard lensPeople.count == 2 else { return }
+        let (a, b) = (lensPeople[0], lensPeople[1])
+        switch (lensSide[a], lensSide[b]) {
+        case (let side?, nil): lensSide[b] = 1 - side
+        case (nil, let side?): lensSide[a] = 1 - side
+        case (nil, nil):
+            // A pair forming from scratch: sides from where they stand right now, then kept.
+            let aLeft = (faceX[a] ?? 0.5) <= (faceX[b] ?? 0.5)
+            lensSide[a] = aLeft ? 0 : 1
+            lensSide[b] = aLeft ? 1 : 0
+        default: break
+        }
     }
 
     /// In view: seen in the last 3 s. Each change re-sends a photo (the glow is in the image), and
@@ -2339,7 +2356,7 @@ enum Identification {
             var partner = person
             if people.count == 2 {
                 members = people.map { var m = member($0, share: 0.5); m.focused = inView($0.id); return m }
-                    .sorted { (faceX[$0.id] ?? 0.5) < (faceX[$1.id] ?? 0.5) }
+                    .sorted { (lensSide[$0.id] ?? 0) < (lensSide[$1.id] ?? 0) }
                 partner = nil
             } else if let only = people.first {
                 partner = only
