@@ -45,7 +45,9 @@ enum Provider: String {
         case .asi1: "asi1"
         // Haiku with thinking off: the quickest Claude, if a lane is pointed at it.
         case .anthropic: "claude-haiku-5-5"
-        case .openrouter: "qwen/qwen3.8-27b"
+        // Gemini 2.5 Flash Lite: 20/20 answer-vs-SKIP, median first token 0.65 s vs 1.91 s for
+        // gpt-oss-120b and ~1/4 the price (2026-10-25, the Tests/muse-latency.py cases).
+        case .openrouter: "google/gemini-2.5-flash-lite"
         }
     }
 
