@@ -616,7 +616,8 @@ enum LensFit {
         while content(shot, bottom: bottom) > room(bottom) {
             let last = shot.cards.count - 1
             if last < 0 { break }
-            if shot.cards[last].detail != nil {
+            // The newest answer keeps its question: it's one small line, and the answer needs it.
+            if shot.cards[last].detail != nil, !(last == 0 && shot.cards[0].asked) {
                 shot.cards[last].detail = nil
             } else if last > 0 {
                 shot.cards.removeLast()

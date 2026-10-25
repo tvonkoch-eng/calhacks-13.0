@@ -747,12 +747,15 @@ enum Talk {
         if config.explicitOnly, turn.committedAt == nil, turn.live || turn.state == .done { return }
         switch turn.state {
         case .thinking, .answering, .done:
-            // Nothing goes up until there is an answer: a "…" for every question-shaped phrase was
-            // half of everything on the lens, and most of those turned out to be SKIPs.
-            guard !turn.answer.isEmpty else { return }
-            answeredAt = now
-            answeredText = turn.question + " " + turn.answer
-            compositor.show(Card(kind: .answer, title: turn.answer, detail: Self.echo(turn.question),
+            // The question goes up at once with "…" under it, and the answer replaces the "…" word
+            // by word as it streams. A SKIP takes the card down again (below).
+            if !turn.answer.isEmpty {
+                answeredAt = now
+                answeredText = turn.question + " " + turn.answer
+                if turn.state == .done { directAnswerAt = now }
+            }
+            compositor.show(Card(kind: .answer, title: turn.answer.isEmpty ? "\u{2026}" : turn.answer,
+                                 detail: Self.echo(turn.question),
                                  live: turn.state != .done, id: turn.card), at: now)
         case .skipped, .failed:
             compositor.remove(id: turn.card, kind: .answer, at: now)
@@ -1194,7 +1197,14 @@ enum Talk {
                     self.lookupTask = nil
                     return
                 }
-                self.put(Card(kind: .answer, title: result.title, detail: result.detail, id: card, icon: result.icon))
+                if Date().timeIntervalSince(self.directAnswerAt) < 15 {
+                    self.log(.lookup, question, detail: "kept the direct answer over \(result.title)")
+                    self.publish()
+                    self.lookupTask = nil
+                    return
+                }
+                // Same shape as a direct answer: the question small on top, the answer under it.
+                self.put(Card(kind: .answer, title: result.title, detail: Self.echo(question), id: card, icon: result.icon))
                 let ms = self.ms(since: started)
                 self.timings["research", default: []].append(ms)
                 self.log(.research, result.title, detail: "\(result.detail) · \(question) · \(ms) ms")
@@ -1210,6 +1220,9 @@ enum Talk {
     // MARK: - Lens
 
     @ObservationIgnored private var compositor = Compositor()
+    /// When a direct answer last finished. A slower web lookup for the same question doesn't
+    /// replace it: the answer would change under the wearer's eyes.
+    @ObservationIgnored private var directAnswerAt = Date.distantPast
     @ObservationIgnored private var tickTask: Task<Void, Never>?
 
     private func publish() {
