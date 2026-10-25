@@ -512,7 +512,8 @@ enum LensFit {
         }
         switch bottom {
         case .none: break
-        case .group: pieces.append(40 + 56)
+        // groupCards: 16 padding each side, photo row, name (heading) and up to two meta lines.
+        case .group: pieces.append(32 + 56 + 6 + lines("Joaquin", heading, 200) + 6 + 2 * lines("x", meta, 200))
         case .person:
             let textWidth = width - 56 - 14
             var text = lines(shot.name ?? "", heading, textWidth) + 3 + lines(shot.headline ?? "", body, textWidth)
