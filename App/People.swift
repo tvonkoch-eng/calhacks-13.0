@@ -449,6 +449,9 @@ struct ContactView: View {
             }
             Spacer(minLength: 0)
         }
+        // Anywhere on the header (photo, name, the lines under it) opens the editor.
+        .contentShape(Rectangle())
+        .onTapGesture { editing = true }
         .padding(.top, 8)
     }
 
