@@ -959,7 +959,9 @@ enum Identification {
         // same description `hud()` would have built.
         lensShot = LensCards.shot(result: result, identifying: false, confirming: confirming,
                                   connected: store?.connectedCount ?? 0)
-        renderLens()
+        // On the lens and in view, as a live sighting would put them: the people layout, mirrored.
+        updateLensPeople(seen: [person.id])
+        if !renderLens() { _ = lensView() }
     }
 
     /// MOCK_GLASSES=1: pair simulated Ray-Ban Display glasses (registered, permissions granted)
