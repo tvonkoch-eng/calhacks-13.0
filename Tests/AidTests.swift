@@ -349,6 +349,8 @@ do {
     let oss = OpenRouter.adjust(["model": "openai/gpt-oss-120b", "reasoning_effort": "low"])
     check((oss["reasoning"] as? [String: String])?["effort"] == "low", "reasoning effort carried over")
     check((OpenRouter.adjust(["model": "qwen/qwen3.8-27b"])["reasoning"] as? [String: Bool])?["enabled"] == false, "Qwen defaults to no thinking")
+    check(OpenRouter.adjust(["model": "qwen/qwen3.8-27b", "response_format": ["type": "json_object"]])["response_format"] == nil,
+          "no JSON mode: it routes away from Cerebras")
 }
 
 // Exa: what needs the conversation to search, and findings as lines.

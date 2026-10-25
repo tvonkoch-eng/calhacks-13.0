@@ -506,7 +506,9 @@ struct Exa: Researcher {
 
     func research(_ query: String, context: String) async throws -> String {
         var search = query
-        if let resolver, !context.isEmpty, Self.leans(query) {
+        // Resolve against the conversation when the question leans on it, and always when we know
+        // where they are: "the closing ceremony" alone found the FIFA World Cup's.
+        if let resolver, !context.isEmpty, Self.leans(query) || context.contains("Where:") {
             search = (try? await LLM.complete(resolver.provider.endpoint, key: resolver.key, body: [
                 "model": resolver.model,
                 "max_tokens": 40,
@@ -583,6 +585,9 @@ enum OpenRouter {
             body["reasoning"] = ["effort": effort == "minimal" ? "low" : effort]
         }
         body["provider"] = ["order": ["cerebras", "groq"], "allow_fallbacks": true]
+        // JSON mode sends the request to a host that supports it, not Cerebras (0.6 s became ~6 s
+        // for the coach). The parsers take JSON wrapped in prose anyway.
+        body.removeValue(forKey: "response_format")
         return body
     }
 }
