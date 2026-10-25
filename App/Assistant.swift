@@ -540,7 +540,7 @@ import Observation
     /// yet, else the unnamed face the glasses are on (a contact met earlier and never named).
     private func introduced(_ name: String) {
         guard namesFromIntroductions, let crm else { return }
-        let unnamed = { (id: String) in self.person(id)?.name == CRM.newName }
+        let unnamed = { (id: String) in crm.renamable(id) && self.person(id)?.name != name }
         if let id = newcomers.last(where: { crm.newcomer == $0 }), unnamed(id) {
             rename(id, name)
         } else if let id = glasses?.facing, !isWearer(id), unnamed(id) {
@@ -559,9 +559,9 @@ import Observation
 
     /// A glance at the conversation so far: who they are and what they've said, onto the card.
     private func learned(_ id: String, _ glance: Glance) {
-        guard newcomers.contains(id), var person = person(id), let crm else { return }
-        if person.name == CRM.newName, let name = glance.name { person.name = name }
-        if person.name != CRM.newName { crm.named(id, person.name) }
+        guard let crm, var person = person(id), crm.renamable(id) || newcomers.contains(id) else { return }
+        // The CRM settled the name (heard, maybe corrected); the card follows it.
+        if crm.renamable(id) { person.name = crm.name(id) }
         if let label = glance.label { person.role = label }
         let facts = crm.facts(about: id).map(\.text)
         person.tie = facts.first

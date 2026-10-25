@@ -217,7 +217,11 @@ struct Reminder: Codable, Identifiable, Equatable {
     @ObservationIgnored private var newcomerSpoke = false
     @ObservationIgnored private var glancing = false
     @ObservationIgnored private var lastGlance = Date.distantPast
-    @ObservationIgnored private var glancedLines = 0
+    /// Lines heard from them at each person's last glance, so each fills in on their own lines.
+    @ObservationIgnored private var glancedLines: [String: Int] = [:]
+    /// Names that came from the conversation (an introduction, a glance), not typed by the wearer:
+    /// a later "it's Priya, P-R-I-Y-A" may correct them. A name typed in People is never touched.
+    @ObservationIgnored private var heardNames: Set<String> = []
     /// At most one glance this often, and only after this many new lines from them.
     var glanceEvery: TimeInterval { Self.knob("glanceEvery", 12) }
     var glanceLines: Int { Int(Self.knob("glanceLines", 2)) }
@@ -332,25 +336,28 @@ struct Reminder: Codable, Identifiable, Equatable {
         glanceIfDue(now: now)
     }
 
-    /// While someone new is in the conversation, a quick look at it so far every few lines: their
-    /// name, who they are, what they've said about themselves. Facts are kept as they come, so the
-    /// phone and the lens fill in during the conversation, not after it.
+    /// Live notes: while someone is in the conversation (just met, or a known face the wearer is
+    /// looking at), a quick look at it so far every few lines: their name, who they are, what
+    /// they've said about themselves. Facts are kept as they come, so the phone and the lens fill
+    /// in during the conversation, not after it.
     private func glanceIfDue(now: Date) {
-        guard let id = newcomer, let conversation = live, conversation.faces.contains(id), !glancing,
-              now.timeIntervalSince(lastGlance) >= glanceEvery else { return }
+        guard let conversation = live, !glancing, now.timeIntervalSince(lastGlance) >= glanceEvery,
+              let id = [newcomer, facing].compactMap({ $0 }).first(where: { conversation.faces.contains($0) })
+        else { return }
         let theirs = conversation.lines.filter { $0.who != "ME" }.count
-        guard theirs - glancedLines >= glanceLines else { return }
+        guard theirs - glancedLines[id, default: 0] >= glanceLines else { return }
         glancing = true
         lastGlance = now
-        glancedLines = theirs
+        glancedLines[id] = theirs
+        let known = name(id)
         let input = Recap.Input(wearer: wearer, when: conversation.started,
-                                with: nil, name: contacts.first { $0.id == id && $0.name != Self.newName }?.name,
+                                with: nil, name: known == Self.newName || known == "Someone" ? nil : known,
                                 picture: picture(id), known: facts(about: id).map(\.text), owed: [],
                                 transcript: conversation.lines.map { "\(label(retag($0.speaker))): \($0.text)" })
         Task {
             defer { glancing = false }
-            guard let glance = await look(input), contacts.contains(where: { $0.id == id }) else { return }
-            if let name = glance.name, contacts.first(where: { $0.id == id })?.name == Self.newName { named(id, name) }
+            guard let glance = await look(input), roster(id) != nil || contacts.contains(where: { $0.id == id }) else { return }
+            if let name = glance.name, renamable(id) { named(id, name) }
             for text in glance.facts where !facts.contains(where: { $0.person == id && Talk.same($0.text, text) }) {
                 facts.append(Fact(id: UUID(), person: id, text: text, learned: .now))
             }
@@ -386,17 +393,25 @@ struct Reminder: Codable, Identifiable, Equatable {
         }
         newcomer = id
         newcomerSpoke = false
-        glancedLines = 0
+        glancedLines[id] = 0
         if live?.faces.contains(id) == false { live?.faces.append(id) }
         save()
         return id
     }
 
-    /// Someone met just now said their name.
+    /// Someone met said their name, or corrected it.
     func named(_ person: String, _ name: String) {
-        guard let i = contacts.firstIndex(where: { $0.id == person }), contacts[i].name != name else { return }
+        guard renamable(person), let i = contacts.firstIndex(where: { $0.id == person }), contacts[i].name != name else { return }
         contacts[i].name = name
+        heardNames.insert(person)
         save()
+    }
+
+    /// Whether the conversation may (re)name them: a contact still unnamed, or named by what was
+    /// heard. Never the roster, never a name the wearer typed.
+    func renamable(_ person: String) -> Bool {
+        guard roster(person) == nil, let contact = contacts.first(where: { $0.id == person }) else { return false }
+        return contact.name == Self.newName || contact.name == Self.unnamed || heardNames.contains(person)
     }
 
     /// The known face the wearer is looking at. Joins the live conversation; a look between
@@ -555,6 +570,7 @@ struct Reminder: Codable, Identifiable, Equatable {
         guard let i = contacts.firstIndex(where: { $0.id == person }),
               !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         contacts[i].name = name
+        heardNames.remove(person)
         save()
     }
 
@@ -1211,13 +1227,13 @@ struct Glance: Equatable {
     var key: [String] = []
 
     static let prompt = """
-    You fill in a contact card for the wearer of AR glasses while they talk to someone they just \
-    met. You get the conversation so far, from live speech recognition (expect misheard words). \
+    You keep live notes on a contact card for the wearer of AR glasses while they talk to someone. You get the conversation so far, from live speech recognition (expect misheard words). \
     Lines are tagged ME (the wearer) and THEM (the other person), or SPEAKER labels when that \
     wasn't settled.
 
     Reply with one JSON object with exactly these keys:
-    "name": THEM's name if they said it (first, plus last if said), else null.
+    "name": THEM's name if they said it (first, plus last if said), else null. If the input gives \
+    a name and THEM said or spelled it differently, or corrected it, the corrected spelling.
     "label": who THEM is in at most 4 words, lowercase, from what they said: "evals startup \
     founder", "berkeley eecs junior". null if unclear.
     "facts": up to 3 durable things THEM said about themselves (job, school, project, where \
