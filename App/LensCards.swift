@@ -248,8 +248,9 @@ enum LensCards {
                      color: bright ? .primary : .secondary).flexShrink(1)
             }
             .flexGrow(1 - share).flexShrink(1)
-            // In focus: the glasses' own icon, beside the name. Vector, so nothing heavy to send.
-            if focused, let mark = glassesMark { Image(image: mark, sizePreset: .icon, cornerRadius: .none) }
+            // In focus: the glasses' own icon, beside the name. Out of focus a blank square of the same preset
+            // takes its place, so the photo and the name never move when focus does (no opacity to fade with).
+            if let mark = (focused ? glassesMark : blankMark) { Image(image: mark, sizePreset: .icon, cornerRadius: .none) }
         }
     }
 
@@ -613,6 +614,9 @@ enum LensCards {
         path.move(to: CGPoint(x: 52, y: 27)); path.addLine(to: CGPoint(x: 55, y: 18))
         path.stroke()
     }
+
+    /// The same square as the mark with nothing drawn in it: it takes the mark's place out of focus.
+    static let blankMark: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 56, height: 56)).image { _ in }
 
     /// Holds the photo's place while it's on its way: the same grey as the mirror's.
     static let placeholder: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96)).image { _ in
