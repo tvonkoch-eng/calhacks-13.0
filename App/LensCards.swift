@@ -172,7 +172,7 @@ enum LensCards {
             for member in group.prefix(2) {
                 FlexBox(direction: .column, spacing: 8) {
                     header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
-                           width: LensFit.memberWidth, bright: member.speaking)
+                           width: LensFit.memberWidth(member), bright: member.speaking)
                     for line in member.lines {
                         Text(line, style: .meta).flexShrink(1)
                     }
@@ -180,7 +180,7 @@ enum LensCards {
                 }
                 .padding(22)
                 .background(.card)
-                .flexGrow(1)
+                .flexGrow(Float(member.share))
                 .flexShrink(1)
             }
         }
@@ -569,12 +569,12 @@ enum LensFit {
     /// The same for one of two side-by-side cards.
     static func member(_ member: Member, lines pool: [String]) -> (lines: [String], left: CGFloat) {
         take(pool, name: member.fullName.isEmpty ? member.name : member.fullName,
-             width: memberWidth, font: meta, gap: 8)
+             width: memberWidth(member), font: meta, gap: 8)
     }
 
     /// Inner widths of the one-person card and of each of two side-by-side cards.
     static let personWidth: CGFloat = panel - 44
-    static let memberWidth: CGFloat = (panel - 12) / 2 - 44
+    static func memberWidth(_ member: Member) -> CGFloat { (panel - 12) * member.share - 44 }
     static let photoGap: CGFloat = 14
 
     /// The width beside the photo, where the name goes.

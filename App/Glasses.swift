@@ -51,7 +51,23 @@ enum Identification {
     /// comes first, then whoever was seen most recently, since the lens has room for two.
     @ObservationIgnored private var groupHolds: TimeInterval { TimeInterval(Tuning.float("groupHolds", 15)) }
     @ObservationIgnored private var visibleGroup: [String] = []
+    /// Where each person's face last was across the frame (0 left … 1 right), to lay two cards out
+    /// the way they stand.
+    @ObservationIgnored private var faceX: [String: CGFloat] = [:]
+
+    /// The two on the lens, left to right as they stand, each with its share of the width.
     private var groupInView: [Member] {
+        var picked = groupHeld
+        guard picked.count == 2 else { return picked }
+        // In frame: seen within the last second. Gone but still held: the one in view takes 2/3.
+        let inFrame = picked.map { member in sighted[member.id].map { clockNow.timeIntervalSince($0) < 1 } ?? false }
+        for index in picked.indices {
+            picked[index].share = inFrame[0] == inFrame[1] ? 0.5 : (inFrame[index] ? 2.0 / 3 : 1.0 / 3)
+        }
+        return picked.sorted { (faceX[$0.id] ?? 0.5) < (faceX[$1.id] ?? 0.5) }
+    }
+
+    private var groupHeld: [Member] {
         // No camera (a PREVIEW_GROUP screenshot run): nothing to filter by, show the group as set.
         guard connected || replaying else { return group }
         #if DEBUG
@@ -65,7 +81,7 @@ enum Identification {
         // More than two: the two already on the lens stay while they're held, so the cards don't
         // swap every time someone starts or stops talking. An open slot goes to whoever is talking,
         // then to the next in join order.
-        var picked = visibleGroup.compactMap { id in held.first { $0.id == id } }.prefix(2).map { $0 }
+        var picked = visibleGroup.compactMap { key in held.first { $0.id + ":" == key.prefix($0.id.count + 1) } }.prefix(2).map { $0 }
         if picked.count < 2, let talker = held.first(where: \.speaking), !picked.contains(where: { $0.id == talker.id }) {
             picked.append(talker)
         }
@@ -77,7 +93,8 @@ enum Identification {
 
     /// Rewrites the lens when who is in frame changes the group row (two in view, or back to one).
     private func refreshGroupView() {
-        let visible = groupInView.map(\.id)
+        // Ids with their shares, so a card growing or shrinking also rewrites the lens.
+        let visible = groupInView.map { "\($0.id):\($0.share)" }
         guard visible != visibleGroup else { return }
         visibleGroup = visible
         if lensMode == .split { renderLens() }
@@ -1727,7 +1744,10 @@ enum Identification {
         }
         for track in live where track.weight >= minEvidence {
             guard let match = store.confidentMatch(track.probe) ?? streakMatch(track, store: store) else { continue }
-            if track.updated == frameTime { seenNow.append((match.person.id, match.score)) }
+            if track.updated == frameTime {
+                seenNow.append((match.person.id, match.score))
+                faceX[match.person.id] = track.box.midX
+            }
             // Toby's floor: a stream match on a face this small once named someone who wasn't there.
             guard facePx(track) >= minAnnouncePx else { continue }
             guard !followFace || track.id == main?.id else { continue }

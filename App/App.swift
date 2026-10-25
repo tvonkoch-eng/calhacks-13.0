@@ -1033,14 +1033,14 @@ struct LensMirror: View {
             ForEach(shot.group.prefix(2), id: \.id) { member in
                 VStack(alignment: .leading, spacing: 8) {
                     header(id: member.id, name: member.fullName.isEmpty ? member.name : member.fullName,
-                           width: LensFit.memberWidth, bright: member.speaking)
+                           width: LensFit.memberWidth(member), bright: member.speaking)
                     ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
                         Text(line).font(.system(size: m.meta)).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
                 .padding(m.pad)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(width: (LensMetrics.canvas - 12) * member.share - 2 * m.pad, maxHeight: .infinity, alignment: .topLeading)
                 .modifier(LensCardBackground(radius: m.radius))
             }
         }
