@@ -493,7 +493,7 @@ import Observation
 
     /// The glasses held a face nobody knows while listening: a contact now, card up next scan.
     private func meet(face: [Float], photo: UIImage?) -> String? {
-        guard armed || glasses?.replaying == true, let crm, let store else { return nil }
+        guard let crm, let store else { return nil }
         let id = crm.meet()
         store.meet(Person(id: id, name: CRM.newName, role: "Just met", source: "Met just now"), face: face, photo: photo)
         newcomers.append(id)

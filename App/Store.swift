@@ -251,6 +251,17 @@ struct Match {
         if let photo { setAvatar(person.id, photo) }
     }
 
+    /// Another look at someone met but not on the roster: each scan adds a face sample, so they're
+    /// recognised better every time they're seen. The newest 30 are kept.
+    func addLook(_ id: String, _ face: [Float]) {
+        guard met[id] != nil || saved.contains(where: { $0.id == id }) else { return }
+        var samples = gallery[id] ?? []
+        samples.append(face)
+        if samples.count > 30 { samples.removeFirst(samples.count - 30) }
+        gallery[id] = samples
+        indexDirty = true
+    }
+
     /// What was learned about someone met this session (name, label, facts).
     func updateMet(_ person: Person) {
         guard met[person.id] != nil else { return }

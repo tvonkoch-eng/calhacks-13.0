@@ -54,6 +54,7 @@ enum Identification {
     /// Where each person's face last was across the frame (0 left … 1 right), to lay two cards out
     /// the way they stand.
     @ObservationIgnored private var faceX: [String: CGFloat] = [:]
+    @ObservationIgnored private var lastLook: [String: Date] = [:]
 
     /// The two on the lens, left to right as they stand, each with its share of the width.
     private var groupInView: [Member] {
@@ -1801,6 +1802,11 @@ enum Identification {
             if track.updated == frameTime {
                 seenNow.append((match.person.id, match.score))
                 faceX[match.person.id] = track.box.midX
+                // Someone met (not the roster): every couple of seconds of being seen adds a look.
+                if clockNow.timeIntervalSince(lastLook[match.person.id] ?? .distantPast) >= 2 {
+                    lastLook[match.person.id] = clockNow
+                    store.addLook(match.person.id, track.probe)
+                }
             }
             // Toby's floor: a stream match on a face this small once named someone who wasn't there.
             guard facePx(track) >= minAnnouncePx else { continue }
@@ -1904,7 +1910,8 @@ enum Identification {
     @ObservationIgnored private let cropContext = CIContext()
 
     private func noticeStranger(_ inView: [FaceTracker.Track], image: CIImage, store: Store) {
-        guard meetNew, aidArmed || replaying, !identifying, let onStranger,
+        // Mic on or off: anyone new you face becomes a person, to be named later in People.
+        guard meetNew, !identifying, let onStranger,
               clockNow.timeIntervalSince(lastMet) > 10,
               let track = inView.max(by: { $0.best.attention < $1.best.attention }),
               metTracks[track.id] == nil, track.looks >= meetLooks, track.weight >= minEvidence,
