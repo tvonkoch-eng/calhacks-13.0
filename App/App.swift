@@ -973,6 +973,30 @@ struct LensMirror: View {
         }
     }
 
+    /// Mirror of `LensCards.groupCards`: two small cards side by side.
+    private var groupCards: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(shot.group.prefix(2), id: \.id) { member in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        if let photo = avatar(member.id) {
+                            Image(uiImage: photo)
+                                .resizable().aspectRatio(contentMode: .fill)
+                                .frame(width: m.icon, height: m.icon)
+                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                        }
+                        if member.speaking { Image(systemName: "bubble.left").font(.system(size: m.glyph)) }
+                    }
+                    Text(member.name).font(.system(size: m.heading, weight: .semibold))
+                    Text(LensCards.short(member.headline)).font(.system(size: m.meta)).foregroundStyle(secondary)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(LensCardBackground(radius: m.radius))
+            }
+        }
+    }
+
     /// Mirror of `LensCards.groupRow`.
     private var groupRow: some View {
         HStack(spacing: 18) {
@@ -1047,9 +1071,7 @@ struct LensMirror: View {
                 }
                 Spacer(minLength: 0)
                 if shot.group.count >= 2 {
-                    groupRow
-                        .padding(m.pad)
-                        .modifier(LensCardBackground(radius: m.radius))
+                    groupCards
                 } else if let id = shot.photo {
                     HStack(spacing: 12) {
                         if let photo = avatar(id) {

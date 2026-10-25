@@ -45,14 +45,25 @@ enum Identification {
     /// the wearer has the floor. Two or more turn the person strip into a row of names.
     private(set) var group: [Member] = []
     private(set) var meSpeaking = false
-    /// The lens shows the group row only while two or more of them are in frame: someone seen in
-    /// the last `groupInFrame` seconds. Look away from one and it goes back to the single card.
-    @ObservationIgnored private var groupInFrame: TimeInterval { TimeInterval(Tuning.float("groupInFrame", 1.0)) }
+    /// The lens shows a card per person while two or more are in the conversation: anyone seen in
+    /// the last `groupHolds` seconds (15), or talking. Looking at one person for a while doesn't
+    /// drop the other (1 s did, on every glance); someone gone for 15 s does. Whoever is talking
+    /// comes first, then whoever was seen most recently, since the lens has room for two.
+    @ObservationIgnored private var groupHolds: TimeInterval { TimeInterval(Tuning.float("groupHolds", 15)) }
     @ObservationIgnored private var visibleGroup: [String] = []
     private var groupInView: [Member] {
         // No camera (a PREVIEW_GROUP screenshot run): nothing to filter by, show the group as set.
         guard connected || replaying else { return group }
-        return group.filter { member in sighted[member.id].map { clockNow.timeIntervalSince($0) < groupInFrame } ?? false }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["PREVIEW_GROUP"] != nil { return group }
+        #endif
+        let held = group.filter { member in
+            member.speaking || sighted[member.id].map { clockNow.timeIntervalSince($0) < groupHolds } ?? false
+        }
+        return held.sorted { a, b in
+            if a.speaking != b.speaking { return a.speaking }
+            return (sighted[a.id] ?? .distantPast) > (sighted[b.id] ?? .distantPast)
+        }
     }
 
     /// Rewrites the lens when who is in frame changes the group row (two in view, or back to one).
@@ -2122,7 +2133,7 @@ enum Identification {
         case .identity:
             return hud()
         case .split:
-            // Two or more people in frame: the group row. Otherwise the person on the card.
+            // Two or more people in the conversation: a card each. Otherwise the person on the card.
             let inView = groupInView
             let members = inView.count >= 2 ? inView : []
             let partner = members.isEmpty ? person : nil
