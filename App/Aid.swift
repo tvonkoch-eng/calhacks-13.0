@@ -351,6 +351,9 @@ enum Talk {
     @ObservationIgnored var onName: ((String) -> Void)?
     /// Whether the wearer is the one talking right now, if the host can tell (nil: it can't).
     @ObservationIgnored var liveWearer: (() -> Bool?)?
+    /// The wearer's own record (CRM.digest: people met, what was said, promises, the roster), for
+    /// what they ask Jarvis. Read per request, so it's always current.
+    @ObservationIgnored var personal: (() -> String)?
     /// A speaker label's first name when the host knows who that is (face ID: "p:<id>"), so with
     /// three people the transcript says who said what instead of THEM twice.
     @ObservationIgnored var nameFor: ((String) -> String?)?
@@ -390,7 +393,7 @@ enum Talk {
             // Coach each real sentence of theirs as it lands, so a definition is up while they're
             // still talking and the wearer is listening anyway.
             if newest.split(separator: " ").count >= 3, Date().timeIntervalSince(lastCoach) > 1.5,
-               Tools.command(in: newest) == nil { coachSoon() }
+               !isCommand(newest) { coachSoon() }
         }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
         publish()
@@ -453,7 +456,7 @@ enum Talk {
             }
         }
         nextLine += 1
-        lines.append(Line(id: nextLine, speaker: speaker, text: text, at: Date(), command: Tools.command(in: text) != nil))
+        lines.append(Line(id: nextLine, speaker: speaker, text: text, at: Date(), command: isCommand(text)))
         log(.line, text, detail: level.map { String(format: "%.0f dB", $0) } ?? "", speaker: speaker)
 
         // Whoever just said the pinned follow-up is the wearer, and it has been used. Never the
@@ -475,7 +478,7 @@ enum Talk {
 
         // Every real line, the wearer's too: a term they used ("financial derivatives") is worth a
         // card, and this is also the second look at a question the fast lane let go.
-        if !Talk.isBackchannel(text), Tools.command(in: text) == nil { coachSoon() }
+        if !Talk.isBackchannel(text), !isCommand(text) { coachSoon() }
         watchForSilence()
     }
 
@@ -820,13 +823,65 @@ enum Talk {
     // MARK: - Tools: things only the device knows or can do
 
     @ObservationIgnored private var lastCommand: (text: String, at: Date)?
+    /// "Jarvis." on its own: when, and the row on the lens saying it's listening.
+    @ObservationIgnored private var wokenAt: (at: Date, card: Int)?
+    /// How long a bare "Jarvis." waits for the request.
+    static let wakeWindow: TimeInterval = 8
+    /// The last sentence taken as a request after a bare "Jarvis.", so it isn't conversation.
+    @ObservationIgnored private var consumed: (text: String, at: Date)?
 
-    /// "Lens, …" from the wearer (from anyone, while we don't know who that is): "what should I
-    /// ask?" gets a suggestion, anything else goes to the tool model with the whole context. True
-    /// when `sentence` was a command, handled or deliberately dropped.
+    /// Said to the glasses, not to anyone in the room: kept out of the coach, the transcript's
+    /// questions and the CRM.
+    func isCommand(_ text: String) -> Bool {
+        if Tools.command(in: text) != nil || Tools.wakeOnly(text) { return true }
+        guard let consumed, Date().timeIntervalSince(consumed.at) < 20 else { return false }
+        let said = Talk.normalized(text), request = Talk.normalized(consumed.text)
+        return !request.isEmpty && (said.contains(request) || request.contains(said))
+    }
+
+    /// "Jarvis, …" or "Lens, …" from the wearer: "what should I ask?" gets a suggestion, anything
+    /// else goes to the tool model with the whole context, and Jarvis also gets the wearer's own
+    /// record. "Jarvis" counts from anyone (nobody says it to the person in front of them, and a
+    /// mislabelled wearer must not be ignored); "Lens" only from the wearer once roles are known.
+    /// True when `sentence` was a command, handled or deliberately dropped.
     private func command(_ sentence: String, mine: Bool) -> Bool {
-        guard config.toolbox != nil, let request = Tools.command(in: sentence) else { return false }
-        guard mine || !roles.known else { return true }   // the other person saying "lens" isn't asking us
+        guard config.toolbox != nil else { return false }
+        if Tools.wakeOnly(sentence) {
+            if wokenAt == nil || Date().timeIntervalSince(wokenAt!.at) > 2 {
+                nextCard += 1
+                wokenAt = (Date(), nextCard)
+                compositor.startWork(id: nextCard, label: "Jarvis is listening", eta: Self.wakeWindow, at: Date())
+                log(.status, "Jarvis listening")
+                publish()
+                let card = nextCard
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(Self.wakeWindow))
+                    guard let self, self.wokenAt?.card == card else { return }
+                    self.wokenAt = nil
+                    self.compositor.endWork(id: card)
+                    self.publish()
+                }
+            }
+            return true
+        }
+        let named = Tools.byName(sentence)
+        let request: String
+        if let said = Tools.command(in: sentence) {
+            request = said
+        } else if let woken = wokenAt, Date().timeIntervalSince(woken.at) < Self.wakeWindow,
+                  sentence.contains(where: \.isLetter), !Talk.isBackchannel(sentence) {
+            // The sentence after a bare "Jarvis." is the request.
+            request = sentence
+            consumed = (sentence, Date())
+        } else {
+            return false
+        }
+        let jarvis = named || wokenAt != nil
+        if let woken = wokenAt {
+            compositor.endWork(id: woken.card)
+            wokenAt = nil
+        }
+        guard mine || jarvis || !roles.known else { return true }   // the other person saying "lens" isn't asking us
         // The same sentence arrives twice, as a partial and as the finished line; a few seconds
         // later it's a new request.
         if let last = lastCommand, Talk.normalized(request) == Talk.normalized(last.text),
@@ -835,7 +890,7 @@ enum Talk {
         if Talk.asksForSuggestion(request) {
             suggestNow()
         } else {
-            toolRound(request, command: true)
+            toolRound(request, command: true, personal: jarvis)
         }
         return true
     }
@@ -843,7 +898,7 @@ enum Talk {
     /// One request that may need a tool: the model answers, skips, or names a tool; the device
     /// runs it; the result goes up as an answer card as it is, no second model call. A command
     /// shows what it's doing if the tool takes a moment; an overheard question just shows the result.
-    private func toolRound(_ request: String, command: Bool) {
+    private func toolRound(_ request: String, command: Bool, personal: Bool = false) {
         guard let toolbox = config.toolbox, let primary = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
         nextCard += 1
         let card = nextCard, echo = Self.echo(request), started = Date()
@@ -858,19 +913,28 @@ enum Talk {
         // what we know and the conversation.
         let context = self.context(last: 30)
         let backup = config.backup
+        // Jarvis knows the wearer's life: who they are, who they've met, what they owe.
+        let record = personal ? ([config.background.isEmpty ? "" : "About \(config.wearer): \(config.background)", self.personal?() ?? ""]
+            .filter { !$0.isEmpty }.joined(separator: "\n")) : ""
+        // Asked by name, it says at once that it heard; a tool's own row replaces this one.
+        if personal {
+            compositor.startWork(id: card, label: "Jarvis", eta: 3, at: started)
+            publish()
+        }
         // Each request runs on its own card: their question must not cancel the wearer's command.
         Task { [weak self] in
+            defer { if personal { self?.compositor.endWork(id: card); self?.publish() } }
             var used = primary
             do {
                 var decision: Tools.Decision
                 do {
-                    decision = try await Tools.decide(request, context: context, toolbox: toolbox, provider: primary.provider,
+                    decision = try await Tools.decide(request, context: context, personal: record, toolbox: toolbox, provider: primary.provider,
                                                       key: primary.key, model: primary.model)
                 } catch LLM.Failure.rateLimited(let wait) {
                     guard let backup, backup != primary else { throw LLM.Failure.rateLimited(retryAfter: wait) }
                     self?.answersBlockedUntil = Date().addingTimeInterval(60)
                     used = backup
-                    decision = try await Tools.decide(request, context: context, toolbox: toolbox, provider: backup.provider,
+                    decision = try await Tools.decide(request, context: context, personal: record, toolbox: toolbox, provider: backup.provider,
                                                       key: backup.key, model: backup.model)
                 }
                 guard !Task.isCancelled, let self else { return }
@@ -1204,7 +1268,7 @@ enum Talk {
             let open = !self.partial.isEmpty
             let last = open ? self.partial : self.lines.last?.text ?? ""
             let theirs = open ? self.predictedTag() == "THEM" : self.roles.tag(self.lines.last?.speaker) == "THEM"
-            guard !last.isEmpty, Tools.command(in: last) == nil, !(theirs && last.contains("?")) else { return }
+            guard !last.isEmpty, !isCommand(last), !(theirs && last.contains("?")) else { return }
             self.compositor.hold(false, at: Date())   // three seconds of quiet: nobody is talking
             self.offer(.lull)
         }

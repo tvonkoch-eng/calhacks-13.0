@@ -20,6 +20,8 @@ func option(_ name: String) -> String? {
     return arguments[i + 1]
 }
 let file = option("--file").map { URL(fileURLWithPath: $0) }
+/// --record people.txt: what Jarvis knows of the wearer's life (CRM.digest() on the phone).
+let recordFile = option("--record")
 let typing = arguments.contains("--type")
 arguments.removeAll { $0 == "--type" }
 /// --trace x.jsonl: every line, event and lens state with its time in the recording, for
@@ -104,7 +106,9 @@ func drawLens(_ view: LensView) {
         config.answerMine = env["AID_ANSWER_MINE"] != "0"
         config.explicitOnly = env["AID_EXPLICIT_ONLY"] != "0"
         aid = Aid(config: config)
-        listener.keywords = [wearer, "Lens"]
+        listener.keywords = [wearer, "Lens", "Jarvis"]
+        // --record people.txt: the wearer's record for Jarvis, as CRM.digest() writes it on the phone.
+        if let path = recordFile { aid.personal = { (try? String(contentsOfFile: path, encoding: .utf8)) ?? "" } }
         listener.file = file
 
         listener.onPartial = { [weak self] text in

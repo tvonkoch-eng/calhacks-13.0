@@ -4,7 +4,8 @@
 #   sh tools/live-mac.sh                       talk to it (Mac mic)
 #   sh tools/live-mac.sh --file convo.wav      replay a recording at real time; never played aloud
 #   sh tools/live-mac.sh --trace run.jsonl     also write a timed trace for tools/evaluate.py
-#   sh tools/live-mac.sh --type                no audio: type what's said, e.g. "Lens, nearest Target?"
+#   sh tools/live-mac.sh --type                no audio: type what's said, e.g. "Jarvis, nearest Target?"
+#   sh tools/live-mac.sh --record people.txt   Jarvis answers from this record (CRM.digest's format)
 #   sh tools/live-mac.sh 300                   stop after 300 s
 # First run: allow microphone access for your terminal app.
 set -e

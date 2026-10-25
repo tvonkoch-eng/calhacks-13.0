@@ -59,7 +59,7 @@ struct CalHacksApp: App {
                     }
                     // First names spelled right in the transcript, e.g. "Joaquin" not "Wakeen".
                     // Plus anyone met today or kept (the CRM); refreshed on every arm.
-                    assistant.listener.keywords = crm.keywords(roster: store.people.map(\.name))
+                    assistant.listener.keywords = ["Jarvis"] + crm.keywords(roster: store.people.map(\.name))
                     #if DEBUG
                     let env = ProcessInfo.processInfo.environment
                     if Glasses.prefersMock {

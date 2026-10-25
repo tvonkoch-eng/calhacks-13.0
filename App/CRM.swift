@@ -672,6 +672,55 @@ struct Reminder: Codable, Identifiable, Equatable {
                       theyOwe: open.filter { $0.kind == .waiting }.map(\.text))
     }
 
+    /// Everything on record, one line a person, for Jarvis: "who did I meet today", "what did I
+    /// promise Avi", "who here works at Google". People talked to come first, newest first, then
+    /// anyone owed something, then the rest of the roster and the people kept. At most `limit` people,
+    /// so it stays a small prompt; it never leaves the answer model (research gets the task only).
+    func digest(now: Date = .now, limit: Int = 30) -> String {
+        let when = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()
+        var order: [String] = []
+        func add(_ id: String) { if !order.contains(id) { order.append(id) } }
+        conversations.sorted { $0.started > $1.started }.forEach { add($0.person) }
+        reminders.filter(\.open).forEach { add($0.person) }
+        facts.forEach { add($0.person) }
+        rosterIDs.forEach(add)
+        saved.forEach { add($0.id) }
+
+        var lines: [String] = []
+        for id in order.prefix(limit) {
+            var parts: [String] = []
+            let pending = contacts.first { $0.id == id }?.consent == .pending
+            var who = name(id)
+            if let about = roster(id)?.about, !about.isEmpty { who += " (\(about))" }
+            else if let label = label(id) { who += " (\(label))" }
+            if pending { who += ", met, not saved yet" }
+            parts.append(who)
+            let talks = conversations(with: id).sorted { $0.started > $1.started }
+            if let last = talks.first {
+                var met = "last talked \(last.started.formatted(when))"
+                if let place = last.place { met += " \(place)" }
+                if talks.count > 1 { met += " (\(talks.count) conversations)" }
+                if let summary = last.summary { met += ": \(summary)" }
+                if !last.topics.isEmpty { met += " Topics: \(last.topics.joined(separator: ", "))." }
+                parts.append(met)
+            } else if roster(id) != nil {
+                parts.append("haven't talked yet")
+            }
+            let known = facts(about: id).prefix(5).map(\.text)
+            if !known.isEmpty { parts.append("Facts: " + known.joined(separator: "; ")) }
+            for reminder in open(for: id) {
+                let due = reminder.due.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+                switch reminder.kind {
+                case .todo: parts.append("You promised: \(reminder.text) (due \(due))")
+                case .waiting: parts.append("They promised: \(reminder.text)")
+                case .checkIn: parts.append("Check in by \(due)")
+                }
+            }
+            lines.append("- " + parts.joined(separator: ". "))
+        }
+        return lines.isEmpty ? "" : "People:\n" + lines.joined(separator: "\n")
+    }
+
     /// Names likely to come up at the event right now, for speech recognition keywords so they're
     /// spelled right: the roster, people kept, and anyone met in the last day. First and last
     /// names separately, most recent first, no repeats.

@@ -125,6 +125,8 @@ import Observation
         // so their questions still get answered.
         aid.liveWearer = { [weak self] in self?.speakers.wearerTalking() ?? false }
         aid.onName = { [weak self] name in self?.introduced(name) }
+        // Jarvis answers from everything the wearer has on record.
+        aid.personal = { [weak self] in self?.crm?.digest() ?? "" }
         aid.nameFor = { [weak self] label in
             guard let self, label.hasPrefix("p:"), let person = self.person(String(label.dropFirst(2))) else { return nil }
             return self.firstName(person.name)
@@ -218,7 +220,7 @@ import Observation
         // Whoever is in front of you right now is who you're about to talk to.
         if let id = glasses?.facing { facingChanged(id) }
         // Names of people likely here, so speech recognition spells them right.
-        if let crm { listener.keywords = crm.keywords(roster: store?.people.map(\.name) ?? []) }
+        if let crm { listener.keywords = ["Jarvis"] + crm.keywords(roster: store?.people.map(\.name) ?? []) }
         await listener.start()
         if !listener.listening {
             armed = false
@@ -339,7 +341,7 @@ import Observation
         if meSpeaking { lastOwnVoiceFlip = end }
         refreshGroup()
         aid.heard(line: text, speaker: label, level: nil)
-        crm?.heard(text, speaker: label, command: Tools.command(in: text) != nil)
+        crm?.heard(text, speaker: label, command: aid.isCommand(text))
     }
 
     private func ownSpeech(_ text: String) {

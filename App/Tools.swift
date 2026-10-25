@@ -39,16 +39,41 @@ enum Tools {
         case call(name: String, arguments: String)
     }
 
-    /// "Lens, how far is the nearest Target?" → "how far is the nearest Target?". Only at the very
-    /// start of what the wearer says, so ordinary talk about lenses never counts.
+    /// "Jarvis, who did I meet today?" / "Lens, how far is the nearest Target?" → the request.
+    /// The name opens the sentence (after an "um" or "hey"), or closes it: "what's the weather,
+    /// Jarvis?". Only "Jarvis" may close one; plenty of ordinary sentences end in "lens".
     static func command(in text: String) -> String? {
-        let pattern = #"^\s*(?:hey |ok |okay )?(?:lens|lenz|lense)\b[\s,.:!-]*(.+)$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range(at: 1), in: text) else { return nil }
-        let rest = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
-        return rest.contains(where: \.isLetter) ? rest : nil
+        let wake = #"(?:lens|lenz|lense|"# + jarvis + ")"
+        let opening = #"^\s*(?:(?:hey|ok|okay|um|uh|so|yo)[\s,]+)*"# + wake + #"\b[\s,.:!-]*(.+)$"#
+        let closing = #"^\s*(.+?)[\s,]+(?:hey )?"# + jarvis + #"\b[\s?.!]*$"#
+        for (pattern, closes) in [(opening, false), (closing, true)] {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(match.range(at: 1), in: text) else { continue }
+            var rest = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
+            // "what's the weather, Jarvis?" asked a question: keep the mark the name took with it.
+            if closes, text.trimmingCharacters(in: .whitespaces).hasSuffix("?"), !rest.hasSuffix("?") {
+                rest = rest.trimmingCharacters(in: CharacterSet(charactersIn: ",.!")) + "?"
+            }
+            if rest.contains(where: \.isLetter) { return rest }
+        }
+        return nil
     }
+
+    /// "Jarvis." on its own: the request comes in the next sentence.
+    static func wakeOnly(_ text: String) -> Bool {
+        let pattern = #"^\s*(?:(?:hey|ok|okay)[\s,]+)?"# + jarvis + #"\s*[?.!,]*\s*$"#
+        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// Addressed by name, so it's the wearer talking to their glasses whoever the diarizer says
+    /// spoke: nobody says "Jarvis" to the person in front of them.
+    static func byName(_ text: String) -> Bool {
+        text.range(of: #"\b"# + jarvis + #"\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// The assistant's name, as speech recognition spells it.
+    private static let jarvis = "(?:jarvis|jarvas|jervis|javis)"
 
     /// Could this need a tool? Generous on purpose: a false yes costs one tool-enabled call that
     /// answers in plain text anyway; a false no sends "how far is the Target" to a model with no
@@ -72,9 +97,17 @@ enum Tools {
     /// Where the answer lives decides who answers. The web knows public things, not these two
     /// people: "what's the latest on the GENIUS Act" is research; "what did she say her company
     /// does" is the conversation; "how's her fundraise going" is nobody's to look up.
-    private static func prompt(research: Bool) -> String {
-        var sources = """
-        - the conversation, or what's known about the person they're talking to: answer from that;
+    private static func prompt(research: Bool, personal: Bool = false) -> String {
+        var sources = "- the conversation, or what's known about the person they're talking to: answer from that;"
+        if personal {
+            sources += "\n" + """
+            - their own life: the people they've met and what was said, what they promised and are \
+            owed, who's on their list and what those people do (the record below): answer from \
+            that, by name, speaking to them as "you". "Who here works at Google?" means the people \
+            on that record. If the record doesn't have it, say so in a few words rather than guess;
+            """
+        }
+        sources += "\n" + """
         - where they are, the weather, their reminders or their calendar: call that tool;
         - stable general knowledge: answer it yourself;
         """
@@ -99,17 +132,19 @@ enum Tools {
     }
 
     /// One round: the model answers in a line, says SKIP, or names a tool for the caller to run.
-    static func decide(_ request: String, context: String, toolbox: any Toolbox,
+    /// `personal`: the wearer's own record (CRM.digest), for requests they address to Jarvis.
+    static func decide(_ request: String, context: String, personal: String = "", toolbox: any Toolbox,
                        provider: Provider, key: String, model: String) async throws -> Decision {
         let now = Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
         let place = await toolbox.whereabouts().map { " They are \($0)." } ?? ""
-        let user = (context.isEmpty ? "" : "Conversation so far:\n\(context)\n\n") + "Request: \(request)"
+        let user = (personal.isEmpty ? "" : "Their own record:\n\(personal)\n\n")
+            + (context.isEmpty ? "" : "Conversation so far:\n\(context)\n\n") + "Request: \(request)"
         var body: [String: Any] = [
             "model": model,
             "temperature": 0,
             "tool_choice": "auto",
             "messages": [
-                ["role": "system", "content": prompt(research: toolbox.definitions.contains("\"research\""))
+                ["role": "system", "content": prompt(research: toolbox.definitions.contains("\"research\""), personal: !personal.isEmpty)
                     + "\nIt is \(now), \(TimeZone.current.identifier).\(place)"],
                 ["role": "user", "content": user],
             ],

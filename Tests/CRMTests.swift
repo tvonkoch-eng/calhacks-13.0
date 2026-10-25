@@ -88,6 +88,13 @@ await MainActor.run {
     check(crm.lastContext("avi") == "Avi · lse econ student · waiting on: avi intros you to Priya", "then what they owe")
     crm.complete(open.first { $0.kind == .waiting }!.id)
     check(crm.lastContext("avi") == "Avi · lse econ student · applying to jane street", "then the hook")
+    crm.rosterIDs = ["avi", "joaquin"]
+    let digest = crm.digest(now: at(700))
+    check(digest.hasPrefix("People:\n- Avi Shah (LSE). last talked"), "digest leads with who you talked to: \(digest.prefix(60))")
+    check(digest.contains("Compared LoRA costs.") && digest.contains("Plays cricket"), "digest: summary and facts")
+    check(digest.contains("Check in by") && !digest.contains("They promised"), "digest: open reminders only")
+    check(digest.contains("- Joaquin Del Pego (UCSB). haven't talked yet"), "digest: the roster, even before a conversation")
+    check(makeCRM(nil).digest().isEmpty, "nothing on record, no digest")
     let record = crm.record("avi")
     check(record.label == "lse econ student" && record.facts.contains("Plays cricket")
           && record.briefing.contains { $0.hasPrefix("Last talked") }, "the full record briefs the aid")
