@@ -178,6 +178,15 @@ enum Talk {
                 " you know how ", " is there ", " are there ", " can you ", " could you ", " tell me "].contains { t.contains($0) }
     }
 
+    /// "Who won the most recent Turing Award", "the latest on the GENIUS Act", "the current CEO": a
+    /// question whose answer changes, so memory can't be trusted with it.
+    static func wantsNow(_ question: String) -> Bool {
+        let q = " " + normalized(question) + " "
+        return [" latest ", " most recent ", " recently ", " newest ", " current ", " currently ", " right now ",
+                " these days ", " nowadays ", " today ", " yesterday ", " this week ", " this month ", " this year ",
+                " last year ", " last night ", " this season ", " so far "].contains { q.contains($0) }
+    }
+
     /// "Toby promised to send her the demo video": a promise the wearer made.
     static func isPromise(_ fact: String, by wearer: String) -> Bool {
         let f = fact.lowercased()
@@ -327,6 +336,10 @@ enum Talk {
         var suggestions = true
         /// Insight cards: a fact or bit of context about what was just said.
         var insights = true
+        /// Definitions and insights for the wearer's own lines too. Off: the wearer knows the words
+        /// they say, and a judge replay defined "Meta Ray-Ban Display glasses" while the wearer was
+        /// demoing them. The coach still reads their lines for the second look at questions.
+        var defineMine = false
         /// The wearer's own questions get answers too, not only the other person's. In testing the
         /// wearer asks as much as anyone, and an ignored question reads as "it didn't hear me".
         var answerMine = false
@@ -522,7 +535,7 @@ enum Talk {
     func reset() {
         answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel()
         lines = []; turns = []; events = []; them = Them(); others = []; ideas = []; roles = Roles(); partial = ""; status = ""
-        compositor.clear(); defined = []; noted = []; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
+        compositor.clear(); defined = []; noted = []; lastInsight = .distantPast; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
         coachPending = false; coachBlockedUntil = nil; closedInTurn = 0
         wanted = nil; suggested = []; suggestedAt = .distantPast; turnStarted = nil; lastCommand = nil; saying = ""
         publish()
@@ -568,6 +581,25 @@ enum Talk {
         }
         if config.explicitOnly, endpointed, !text.trimmed.hasSuffix("?") {
             abandon()
+            return
+        }
+        // "The most recent", "latest", "current": memory is out of date by definition. Straight to
+        // the web once the question closes, with no guess from memory first: "who won the most recent
+        // Turing Award?" got 2024's winners from memory; the web had 2025's.
+        if config.researcher != nil, Talk.wantsNow(candidate.text), Answerer.local(candidate.text) == nil {
+            guard endpointed else {
+                abandon()
+                return
+            }
+            // A guess still in flight for this question is dropped; the lookup takes its card.
+            let card = turns.first.flatMap { $0.live ? $0.card : nil }
+            if !firedText.isEmpty {
+                answerTask?.cancel()
+                generation += 1
+                if turns.first?.live == true { turns[0].state = .skipped }
+                firedText = ""
+            }
+            lookUp(candidate.text, card: card)
             return
         }
         if toolish {
@@ -640,8 +672,12 @@ enum Talk {
         }
     }
 
+    /// When the fast lane last took a question, by any path; the coach's second look stands down.
+    @ObservationIgnored private var fastLaneAt = Date.distantPast
+
     private func fire(_ question: String, committed: Bool = false) {
         guard let answers = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
+        fastLaneAt = Date()
         answerTask?.cancel()
         generation += 1
         let generation = self.generation
@@ -750,8 +786,10 @@ enum Talk {
         if config.explicitOnly, turn.committedAt == nil, turn.live || turn.state == .done { return }
         switch turn.state {
         case .thinking, .answering, .done:
-            // The question goes up at once with "…" under it, and the answer replaces the "…" word
-            // by word as it streams. A SKIP takes the card down again (below).
+            // Nothing goes up until the answer's first words: a "…" put up the moment a question
+            // started flashed and vanished on every personal question the model then skipped (1-2
+            // per judge replay). The fire is speculative, so the words usually land as the question
+            // ends anyway. They replace each other as the answer streams.
             // The same question again within 15 s (asked twice, or re-fired as the transcript grew):
             // what's up stays up. A different question is the only reason to change it.
             if let last = settled, last.card != turn.card, now.timeIntervalSince(last.at) < 15,
@@ -760,19 +798,18 @@ enum Talk {
                 return
             }
             // The question is fixed the first time it goes up, and so is a finished answer.
+            let answer = finalAnswer[turn.card] ?? turn.answer
+            guard !answer.isEmpty else { return }
             let question = shownQuestion[turn.card] ?? turn.question
             shownQuestion[turn.card] = question
-            let answer = finalAnswer[turn.card] ?? turn.answer
-            if !answer.isEmpty {
-                answeredAt = now
-                answeredText = question + " " + answer
-                if turn.state == .done, finalAnswer[turn.card] == nil {
-                    finalAnswer[turn.card] = answer
-                    directAnswerAt = now
-                    settled = (turn.card, question, now)
-                }
+            answeredAt = now
+            answeredText = question + " " + answer
+            if turn.state == .done, finalAnswer[turn.card] == nil {
+                finalAnswer[turn.card] = answer
+                directAnswerAt = now
+                settled = (turn.card, question, now)
             }
-            compositor.show(Card(kind: .answer, title: answer.isEmpty ? "\u{2026}" : answer,
+            compositor.show(Card(kind: .answer, title: answer,
                                  detail: Self.echo(question),
                                  live: finalAnswer[turn.card] == nil, id: turn.card), at: now)
         case .skipped where turn.lookup:
@@ -850,6 +887,7 @@ enum Talk {
         guard let toolbox = config.toolbox, let primary = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
         nextCard += 1
         let card = nextCard, echo = Self.echo(request), started = Date()
+        fastLaneAt = started
         // In flight counts as answered: the coach's second look at the same line ("…near Cal Hacks
         // 13.0?") put "Great China" up twice.
         answeredAt = started
@@ -974,6 +1012,12 @@ enum Talk {
             return
         }
         let input = coachInput(for: moment)
+        // What this call is about: the turn still being spoken, else the last line, and whose it is.
+        // Checked when the reply lands instead, the conversation has often moved on to the next one.
+        let lastLine = lines.last { !$0.command }
+        let lookedAt = partial.isEmpty ? (lastLine?.text ?? "") : partial
+        let mine = partial.isEmpty ? roles.isWearer(lastLine?.speaker) : predictedWearer()
+        let finished = partial.isEmpty
         let backup = config.backup
         lastCoach = Date()
         coachTask = Task { [weak self] in
@@ -989,7 +1033,7 @@ enum Talk {
                     advice = try await Coach.ask(input, provider: backup.provider, key: backup.key, model: backup.model)
                 }
                 self?.timings["coach", default: []].append(Int(Date().timeIntervalSince(started) * 1000))
-                self?.apply(advice, for: moment)
+                self?.apply(advice, for: moment, lookedAt: lookedAt, mine: mine, finished: finished)
             } catch LLM.Failure.rateLimited {
                 // Already blocked above; the retry fires when the block lifts.
             } catch {
@@ -1057,7 +1101,7 @@ enum Talk {
     }
 
     /// `moment`: the moment this call was asked to write a suggestion for, if any.
-    private func apply(_ advice: Coach.Advice, for moment: Moment?) {
+    private func apply(_ advice: Coach.Advice, for moment: Moment?, lookedAt utterance: String, mine: Bool, finished: Bool) {
         let now = Date()
         let recent = Talk.normalized((lines.suffix(2).map(\.text) + [partial]).joined(separator: " "))
         // Only a term just said, of real substance, that the coach is sure of: "LO — likely
@@ -1066,28 +1110,33 @@ enum Talk {
         // Not a term an answer card just covered: "what's Cohen's kappa?" got an answer and then the
         // same thing again as a definition.
         let answered = now.timeIntervalSince(answeredAt) < 15 ? Talk.normalized(answeredText) : ""
+        // A question in the line the coach looked at gets an answer, not a definition or an insight
+        // about its subject: "Turing Award" was defined, and a wrong winner put up, while the judge
+        // was still asking who won it. And the wearer's own words only with `defineMine`.
+        let asking = utterance.contains("?") || QuestionGate.candidate(in: utterance) != nil
+        let quiet = asking || (mine && !config.defineMine)
+        // Questions asked in the last 20 s: an insight on their subject repeats the answer.
+        let questions = turns.prefix(4).filter { now.timeIntervalSince($0.firedAt) < 20 }.map { Talk.normalized($0.question) }
         for term in advice.define where !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + term.meaning)) })
             && term.term.count >= 3 && Talk.mentioned(term.term, in: recent) && !Talk.mentioned(term.term, in: answered)
-            && !unsure.contains(where: term.meaning.lowercased().contains)
-            && !Talk.asks(lines.last?.text ?? "") {   // a question gets an answer, not a definition
+            && !unsure.contains(where: term.meaning.lowercased().contains) && !quiet {
             defined.append(term.term)
             nextCard += 1
             compositor.show(Card(kind: .definition, title: term.term, detail: term.meaning, id: nextCard), at: now)
             log(.define, term.term, detail: term.meaning)
         }
-        // A fact or bit of context about the topic: more to know, never a line to say. Once per
-        // topic, not one a definition or an answer just covered, not on a question (it gets an answer).
-        // And only about what was just said: a garbled line ("you never sink holy") got an insight
-        // on Calvisius from 40 s before.
-        if config.insights, let insight = advice.insight, !Talk.asks(lines.last?.text ?? ""),
-           Talk.mentioned(insight.topic, in: recent) || Talk.mentioned(insight.fact, in: recent),
+        // A fact about the topic, from the web (`ground`): more to know, never a line to say. Once
+        // per topic, one every `insightGap`, not one a definition or an answer just covered, not on
+        // a question. Only about what was just said: a garbled line ("you never sink holy") got an
+        // insight on Calvisius from 40 s before.
+        if config.insights, let insight = advice.insight, !quiet,
+           !questions.contains(where: { Talk.mentioned(insight.topic, in: $0) }),
+           Talk.mentioned(insight.topic, in: recent) || Talk.mentioned(insight.query, in: recent),
+           now.timeIntervalSince(lastInsight) >= Self.insightGap,
            !noted.contains(where: { Talk.same($0, insight.topic) }),
            !defined.contains(where: { Talk.same($0, insight.topic) || Talk.mentioned($0, in: Talk.normalized(insight.topic)) }),
            !Talk.mentioned(insight.topic, in: answered) {
-            noted.append(insight.topic)
-            nextCard += 1
-            compositor.show(Card(kind: .insight, title: insight.topic, detail: insight.fact, id: nextCard), at: now)
-            log(.insight, insight.topic, detail: insight.fact)
+            ground(insight, line: utterance)
         }
         // The recognizer garbled a request the gate or the answer model let go: the coach's clean
         // version goes to the tool model (answer, device tool or Fetch), unless something already
@@ -1100,13 +1149,23 @@ enum Talk {
         let newest = (lines.last { !$0.command }?.text ?? "") + " " + partial
         // The fast lane already has a question from the last 10 s: it answers that one; the coach's
         // rewrite ("how far" → "how long") would only put up a second, different answer.
-        let fastLaneBusy = turns.first.map { now.timeIntervalSince($0.firedAt) < 10 } ?? false
-        if let ask = advice.ask, Talk.asks(newest), lookupTask == nil, turns.first?.live != true, !fastLaneBusy,
+        // Any of its paths counts (a direct answer, a tool, a lookup), however the coach worded it:
+        // "what is the distance between Berkeley and San Francisco" put "13.9 miles" up twice.
+        let fastLaneBusy = now.timeIntervalSince(fastLaneAt) < 5
+            || (turns.first.map { now.timeIntervalSince($0.firedAt) < 10 } ?? false)
+        // Only a question that was finished, and only a rewrite of what was said: mid-sentence, at
+        // "Okay, quick test. Who…", the coach finished the question itself ("Who is the founder of
+        // OpenAI?") and "Sam Altman" went up for something nobody asked.
+        let grounded = advice.ask.map { (finished || utterance.contains("?")) && Talk.mentioned($0, in: Talk.normalized(utterance)) } ?? false
+        if let ask = advice.ask, grounded, Talk.asks(newest), lookupTask == nil, turns.first?.live != true, !fastLaneBusy,
            !alreadyAnswered(ask, at: now), !asked.contains(where: { Talk.same($0, ask) }) {
             asked.append(ask)
             answeredAt = now
-            log(.lookup, ask, detail: "caught on the second look")
-            toolRound(ask, command: false)
+            // A place question goes to the tools as asked: "near here" is where the device is, and
+            // the rewrite ("near Cal Hacks 13.0 at UC Berkeley") sent Maps to a café 10 miles away.
+            let request = Tools.wants(newest) ? (QuestionGate.candidate(in: newest.trimmed)?.text ?? ask) : ask
+            log(.lookup, request, detail: "caught on the second look")
+            toolRound(request, command: false)
         }
         // Shown only while its moment lasts: speech ends a lull (`wanted` is cleared), so a line that
         // arrives after they started talking again stays off the lens.
@@ -1130,6 +1189,65 @@ enum Talk {
         }
         if status.hasPrefix("Coach") { status = "" }
         publish()
+    }
+
+    // MARK: - Insights: one fact the web backs, about what was just said
+    //
+    // The coach names the topic and a search; Exa runs it and a fast model writes the one fact the
+    // results support (`Coach.fact`). From memory alone a judge replay put up "the 2024 Turing Award
+    // went to Andrej Karpathy and Yann LeCun", wrong on both counts, about the judge's own field. A
+    // fact the web backs costs ~0.8 s more, and an insight is never urgent.
+
+    @ObservationIgnored private var lastInsight = Date.distantPast
+    /// At most one insight this often: the least urgent card mustn't crowd out the rest.
+    private static let insightGap: TimeInterval = 6
+    /// Later than this after the line, the conversation has moved on: dropped.
+    private static let insightLate: TimeInterval = 8
+
+    private func ground(_ insight: (topic: String, query: String), line: String) {
+        guard let researcher = config.researcher,
+              let writer = (config.perMinute != nil ? config.backup : nil) ?? config.answers ?? config.backup else { return }
+        noted.append(insight.topic)
+        lastInsight = Date()
+        let started = Date()
+        Task { [weak self] in
+            do {
+                let notes = try await researcher.research(insight.query, context: "")
+                let fact = try await Coach.fact(about: insight.topic, line: line, notes: notes,
+                                                provider: writer.provider, key: writer.key, model: writer.model)
+                guard let self else { return }
+                let ms = self.ms(since: started)
+                guard let fact, Double(ms) < Self.insightLate * 1000 else {
+                    self.log(.lookup, insight.query, detail: fact == nil ? "insight: nothing specific found" : "insight: too late (\(ms) ms)")
+                    return
+                }
+                self.nextCard += 1
+                self.compositor.show(Card(kind: .insight, title: insight.topic, detail: fact, id: self.nextCard), at: Date())
+                self.timings["insight", default: []].append(ms)
+                self.log(.insight, insight.topic, detail: fact)
+                self.publish()
+            } catch {
+                self?.log(.lookup, insight.query, detail: "insight: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// The first call of a session pays for DNS, TLS and a cold route; the first place question for
+    /// a location fix and its street name (up to ~2 s). Done when listening starts, so the first
+    /// question in front of someone is as quick as the tenth.
+    func warm() {
+        for lane in [config.answers, config.coach == config.answers ? nil : config.coach].compactMap({ $0 }) {
+            Task.detached {
+                var body: [String: Any] = ["model": lane.model, "messages": [["role": "user", "content": "hi"]]]
+                body.merge(lane.provider.extras(model: lane.model)) { _, extra in extra }
+                body["max_tokens"] = 1
+                _ = try? await LLM.complete(lane.provider.endpoint, key: lane.key, body: body, timeout: 5)
+            }
+        }
+        if config.researcher is Exa {
+            Task.detached { _ = try? await URLSession.shared.data(from: URL(string: "https://api.exa.ai/")!) }
+        }
+        if let toolbox = config.toolbox { Task { _ = await toolbox.whereabouts() } }
     }
 
     /// Something on the lens in the last 20 s already answers `question`: a turn that asked the
@@ -1254,6 +1372,7 @@ enum Talk {
         }
         log(.lookup, question, detail: "looking up with \(researcher.name)")
         answeredAt = Date()
+        fastLaneAt = answeredAt
         let card = existing ?? { nextCard += 1; return nextCard }(), started = Date()
         compositor.startWork(id: card, label: config.toolbox?.working("research", arguments: "{}") ?? "Looking it up", at: started)
         publish()

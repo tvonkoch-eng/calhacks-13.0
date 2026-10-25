@@ -40,14 +40,14 @@ enum Coach {
         /// THEM asked for a fact or a task in words the recognizer mangled or left implicit: the
         /// request rebuilt as one clear question, for the answer lane to take.
         var ask: String?
-        /// A fact or bit of context about what was just said: a topic (a few words) and the fact.
-        var insight: (topic: String, fact: String)?
+        /// A topic worth one striking fact, and the web search that finds it (`Aid` grounds it).
+        var insight: (topic: String, query: String)?
 
         static func == (a: Advice, b: Advice) -> Bool {
             a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
                 && a.suggest == b.suggest && a.score == b.score
                 && a.alternatives.map { "\($0.say)=\($0.score ?? 0)" } == b.alternatives.map { "\($0.say)=\($0.score ?? 0)" } && a.ask == b.ask
-                && a.insight?.topic == b.insight?.topic && a.insight?.fact == b.insight?.fact
+                && a.insight?.topic == b.insight?.topic && a.insight?.query == b.insight?.query
         }
     }
 
@@ -57,7 +57,13 @@ enum Coach {
     // coach no longer names people (a name mentioned in passing became THEM's) or looks things up
     // (it researched our own product): names come from introductions and face ID, lookups only
     // from questions someone asked.
-    static let prompt = """
+    /// The prompt for one call. The part on lines to say goes out only when one is wanted: with
+    /// suggestions off it was 22 lines on every call that the model read and answered with null.
+    static func prompt(suggesting: Bool) -> String {
+        base + (suggesting ? "\n\n" + suggestPart : "")
+    }
+
+    private static let base = """
     You are a quiet conversation aid inside AR glasses. The wearer is in a live, in-person \
     conversation with one or more other people and should stay present in it. Lines are tagged ME \
     (the wearer), the speaker's first name when face ID knows them, or THEM (someone else); THEM \
@@ -67,7 +73,7 @@ enum Coach {
     LLM). Everything you write uses the intended words, never the misheard ones. Questions asked \
     out loud are answered by a separate system; never answer them here.
 
-    Reply with one JSON object with exactly these keys:
+    Reply with one JSON object with these keys:
 
     "ask": "..." or null
       The second look at the newest line, from either speaker. A separate system answers \
@@ -80,8 +86,9 @@ enum Coach {
     did Figure AI raise in its latest round?"). Duplicates are filtered out for you. null if it is \
     personal or social (about the people talking, "how did you get into that", "what are you \
     working on"), rhetorical, already answered in the transcript, or no request at all. A question \
-    about this place or event ("how many people are at this thing", "when does it end") only when \
-    "Where" names it, resolved to it ("How many attendees does Cal Hacks 13.0 have?"); otherwise null.
+    about this event ("how many people are at this thing", "when does it end") only when "Where" \
+    names it, resolved to it ("How many attendees does Cal Hacks 13.0 have?"); otherwise null. "Near \
+    here" stays "near here": the device knows where it is.
 
     "define": [{"term": "...", "meaning": "..."}]
       At most one: the most interesting technical or specialist term in the newest line, from \
@@ -91,32 +98,28 @@ enum Coach {
     a line has a real concept or topic in it, even one the wearer roughly knows; when in doubt, give \
     one. A well-known topic counts too (a famous company, place, historical event, field or \
     movement), defined by what is stable about it ("Bauhaus": "1920s German art school; form \
-    follows function"); never its latest news, numbers that change, or a private person. Never plain everyday or generic business words (startup, meeting, team, money, \
-    app, AI, coding, hackathon). Skip a term the speaker explains in the same breath and pick the \
-    next one instead. Speech recognition mangles jargon: if a term looks misheard, define what \
-    was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
-    unsure. Never define an acronym or word you don't know as an established term: an unfamiliar \
-    acronym is usually a misheard familiar one (LOM for LLM), so define the real term only if it \
-    is a real concept, otherwise nothing; never invent an expansion. "meaning": what it is in plain words, then one concrete example or striking fact \
-    that makes it interesting ("A contract whose value tracks another asset; e.g. options, \
-    futures, swaps"), one or two sentences, at most 35 words, with concrete examples ("Contracts whose value \
-    tracks another asset, used to hedge or speculate; e.g. options, futures, swaps"). [] when the line has no such term.
+    follows function"); never its latest news, numbers that change, or a private person. Never \
+    plain everyday or generic business words (startup, meeting, team, money, app, AI, coding, \
+    hackathon). Skip a term the speaker explains in the same breath and pick the next one instead. \
+    Speech recognition mangles jargon: if a term looks misheard, define what was clearly meant \
+    under its real name ("lawyer adapter" → LoRA adapter), or skip it if unsure. Never define an \
+    acronym or word you don't know as an established term: an unfamiliar acronym is usually a \
+    misheard familiar one (LOM for LLM), so define the real term only if it is a real concept, \
+    otherwise nothing; never invent an expansion. "meaning": what it is in plain words, with one \
+    concrete example if it helps, at most 20 words ("Contracts whose value tracks another asset; \
+    e.g. options, futures, swaps"). [] when the line has no such term.
 
-    "insight": {"topic": "...", "fact": "..."} or null
-      One striking, accurate fact or bit of context about what the newest line is about, that makes \
-    the topic more interesting to the wearer: a number, a comparison, a cause, a bit of history, a \
-    surprising connection ("topic": "Humanoid robots", "fact": "Figure, Tesla and Agility are \
-    racing to put them in warehouses; most still rely on remote operators"). From either speaker. \
-    Lean toward giving one whenever the line has a real topic in it (a field, company, place, \
-    technology, event, idea); when in doubt, give one. It must be specific and non-obvious: \
-    something a smart person in another field likely doesn't know, carried by a name, a number, a \
-    date or a comparison ("Jane Street trades over $17 trillion a year"), never a generic statement \
-    anyone could guess ("robots improve efficiency") and never what the term means (that is \
-    "define"). Only what you are sure of and what doesn't change week to week; never about the \
-    people talking or their lives, never about this event or place ("Where"), never advice or a \
-    line to say, never a topic in "Already noted". "topic" at most 4 words, "fact" at most 25 \
-    words. null for small talk, and null rather than something generic.
+    "insight": {"topic": "...", "query": "..."} or null
+      The newest line's most interesting public topic, from either speaker: a field, company, \
+    technology, place, event or idea worth one striking fact. "topic" is a few words ("Reward \
+    modeling"); "query" is a short web search that would turn up a specific, surprising fact about \
+    it in this context ("reward model overoptimization examples"). A search finds the fact, so \
+    never write one yourself. Lean toward giving one when the line has a real topic; null for \
+    small talk, the people talking themselves, this event, a topic in "Already noted", or a line \
+    that asks a question (it gets an answer).
+    """
 
+    private static let suggestPart = """
     "suggest": [{"say": "...", "score": 1-5}] or null
       Only when "Suggest now" is yes, otherwise null. Up to three different things the wearer \
     could say next, best first, each scored: 5 = specific to this person and moment and clearly \
@@ -143,14 +146,17 @@ enum Coach {
 
     static func message(_ input: Input) -> String {
         func list(_ items: [String]) -> String { items.isEmpty ? "none" : items.joined(separator: ", ") }
+        // Only when a line to say is wanted, as with the prompt's part on it.
+        let suggesting = input.moment.map { moment in
+            "\nAlready suggested: " + (input.suggested.isEmpty ? "none" : input.suggested.map { "\"\($0)\"" }.joined(separator: ", "))
+                + "\nSuggest now: yes (\(moment))"
+        } ?? ""
         return """
         Wearer: \(input.wearer)\(input.background.isEmpty ? "" : " (\(input.background))")
         Where: \(input.situation.isEmpty ? "unknown" : input.situation)
         Known about them: \(input.known.isEmpty ? "nothing yet" : input.known)
         Already defined: \(list(input.defined))
-        Already noted: \(list(input.noted))
-        Already suggested: \(input.suggested.isEmpty ? "none" : input.suggested.map { "\"\($0)\"" }.joined(separator: ", "))
-        Suggest now: \(input.moment.map { "yes (\($0))" } ?? "no")
+        Already noted: \(list(input.noted))\(suggesting)
 
         Transcript (oldest first; the last line is new):
         \(input.transcript.isEmpty ? "(nothing said yet)" : input.transcript.joined(separator: "\n"))
@@ -163,7 +169,7 @@ enum Coach {
             "temperature": 0.3,
             "response_format": ["type": "json_object"],
             "messages": [
-                ["role": "system", "content": prompt],
+                ["role": "system", "content": prompt(suggesting: input.moment != nil)],
                 ["role": "user", "content": message(input)],
             ],
         ]
@@ -183,6 +189,29 @@ enum Coach {
         let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 10)
         guard let result = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
         return result
+    }
+
+    /// The fact on an insight card, written only from what a search found: nil when the notes have
+    /// nothing specific and interesting. Memory alone put up a wrong Turing Award winner.
+    static func fact(about topic: String, line: String, notes: String,
+                     provider: Provider, key: String, model: String) async throws -> String? {
+        var body: [String: Any] = [
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                ["role": "system", "content": """
+                    From the search notes, write the single most striking, specific fact about the \
+                    topic for someone who just heard the line: a number, a name, a date or a \
+                    comparison, at most 18 words, plain text, no preamble, no source. Only what the \
+                    notes say. Reply NONE if they have nothing specific and interesting.
+                    """],
+                ["role": "user", "content": "Topic: \(topic)\nLine: \(line)\n\nNotes:\n\(notes.prefix(3000))"],
+            ],
+        ]
+        body.merge(provider.extras(model: model)) { _, extra in extra }
+        let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 6)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
+        return text.isEmpty || text.uppercased().hasPrefix("NONE") ? nil : text
     }
 
     /// Lenient on purpose: models wrap JSON in prose, return one definition as an object instead of
@@ -218,8 +247,8 @@ enum Coach {
             result.suggest = clean(object["suggest"])
         }
         result.ask = clean(object["ask"])
-        if let insight = object["insight"] as? [String: Any], let topic = clean(insight["topic"]), let fact = clean(insight["fact"]) {
-            result.insight = (topic, fact)
+        if let insight = object["insight"] as? [String: Any], let topic = clean(insight["topic"]) {
+            result.insight = (topic, clean(insight["query"]) ?? topic)
         }
         return result
     }

@@ -31,6 +31,11 @@ let cases: [(String, String?, Bool)] = [
     // tail selection: answer the newest sentence, not an older one
     ("How big is the sun? It's huge. What about Jupiter?", "what about jupiter", true),
     ("I love Berlin. How far is it from Munich", "how far is it from munich", true),
+    // A short lead-in before an auxiliary, with a question mark: the question is what follows.
+    ("Last thing, is there a good coffee place near here?", "is there a good coffee place near here", true),
+    ("Honest question, is Rust faster than Go?", "is rust faster than go", true),
+    // Without the mark, a statement that happens to contain "is" stays a statement.
+    ("the thing is there are too many cooks", nil, false),
 ]
 
 var failures = 0

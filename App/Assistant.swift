@@ -176,6 +176,7 @@ import Observation
         // and catching questions the fast lane missed.
         config.suggestions = Tuning.bool("aidSuggest", false)
         config.answerMine = Tuning.bool("aidAnswerMine", true)
+        config.defineMine = Tuning.bool("aidDefineMine", false)
         return Aid(config: config)
     }
 
@@ -200,6 +201,7 @@ import Observation
         armed = true
         // A new conversation starts clean; the last one stays readable on the phone until then.
         aid.reset()
+        aid.warm()
         aid.assume(wearer: Self.me)
         speakers = Speakers(wearer: aid.config.wearer)
         speakers.roster = roster()

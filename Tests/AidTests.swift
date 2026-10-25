@@ -258,7 +258,7 @@ do {
     check(message.contains("Suggest now: yes (a silence)"), "a moment asks for a suggestion")
     var quiet = input
     quiet.moment = nil
-    check(Coach.message(quiet).contains("Suggest now: no"), "no moment, no suggestion")
+    check(!Coach.message(quiet).contains("Suggest now"), "no moment, no suggestion fields")
 }
 
 // Misheard and mixed-up: a statement isn't a request; the wearer's promise is offered, not asked about.
@@ -275,11 +275,23 @@ do {
     check(!Talk.asksAbout(promise, in: "Did you make it to Lisbon?"), "a different question is fine")
 }
 
+// Questions whose answer changes go to the web, not memory.
+do {
+    check(Talk.wantsNow("who won the most recent turing award"), "most recent")
+    check(Talk.wantsNow("what's the latest on the GENIUS Act"), "latest")
+    check(Talk.wantsNow("who is the current CEO of OpenAI"), "current")
+    check(!Talk.wantsNow("who founded anthropic"), "a settled fact stays in memory")
+    check(!Talk.wantsNow("how far is berkeley from san francisco"), "a distance stays in memory")
+}
+
 // Place questions in the plural go to the device tools too.
 do {
     check(Tools.wants("What is like a popular Chinese restaurant near us?"), "near us is a place question")
     check(Tools.wants("anything good to eat around us"), "around us is a place question")
     check(Tools.wants("is there a coffee shop in the area"), "in the area is a place question")
+    check(!Tools.wants("how far is Berkeley from San Francisco"), "between two named places is memory")
+    check(Tools.wants("how far is the Golden Gate Bridge from here"), "from here needs the device")
+    check(Tools.wants("how far is the nearest Target"), "the nearest needs the device")
 }
 
 // Asking the glasses for a line to say, as opposed to asking them a question.
@@ -307,10 +319,15 @@ do {
 
 // Insights: a topic and a fact, or nothing.
 do {
-    let one = Coach.parse(#"{"define": [], "insight": {"topic": "Humanoid robots", "fact": "Most still rely on remote operators"}, "ask": null}"#)
-    check(one?.insight?.topic == "Humanoid robots" && one?.insight?.fact == "Most still rely on remote operators", "an insight is read")
+    let one = Coach.parse(#"{"define": [], "insight": {"topic": "Humanoid robots", "query": "humanoid robot teleoperation share"}, "ask": null}"#)
+    check(one?.insight?.topic == "Humanoid robots" && one?.insight?.query == "humanoid robot teleoperation share", "an insight is read")
     check(Coach.parse(#"{"insight": null}"#)?.insight == nil, "null is no insight")
-    check(Coach.parse(#"{"insight": {"topic": "Robots"}}"#)?.insight == nil, "a topic without a fact is no insight")
+    check(Coach.parse(#"{"insight": {"topic": "Robots"}}"#)?.insight?.query == "Robots", "no query: the topic is the search")
+    // The part on lines to say goes out only when one is wanted.
+    check(!Coach.prompt(suggesting: false).contains("\"suggest\""), "no suggestion rules when none is wanted")
+    check(Coach.prompt(suggesting: true).contains("\"suggest\""), "suggestion rules when one is")
+    let quiet = Coach.message(Coach.Input(wearer: "Toby", known: "", defined: [], suggested: ["x"], moment: nil, transcript: ["THEM: hi"]))
+    check(!quiet.contains("Suggest now") && !quiet.contains("Already suggested"), "no suggestion fields when none is wanted")
 }
 
 // Claude behind the OpenAI-shaped requests every lane builds.

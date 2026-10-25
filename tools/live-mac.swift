@@ -62,7 +62,7 @@ func drawLens(_ view: LensView) {
     if let header = view.header, !view.isEmpty { rows.append(Style.dim + header.uppercased() + Style.reset) }
     for card in view.cards {
         if card != view.cards.first { rows.append(Style.dim + String(repeating: "\u{00B7}", count: 6) + Style.reset) }
-        let mark = card.kind == .answer ? "A" : card.kind == .definition ? "i" : "?"
+        let mark = card.kind == .answer ? "A" : card.kind == .definition ? "i" : "*"
         let title = card.title + (card.live && !card.title.hasSuffix("\u{2026}") ? " \u{2026}" : "")
             + (card.icon.map { "  " + Style.dim + "[\($0)]" + Style.reset } ?? "")
         for (i, line) in wrap(title, width - 4).enumerated() { rows.append((i == 0 ? "\(mark)  " : "   ") + Style.bold + line + Style.reset) }
@@ -103,7 +103,9 @@ func drawLens(_ view: LensView) {
         config.suggestions = env["AID_SUGGEST"] == "1"
         config.answerMine = env["AID_ANSWER_MINE"] != "0"
         config.explicitOnly = env["AID_EXPLICIT_ONLY"] != "0"
+        config.defineMine = env["AID_DEFINE_MINE"] == "1"
         aid = Aid(config: config)
+        aid.warm()
         listener.keywords = [wearer, "Lens"]
         listener.file = file
 
@@ -227,12 +229,30 @@ func drawLens(_ view: LensView) {
     }
 
     /// A typed line, as if heard: "them: …" from the other person, anything else from the wearer.
+    /// With AID_STREAM=1 it arrives as speech does, a word at a time as growing partials (~3.5
+    /// words a second) before the finished line, so mid-sentence answers, placeholders and mid-turn
+    /// coaching run as they would live. Without it the whole line lands at once.
     func type(_ text: String) {
         let them = text.lowercased().hasPrefix("them:")
         let said = them ? String(text.dropFirst(5)).trimmingCharacters(in: .whitespaces) : text
         let wearer = aid.roles.wearer ?? "B"
-        aid.heard(line: said, speaker: them ? (wearer == "A" ? "B" : "A") : wearer)
+        let speaker = them ? (wearer == "A" ? "B" : "A") : wearer
+        guard ProcessInfo.processInfo.environment["AID_STREAM"] == "1" else {
+            aid.heard(line: said, speaker: speaker)
+            return
+        }
+        let words = said.split(separator: " ")
+        let previous = streaming
+        streaming = Task { [weak self] in
+            await previous?.value   // one line at a time, in order
+            for count in 1...max(1, words.count) {
+                self?.aid.heard(partial: words.prefix(count).joined(separator: " "))
+                try? await Task.sleep(for: .milliseconds(285))
+            }
+            self?.aid.heard(line: said, speaker: speaker)
+        }
     }
+    private var streaming: Task<Void, Never>?
 
     func finish() {
         listener.stop()
