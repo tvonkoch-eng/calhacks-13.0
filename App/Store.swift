@@ -145,7 +145,13 @@ struct Match {
     /// they have already done, so running this again after a roster push only touches new people.
     private func hydrate() {
         for person in people {
-            if let image = UIImage(contentsOfFile: avatarURL(person.id).path) { avatars[person.id] = image }
+            // A teammate with a bundled headshot always shows it: a copy saved on the phone may be an
+            // older, tighter crop (Oct 25: Joaquin's and Mirabelle's were cut at the forehead).
+            if headshotURL(person.id) != nil {
+                seedAvatar(person.id)
+            } else if let image = UIImage(contentsOfFile: avatarURL(person.id).path) {
+                avatars[person.id] = image
+            }
             if avatars[person.id] == nil { seedAvatar(person.id) }
             loadReferences(person.id)
         }
@@ -228,16 +234,36 @@ struct Match {
     }
 
     /// Headshot from a bundled App/Faces/<id>.jpg|png becomes the avatar only; match examples come from the photo library.
+    private func headshotURL(_ id: String) -> URL? {
+        ["jpg", "jpeg", "png"].lazy.compactMap { Bundle.main.url(forResource: id, withExtension: $0) }.first
+    }
+
+    /// The largest square, centred across and from the top down.
+    private static func squaredFromTop(_ photo: UIImage) -> UIImage {
+        let side = min(photo.size.width, photo.size.height)
+        let origin = CGPoint(x: (photo.size.width - side) / 2, y: 0)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = photo.scale
+        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            photo.draw(at: CGPoint(x: -origin.x, y: -origin.y))
+        }
+    }
+
     private func seedAvatar(_ id: String) {
         // Prefer a dedicated headshot, but fall back to the first bundled reference photo: someone
         // who has References/<id>_NN.jpg but no Faces/<id> image would otherwise get a nameplate
         // with no face on it.
-        let headshot = ["jpg", "jpeg", "png"].lazy.compactMap { Bundle.main.url(forResource: id, withExtension: $0) }.first
+        let headshot = headshotURL(id)
         let firstReference = referenceURLs(id).first
         guard let url = headshot ?? firstReference, let image = Self.readable(url) else { return }
-        // Face crop when Vision finds one, otherwise the headshot as is.
-        guard let avatar = FaceEngine.faces(in: image).first.map({ UIImage(cgImage: $0.crop) })
-                ?? UIImage(contentsOfFile: url.path) else { return }
+        // A headshot as taken, squared from the top so the whole head shows; a reference photo is
+        // cropped to the face Vision finds in it.
+        let avatar: UIImage
+        if headshot != nil, let photo = UIImage(contentsOfFile: url.path) {
+            avatar = Self.squaredFromTop(photo)
+        } else if let face = FaceEngine.faces(in: image).first.map({ UIImage(cgImage: $0.crop) }) ?? UIImage(contentsOfFile: url.path) {
+            avatar = face
+        } else { return }
         avatars[id] = avatar
         try? avatar.jpegData(compressionQuality: 0.8)?.write(to: avatarURL(id))
     }

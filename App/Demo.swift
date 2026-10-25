@@ -23,8 +23,8 @@ final class Demo {
     var prompt: String? {
         guard on else { return nil }
         switch step {
-        case .look: return "Tip: Look at someone to create a new contact!"
-        case .name: return "Tip 2: Ask someone their name to get their information!"
+        case .look: return "Task 1: Look at someone to create a new contact!"
+        case .name: return "Task 2: Ask someone their name to get their information!"
         case .jarvis: return "Tip: Ask Jarvis any question!"
         case .talk: return "Tip: Talk to people to see how it works in convo!"
         case .done: return nil
