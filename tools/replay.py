@@ -108,7 +108,15 @@ def owner(lines, t, about):
     return before[-1] if before else None
 
 
+def build():
+    """Build the Mac tool before any clock starts: a rebuild (~30 s after a source change) inside
+    a replay let the script run ahead, and the last questions never got said."""
+    subprocess.run(["sh", "tools/live-mac.sh", "--type"], cwd=ROOT, input="q\n", text=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+
+
 def main(args):
+    build()
     runs, stream = 1, False
     while args and args[0].startswith("--"):
         flag = args.pop(0)
