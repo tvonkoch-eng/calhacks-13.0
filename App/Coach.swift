@@ -30,7 +30,8 @@ enum Coach {
     }
 
     struct Advice: Equatable {
-        var define: [(term: String, meaning: String)] = []
+        /// Proper nouns just said; a nil meaning means the coach couldn't give one, so it is looked up.
+        var define: [(term: String, meaning: String?)] = []
         /// The best thing for the wearer to say next, when one was asked for, and how good the
         /// coach thinks it is (1-5; nil when it didn't say).
         var suggest: String?
@@ -44,7 +45,7 @@ enum Coach {
         var insight: (topic: String, query: String)?
 
         static func == (a: Advice, b: Advice) -> Bool {
-            a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
+            a.define.map { "\($0.term)=\($0.meaning ?? "")" } == b.define.map { "\($0.term)=\($0.meaning ?? "")" }
                 && a.suggest == b.suggest && a.score == b.score
                 && a.alternatives.map { "\($0.say)=\($0.score ?? 0)" } == b.alternatives.map { "\($0.say)=\($0.score ?? 0)" } && a.ask == b.ask
                 && a.insight?.topic == b.insight?.topic && a.insight?.query == b.insight?.query
@@ -90,24 +91,21 @@ enum Coach {
     names it, resolved to it ("How many attendees does Cal Hacks 13.0 have?"); otherwise null. "Near \
     here" stays "near here": the device knows where it is.
 
-    "define": [{"term": "...", "meaning": "..."}]
-      At most one: the most interesting technical or specialist term in the newest line, from \
-    either speaker: finance (financial derivatives, short selling, a yield curve), science, \
-    engineering, medicine, law, a named method or model (Black-Scholes, transformers, CRISPR), a \
-    foreign phrase. The point is to make the conversation richer, so lean toward giving one when \
-    a line has a real concept or topic in it, even one the wearer roughly knows; when in doubt, give \
-    one. A well-known topic counts too (a famous company, place, historical event, field or \
-    movement), defined by what is stable about it ("Bauhaus": "1920s German art school; form \
-    follows function"); never its latest news, numbers that change, or a private person. Never \
-    plain everyday or generic business words (startup, meeting, team, money, app, AI, coding, \
-    hackathon). Skip a term the speaker explains in the same breath and pick the next one instead. \
-    Speech recognition mangles jargon: if a term looks misheard, define what was clearly meant \
-    under its real name ("lawyer adapter" → LoRA adapter), or skip it if unsure. Never define an \
-    acronym or word you don't know as an established term: an unfamiliar acronym is usually a \
-    misheard familiar one (LOM for LLM), so define the real term only if it is a real concept, \
-    otherwise nothing; never invent an expansion. "meaning": what it is in plain words, with one \
-    concrete example if it helps, at most 20 words ("Contracts whose value tracks another asset; \
-    e.g. options, futures, swaps"). [] when the line has no such term.
+    "define": [{"term": "...", "meaning": "..." or null}]
+      Every proper noun in the newest line, from either speaker, up to three: a company, product, \
+    place, organization, event, named method or model (Black-Scholes, transformers, CRISPR), a \
+    work, a historical event or movement, a named field. Defined by what is stable about it: \
+    "meaning" is what it is in plain words, then one concrete example or striking fact, one or two \
+    sentences, at most 35 words ("Bauhaus": "1920s German art school; form follows function"). \
+    Never its latest news or numbers that change. Never a private person: a name is defined only \
+    when the person is famous, and a name someone just introduced is never defined. Never plain \
+    everyday or generic business words (startup, meeting, team, money, app, AI, coding, hackathon). \
+    Skip a term the speaker explains in the same breath. Speech recognition mangles names and \
+    jargon: define what was clearly meant under its real name ("lawyer adapter" → LoRA adapter). \
+    Never define an acronym as an established term unless it is a real concept; an unfamiliar \
+    acronym is usually a misheard familiar one (LOM for LLM), and never invent an expansion. When a \
+    term is real but you can't give what it is reliably from memory, use "meaning": null and it is \
+    looked up. [] when the line has no proper noun.
 
     "insight": {"topic": "...", "query": "..."} or null
       The newest line's most interesting public topic, from either speaker: a field, company, \
@@ -217,9 +215,15 @@ enum Coach {
     /// Lenient on purpose: models wrap JSON in prose, return one definition as an object instead of
     /// a list, or send null where we asked for []. Anything unusable is simply absent.
     static func parse(_ text: String) -> Advice? {
-        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,
-              let object = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any]
-        else { return nil }
+        // Without JSON mode (OpenRouter) qwen sometimes closes one brace too many ("…}}}"): back off
+        // to an earlier "}" until the object parses.
+        guard let start = text.firstIndex(of: "{") else { return nil }
+        var end = text.lastIndex(of: "}"), parsed: [String: Any]?
+        while let close = end, close > start, parsed == nil {
+            parsed = try? JSONSerialization.jsonObject(with: Data(text[start...close].utf8)) as? [String: Any]
+            end = text[..<close].lastIndex(of: "}")
+        }
+        guard let object = parsed else { return nil }
 
         func clean(_ value: Any?) -> String? {
             guard let s = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty,
@@ -229,9 +233,9 @@ enum Coach {
 
         var result = Advice()
         let terms = (object["define"] as? [[String: Any]]) ?? ((object["define"] as? [String: Any]).map { [$0] } ?? [])
-        result.define = terms.prefix(1).compactMap { entry in
-            guard let term = clean(entry["term"]), let meaning = clean(entry["meaning"]) else { return nil }
-            return (term, meaning)
+        result.define = terms.prefix(3).compactMap { entry in
+            guard let term = clean(entry["term"]) else { return nil }
+            return (term, clean(entry["meaning"]))
         }
         // A list of {"say", "score"} best first; one string from a model that ignored the shape.
         if let options = object["suggest"] as? [Any] {

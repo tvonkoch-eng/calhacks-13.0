@@ -705,7 +705,7 @@ struct ContactEditor: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Save") { save() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || (person == nil && photo == nil))
                 }
             }
             .onAppear(perform: load)
@@ -791,7 +791,7 @@ struct NewPersonSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") { save() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Add") { save() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || photo == nil)
                 }
             }
             .onAppear { typing = true }

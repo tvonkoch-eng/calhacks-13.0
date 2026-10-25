@@ -224,6 +224,12 @@ struct Reminder: Codable, Identifiable, Equatable {
 
     /// What a new contact is called until they say their name.
     static let newName = "New person"
+    /// What a contact filed from a conversation with no name was called.
+    static let unnamed = "Someone new"
+    /// Whether a conversation with nobody recognized may make a contact from the transcript alone.
+    /// Off in the app (asked for, Oct 25): a person is only ever created with a photo, by face
+    /// (`meet`) or by hand with one picked; such a conversation is dropped instead.
+    @ObservationIgnored var filesStrangers = false
 
     init(url: URL? = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
             .appendingPathComponent("crm.json"), now: Date = .now) {
@@ -290,11 +296,12 @@ struct Reminder: Codable, Identifiable, Equatable {
         }
         guard let name = encounter.name?.trimmingCharacters(in: .whitespaces), !name.isEmpty else {
             // Nobody to file it under. Better a nameless pending contact than losing a promise.
-            guard !encounter.followups.isEmpty || encounter.summary != nil else { return nil }
-            return newContact("Someone new", at: encounter.at)
+            guard filesStrangers, !encounter.followups.isEmpty || encounter.summary != nil else { return nil }
+            return newContact(Self.unnamed, at: encounter.at)
         }
         let recent = encounter.at.addingTimeInterval(-86400)
         if let same = contacts.first(where: { Talk.same($0.name, name) && $0.created > recent }) { return same.id }
+        guard filesStrangers else { return nil }
         return newContact(name, at: encounter.at)
     }
 
