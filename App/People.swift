@@ -3,11 +3,14 @@ import SwiftUI
 /// Two apps in one: People, the consumer side (a personal CRM with live notes), and Dev, the
 /// phone screen as it was (lens mirror, stream controls, every knob).
 struct RootView: View {
-    @State private var tab = Tab.people
-    enum Tab { case people, dev }
+    @State private var tab = Tab.notes
+    enum Tab { case notes, people, dev }
 
     var body: some View {
         TabView(selection: $tab) {
+            NotesHome()
+                .tabItem { Label("Notes", systemImage: "text.bubble") }
+                .tag(Tab.notes)
             PeopleHome()
                 .tabItem { Label("People", systemImage: "person.2") }
                 .tag(Tab.people)
@@ -40,17 +43,10 @@ struct PeopleHome: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    topBar
-                    LiveNotes()
-                        .padding(.horizontal, 16)
-                        .padding(.top, 14)
+                    Text("People").font(.system(size: 34, weight: .semibold, design: .serif))
+                        .padding(.horizontal, 20).padding(.top, 10)
                     TimelineView(.periodic(from: .now, by: 30)) { context in
-                        VStack(alignment: .leading, spacing: 0) {
-                            if query.isEmpty {
-                                FollowUps(now: context.date, showLive: false).padding(.top, 18)
-                            }
-                            contacts(now: context.date)
-                        }
+                        contacts(now: context.date)
                     }
                 }
                 .padding(.bottom, 32)
@@ -101,20 +97,23 @@ struct PeopleHome: View {
 
     private func contacts(now: Date) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                SectionLabel("Contacts")
-                Spacer()
-                Button { adding = true } label: {
-                    Label("Add", systemImage: "plus").font(.footnote.weight(.semibold))
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 26)
-            .padding(.bottom, 10)
             SearchField(text: $query)
                 .padding(.horizontal, 16)
+                .padding(.top, 12)
                 .padding(.bottom, 6)
+            // New person: tap, type the name, done.
+            Button { adding = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(Color(.secondarySystemBackground), in: Circle())
+                    Text("New person").font(.body.weight(.medium))
+                    Spacer()
+                }
+                .padding(.horizontal, 20).padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             let shown = filtered
             if shown.isEmpty {
                 Text(query.isEmpty ? "Nobody yet. Add someone, or talk with the mic on."
@@ -131,16 +130,9 @@ struct PeopleHome: View {
     /// Everyone you know: the roster and the people you kept, not yourself.
     private var everyone: [Person] { store.contacts.filter { $0.isMe != true } }
 
-    /// Most recently seen first; people you haven't seen yet after them, A to Z.
+    /// Newest first: the last person added at the top.
     private var filtered: [Person] {
-        let sorted = everyone.map { ($0, lastTalked($0)) }.sorted { a, b in
-            switch (a.1, b.1) {
-            case let (x?, y?): return x > y
-            case (_?, nil): return true
-            case (nil, _?): return false
-            case (nil, nil): return a.0.name.localizedCaseInsensitiveCompare(b.0.name) == .orderedAscending
-            }
-        }.map(\.0)
+        let sorted = Array(everyone.reversed())
         guard !query.isEmpty else { return sorted }
         let q = query.lowercased()
         return sorted.filter { person in

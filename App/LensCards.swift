@@ -728,11 +728,11 @@ enum LensFit {
         // Rigid: a bullet is at most two lines, cut with "…" by a character count that assumes
         // Meta's wider face, and its height is budgeted as if it wrapped wide. So no card can run
         // taller than its half, whatever the glasses' font does.
-        let perLine = Int(width / (font.pointSize * 0.62))
+        let perLine = Int(width / (font.pointSize * 0.66))
         for raw in pool {
             let line = raw.count > perLine * 2 ? String(raw.prefix(perLine * 2 - 1)) + "\u{2026}" : raw
             let rows = min(2, (line.count + perLine - 1) / max(1, perLine))
-            let h = CGFloat(rows) * font.lineHeight * 1.15 + gap
+            let h = CGFloat(rows) * font.lineHeight * 1.35 + gap
             // Too tall here, but a shorter one further down may still fit.
             if h > left { continue }
             left -= h
