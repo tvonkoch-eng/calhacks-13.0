@@ -171,7 +171,10 @@ enum LensCards {
     /// A conversation of several: one card each, a quarter of the lens, side by side. Photo at the
     /// top, name and headline at the foot. Whoever is talking has the brighter name; no bubble.
     static func groupCards(_ group: [Member], avatar: (String) -> UIImage?) -> FlexBox {
-        FlexBox(direction: .row, spacing: 12) {
+        // One filler for both, sized by the fuller card, and the row stretches them to one height:
+        // the two cards always start and end on the same lines.
+        let fill = group.prefix(2).map { LensFit.member($0, lines: $0.lines).left }.min() ?? 0
+        return FlexBox(direction: .row, spacing: 12, crossAlignment: .stretch) {
             for member in group.prefix(2) {
                 FlexBox(direction: .column, spacing: 8) {
                     header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
@@ -179,7 +182,7 @@ enum LensCards {
                     for line in member.lines {
                         Text(line, style: .body).flexShrink(1)
                     }
-                    FlexBox(direction: .column) {}.padding(.top, LensFit.member(member, lines: member.lines).left)
+                    FlexBox(direction: .column) {}.padding(.top, fill)
                 }
                 .padding(LensFit.splitPad)
                 .background(.card)
