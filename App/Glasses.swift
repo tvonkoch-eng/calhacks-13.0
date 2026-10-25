@@ -1135,6 +1135,32 @@ enum Identification {
 
     /// The aid's lens changed. It goes up now unless a fresh identification holds the lens (then
     /// it shows once that has been read, if it is still current).
+    /// Demo: the lens frozen on one card. Nothing else writes to it (people, the aid, the
+    /// countdown) until `clearStill`, so it can't flicker or be replaced mid-take.
+    private(set) var still = false
+
+    func showStill(title: String, lines: [String]) {
+        guard displayReady else { return }
+        still = true
+        benching = true
+        send(FlexBox(direction: .column, spacing: 8) {
+            Text(title, style: .heading)
+            for line in lines {
+                Text(line, style: .body).flexShrink(1)
+            }
+        }
+        .padding(22)
+        .background(.card), still: true)
+    }
+
+    func clearStill() {
+        guard still else { return }
+        still = false
+        benching = false
+        sentShot = nil
+        renderLens()
+    }
+
     func showAid(_ view: LensView) {
         var view = view
         // Demo mode holds Jarvis and the auto answers back until their tasks.
@@ -2597,7 +2623,9 @@ enum Identification {
 
     /// Lens writes, one at a time and newest wins: a burst of updates (an answer streaming in)
     /// collapses to the latest card every `minSendInterval`, and no write ever overlaps another.
-    private func send(_ view: FlexBox) {
+    private func send(_ view: FlexBox, still card: Bool = false) {
+        // Frozen for the demo: only the still card itself gets through.
+        guard !still || card else { return }
         // Every card, whatever its layout, stops `LensFit.buffer` above the bottom edge, where the
         // display fades; the phone mirror keeps the same margin (`LensMetrics.bottom`).
         queuedView = view.padding(.bottom, LensFit.buffer)
