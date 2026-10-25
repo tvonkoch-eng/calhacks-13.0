@@ -713,7 +713,7 @@ enum Talk {
                 self.update(generation) { $0.state = .skipped; $0.lookup = true }
                 self.render()
                 // Already the whole question: look it up now. Mid-sentence, commit() will.
-                if let turn = self.turns.first, turn.committedAt != nil { self.lookUp(turn.question) }
+                if let turn = self.turns.first, turn.committedAt != nil { self.lookUp(turn.question, card: turn.card) }
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.update(generation) { $0.state = .failed(error.localizedDescription) }
@@ -771,6 +771,10 @@ enum Talk {
             compositor.show(Card(kind: .answer, title: answer.isEmpty ? "\u{2026}" : answer,
                                  detail: Self.echo(question),
                                  live: finalAnswer[turn.card] == nil, id: turn.card), at: now)
+        case .skipped where turn.lookup:
+            // Needs the web: the question stays up, and the lookup's answer replaces this.
+            compositor.show(Card(kind: .answer, title: "Looking it up\u{2026}", detail: Self.echo(shownQuestion[turn.card] ?? turn.question),
+                                 live: true, id: turn.card), at: now)
         case .skipped, .failed:
             compositor.remove(id: turn.card, kind: .answer, at: now)
         }
@@ -1017,7 +1021,8 @@ enum Talk {
         case .lull: "a silence; revive the best thread"
         case .asked: "the wearer asks what to say next"
         case .recognised: "face ID just recognised THEM; pick up where you left off last time"
-        case nil: nil
+        // Every sentence of theirs: something that makes the wearer sound informed, while they talk.
+        case nil: "THEM is talking; something informed the wearer could add about what was just said: a relevant fact, a connection, or a sharp follow-up question"
         }
         return Coach.Input(wearer: config.wearer, background: config.background, situation: config.situation, known: known,
                            defined: defined, suggested: suggested, moment: why, transcript: transcript)
@@ -1035,7 +1040,8 @@ enum Talk {
         let answered = now.timeIntervalSince(answeredAt) < 15 ? Talk.normalized(answeredText) : ""
         for term in advice.define where !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + term.meaning)) })
             && term.term.count >= 3 && Talk.mentioned(term.term, in: recent) && !Talk.mentioned(term.term, in: answered)
-            && !unsure.contains(where: term.meaning.lowercased().contains) {
+            && !unsure.contains(where: term.meaning.lowercased().contains)
+            && !Talk.asks(lines.last?.text ?? "") {   // a question gets an answer, not a definition
             defined.append(term.term)
             nextCard += 1
             compositor.show(Card(kind: .definition, title: term.term, detail: term.meaning, id: nextCard), at: now)
@@ -1069,6 +1075,9 @@ enum Talk {
             let pick = ([advice.suggest].compactMap { $0 } + advice.alternatives.map(\.say))
                 .first { line in usable(line) && !promises.contains { Talk.asksAbout($0, in: line) } }
             if let text = pick, good { suggest(text) } else if wanted == moment { wanted = nil }
+        } else if moment == nil, (advice.score ?? 3) >= 2,
+                  let text = ([advice.suggest].compactMap { $0 } + advice.alternatives.map(\.say)).first(where: usable) {
+            suggest(text)
         }
         // The runners-up wait for the next lull, which then needs no call at all.
         if moment != nil {
@@ -1110,7 +1119,7 @@ enum Talk {
     /// Everything shown so far, so none comes round twice.
     @ObservationIgnored private var suggested: [String] = []
 
-    /// Seconds of quiet after a line that count as a lull. Under three seconds is someone thinking.
+    /// Seconds of quiet after a line that count as a lull. Two keeps suggestions eager.
     private static let lull: TimeInterval = 2
 
     /// The wearer asks what to say: a pinch on the glasses, "Lens, what should I ask?", `s` on the Mac.
@@ -1190,7 +1199,8 @@ enum Talk {
     /// a fast model cuts the finding to a card. Only the question and the last few lines go out, to
     /// resolve "it" or "that bill"; what's known about the person never does: the web is for public
     /// things.
-    private func lookUp(_ question: String) {
+    /// `card`: the question's own card, so the answer lands in place of "Looking it up…".
+    private func lookUp(_ question: String, card existing: Int? = nil) {
         guard let researcher = config.researcher else {
             log(.lookup, question, detail: "needs the web; research is off")
             return
@@ -1201,8 +1211,7 @@ enum Talk {
         }
         log(.lookup, question, detail: "looking up with \(researcher.name)")
         answeredAt = Date()
-        nextCard += 1
-        let card = nextCard, started = Date()
+        let card = existing ?? { nextCard += 1; return nextCard }(), started = Date()
         compositor.startWork(id: card, label: config.toolbox?.working("research", arguments: "{}") ?? "Looking it up", at: started)
         publish()
         // Where they are resolves "this thing" and "here"; who they are never goes out.
