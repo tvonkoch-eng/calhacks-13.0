@@ -107,6 +107,7 @@ struct Match {
         if let data = try? Data(contentsOf: notesURL) {
             notes = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
         }
+        loadShots()
         // Installs from before the encounter log: their last sighting is their first encounter.
         for (id, date) in lastSeen where encounters[id] == nil { encounters[id] = [date] }
         hydrate()
@@ -261,6 +262,110 @@ struct Match {
         met[person.id] = person
         gallery[person.id] = [face]
         if let photo { setAvatar(person.id, photo) }
+        // Kept from the start (asked for, Oct 24): they persist, their looks build up, and they
+        // wait in People to be named. Remove them there to forget them.
+        if !saved.contains(where: { $0.id == person.id }) { saved.append(person) }
+        if let photo { addShot(person.id, embedding: face, image: photo, score: 0) }
+    }
+
+    // MARK: Face photos
+
+    /// One kept look at someone: the photo, and the face sample it gave (nil for an avatar-only shot).
+    struct Shot: Identifiable {
+        let id: UUID
+        let embedding: [Float]?
+        let image: UIImage
+        /// How sharp and well-posed the look was; the weakest go first when the gallery is full.
+        /// Photos taken or picked by hand are never pushed out.
+        var score: Float = 0
+    }
+
+    private(set) var shots: [String: [Shot]] = [:]
+    @ObservationIgnored private var references: [String: [UIImage]] = [:]
+
+    /// The bundled reference photos (the repo's App/References) for someone, read-only in the gallery.
+    func referencePhotos(_ id: String) -> [UIImage] {
+        if let cached = references[id] { return cached }
+        let images = referenceURLs(id).compactMap { url in
+            Self.readable(url).flatMap { CIContext().createCGImage($0, from: $0.extent) }.map { UIImage(cgImage: $0) }
+        }
+        references[id] = images
+        return images
+    }
+    private func shotsDir(_ person: String) -> URL { docs.appendingPathComponent("shots/\(person)", isDirectory: true) }
+
+    static var shotCap: Int { Int(Tuning.float("shotCap", 30)) }
+
+    /// Should a look the glasses just got go into someone's gallery? Anything usable at first; then
+    /// the bar climbs with the log of how many they have (a few sharp photos matter, the fortieth
+    /// doesn't), and once full only a look clearly sharper than the weakest one gets in.
+    func wantsShot(_ person: String, score: Float) -> Bool {
+        let scores = (shots[person] ?? []).map(\.score).sorted()
+        guard scores.count >= 4 else { return true }
+        let median = scores[scores.count / 2]
+        if scores.count >= Self.shotCap { return score > max(scores[0] * 1.15, median) }
+        return score >= median * (1 + 0.15 * Float(log(Double(scores.count))))
+    }
+
+    /// A face photo for someone's gallery, and its sample for matching. At the cap the weakest goes.
+    func addShot(_ person: String, embedding: [Float]?, image: UIImage, score: Float = .greatestFiniteMagnitude) {
+        let shot = Shot(id: UUID(), embedding: embedding, image: image, score: score)
+        shots[person, default: []].append(shot)
+        if let embedding { gallery[person, default: []].append(embedding) }
+        let dir = shotsDir(person)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? image.jpegData(compressionQuality: 0.8)?.write(to: dir.appendingPathComponent("\(shot.id).jpg"))
+        if let embedding { try? JSONEncoder().encode(embedding).write(to: dir.appendingPathComponent("\(shot.id).json")) }
+        try? String(score).write(to: dir.appendingPathComponent("\(shot.id).score"), atomically: true, encoding: .utf8)
+        while (shots[person]?.count ?? 0) > Self.shotCap,
+              let weakest = shots[person]?.filter({ $0.score < .greatestFiniteMagnitude }).min(by: { $0.score < $1.score }) {
+            deleteShot(person, weakest.id)
+        }
+        save()
+    }
+
+    func deleteShot(_ person: String, _ id: UUID) {
+        guard let shot = shots[person]?.first(where: { $0.id == id }) else { return }
+        shots[person]?.removeAll { $0.id == id }
+        if let embedding = shot.embedding, let i = gallery[person]?.firstIndex(of: embedding) { gallery[person]?.remove(at: i) }
+        let dir = shotsDir(person)
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(id).jpg"))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(id).json"))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(id).score"))
+        save()
+    }
+
+    private func loadShots() {
+        let root = docs.appendingPathComponent("shots", isDirectory: true)
+        for person in (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [] {
+            let dir = shotsDir(person)
+            let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasSuffix(".jpg") }
+            let dated = files.compactMap { name -> (Date, Shot)? in
+                let url = dir.appendingPathComponent(name)
+                guard let id = UUID(uuidString: String(name.dropLast(4))), let image = UIImage(contentsOfFile: url.path) else { return nil }
+                let embedding = (try? Data(contentsOf: url.deletingPathExtension().appendingPathExtension("json")))
+                    .flatMap { try? JSONDecoder().decode([Float].self, from: $0) }
+                let date = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let score = (try? String(contentsOf: url.deletingPathExtension().appendingPathExtension("score"), encoding: .utf8))
+                    .flatMap(Float.init) ?? 0
+                return (date, Shot(id: id, embedding: embedding, image: image, score: score))
+            }
+            shots[person] = dated.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+    }
+
+    /// Met here (not on the roster): their photo and face samples keep improving as they're seen.
+    func isMet(_ id: String) -> Bool { met[id] != nil || saved.contains { $0.id == id } }
+
+    /// Another look at someone met but not on the roster: each scan adds a face sample, so they're
+    /// recognised better every time they're seen. The newest 30 are kept.
+    func addLook(_ id: String, _ face: [Float]) {
+        guard met[id] != nil || saved.contains(where: { $0.id == id }) else { return }
+        var samples = gallery[id] ?? []
+        samples.append(face)
+        if samples.count > 30 { samples.removeFirst(samples.count - 30) }
+        gallery[id] = samples
+        indexDirty = true
     }
 
     /// What was learned about someone met this session (name, label, facts).
@@ -379,7 +484,8 @@ struct Match {
     }
 
     func enroll(_ id: String, _ face: FaceHit) {
-        gallery[id, default: []].append(face.embedding)
+        // A photo taken or picked for them: into their gallery, where it can be seen and deleted.
+        addShot(id, embedding: face.embedding, image: UIImage(cgImage: face.crop))
         if avatars[id] == nil {
             let image = UIImage(cgImage: face.crop)
             avatars[id] = image
@@ -458,7 +564,23 @@ struct Match {
     /// can be watched going through the stranger path. Changing it rebuilds the index.
     private var hidden: Set<String> {
         Set((UserDefaults.standard.string(forKey: "hidePeople") ?? "").split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }).union(removed)
+    }
+
+    /// Roster people removed on this phone: off the People list and out of matching, so their face
+    /// comes back through the new-person path. New person's quick add restores them.
+    private(set) var removed: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "removedPeople") ?? [])
+
+    func remove(_ id: String) {
+        removed.insert(id)
+        UserDefaults.standard.set(Array(removed), forKey: "removedPeople")
+        indexDirty = true
+    }
+
+    func restore(_ id: String) {
+        removed.remove(id)
+        UserDefaults.standard.set(Array(removed), forKey: "removedPeople")
+        indexDirty = true
     }
     @ObservationIgnored private var indexedHidden: Set<String> = []
 

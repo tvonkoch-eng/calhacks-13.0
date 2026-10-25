@@ -1,13 +1,17 @@
+import PhotosUI
 import SwiftUI
 
 /// Two apps in one: People, the consumer side (a personal CRM with live notes), and Dev, the
 /// phone screen as it was (lens mirror, stream controls, every knob).
 struct RootView: View {
-    @State private var tab = Tab.people
-    enum Tab { case people, dev }
+    @State private var tab = Tab.notes
+    enum Tab { case notes, people, dev }
 
     var body: some View {
         TabView(selection: $tab) {
+            NotesHome()
+                .tabItem { Label("Notes", systemImage: "text.bubble") }
+                .tag(Tab.notes)
             PeopleHome()
                 .tabItem { Label("People", systemImage: "person.2") }
                 .tag(Tab.people)
@@ -40,17 +44,10 @@ struct PeopleHome: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    topBar
-                    LiveNotes()
-                        .padding(.horizontal, 16)
-                        .padding(.top, 14)
+                    Text("People").font(.system(size: 34, weight: .semibold, design: .serif))
+                        .padding(.horizontal, 20).padding(.top, 10)
                     TimelineView(.periodic(from: .now, by: 30)) { context in
-                        VStack(alignment: .leading, spacing: 0) {
-                            if query.isEmpty {
-                                FollowUps(now: context.date, showLive: false).padding(.top, 18)
-                            }
-                            contacts(now: context.date)
-                        }
+                        contacts(now: context.date)
                     }
                 }
                 .padding(.bottom, 32)
@@ -61,7 +58,7 @@ struct PeopleHome: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Person.self) { ContactView(id: $0.id) }
             .sheet(isPresented: $adding) {
-                ContactEditor(person: nil) { path.append($0) }
+                NewPersonSheet { path.append($0) }
             }
             #if DEBUG
             .onAppear {
@@ -101,20 +98,23 @@ struct PeopleHome: View {
 
     private func contacts(now: Date) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                SectionLabel("Contacts")
-                Spacer()
-                Button { adding = true } label: {
-                    Label("Add", systemImage: "plus").font(.footnote.weight(.semibold))
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 26)
-            .padding(.bottom, 10)
             SearchField(text: $query)
                 .padding(.horizontal, 16)
+                .padding(.top, 12)
                 .padding(.bottom, 6)
+            // New person: tap, type the name, done.
+            Button { adding = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(Color(.secondarySystemBackground), in: Circle())
+                    Text("New person").font(.body.weight(.medium))
+                    Spacer()
+                }
+                .padding(.horizontal, 20).padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             let shown = filtered
             if shown.isEmpty {
                 Text(query.isEmpty ? "Nobody yet. Add someone, or talk with the mic on."
@@ -129,18 +129,11 @@ struct PeopleHome: View {
     }
 
     /// Everyone you know: the roster and the people you kept, not yourself.
-    private var everyone: [Person] { store.contacts.filter { $0.isMe != true } }
+    private var everyone: [Person] { store.contacts.filter { $0.isMe != true && !store.removed.contains($0.id) } }
 
-    /// Most recently seen first; people you haven't seen yet after them, A to Z.
+    /// Newest first: the last person added at the top.
     private var filtered: [Person] {
-        let sorted = everyone.map { ($0, lastTalked($0)) }.sorted { a, b in
-            switch (a.1, b.1) {
-            case let (x?, y?): return x > y
-            case (_?, nil): return true
-            case (nil, _?): return false
-            case (nil, nil): return a.0.name.localizedCaseInsensitiveCompare(b.0.name) == .orderedAscending
-            }
-        }.map(\.0)
+        let sorted = Array(everyone.reversed())
         guard !query.isEmpty else { return sorted }
         let q = query.lowercased()
         return sorted.filter { person in
@@ -355,11 +348,15 @@ struct TranscriptSheet: View {
 struct ContactView: View {
     @Environment(Store.self) private var store
     @Environment(CRM.self) private var crm
+    @Environment(\.dismiss) private var dismiss
     let id: String
     @State private var editing = false
     @State private var addingToContacts = false
+    @State private var name = ""
+    @FocusState private var typingName: Bool
     @State private var note = ""
     @State private var learned = ""
+    @State private var allHistory = false
     @FocusState private var typingFact: Bool
 
     /// The roster or a kept contact (with the wearer's edits), else someone met but not kept.
@@ -375,7 +372,6 @@ struct ContactView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     header(person)
                     ReachActions(person: person)
-                    PersonCRM(person: person, conversations: false, learned: false)
                     section("Notes") {
                         TextField("Anything worth remembering about \(first(person))", text: $note, axis: .vertical)
                             .font(.subheadline)
@@ -383,13 +379,13 @@ struct ContactView: View {
                             .padding(12)
                             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
+                    PersonCRM(person: person, conversations: false, learned: false)
                     section("What you know") { knowledge(person) }
                     section("Contact") { ContactRows(person: person) { editing = true } }
-                    section("About") { about(person) }
                     section("History") { history(person) }.id("history")
                     if crm.consent(id) != .pending {
                         section("Recognition") {
-                            NavigationLink { EnrollView(person: person) } label: {
+                            NavigationLink { FaceGallery(person: person) } label: {
                                 HStack {
                                     Text("Face photos").font(.subheadline)
                                     Spacer()
@@ -402,6 +398,8 @@ struct ContactView: View {
                             .buttonStyle(.plain)
                         }
                     }
+                    // Filled in by the backend's enrichment; read-only.
+                    section("Enriched data") { about(person) }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 40)
@@ -415,21 +413,23 @@ struct ContactView: View {
             .scrollDismissesKeyboard(.interactively)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Add to iPhone Contacts", systemImage: "person.crop.circle.badge.plus") { addingToContacts = true }
                         ShareLink(item: VCard(person: person), preview: SharePreview(person.name)) {
                             Label("Share contact", systemImage: "square.and.arrow.up")
                         }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    Button("Edit") { editing = true }
+                        // Roster people come back from New person's quick add; anyone else is forgotten.
+                        Button("Remove", systemImage: "person.badge.minus", role: .destructive) {
+                            if store.people.contains(where: { $0.id == id }) { store.remove(id) } else { crm.forgetPerson(id) }
+                            dismiss()
+                        }
+                    } label: { Image(systemName: "ellipsis.circle") }
                 }
             }
             .sheet(isPresented: $editing) { ContactEditor(person: person) { _ in } }
             .sheet(isPresented: $addingToContacts) { NewContactSheet(person: person).ignoresSafeArea() }
-            .onAppear { note = store.notes[id] ?? "" }
+            .onAppear { note = store.notes[id] ?? ""; name = person.name }
             .onChange(of: note) { _, text in store.setNote(id, text) }
         } else {
             Text("Forgotten.").foregroundStyle(.secondary)
@@ -438,15 +438,52 @@ struct ContactView: View {
 
     private func header(_ person: Person) -> some View {
         HStack(alignment: .center, spacing: 16) {
-            Avatar(person: person, size: 76, corner: 22)
+            // The photo opens their face photos, to pick one or upload a new one.
+            NavigationLink { FaceGallery(person: person) } label: {
+                Avatar(person: person, size: 76, corner: 22)
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "pencil").font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color(.systemBackground))
+                            .frame(width: 22, height: 22).background(Color.primary, in: Circle())
+                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                            .offset(x: 5, y: 5)
+                    }
+            }
+            .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 3) {
-                Text(person.name).font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(2)
-                Text(crm.label(id) ?? person.headline).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                // The name is edited in place: tap it (or its pencil) and type.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    TextField("Name", text: $name, axis: .vertical)
+                        .font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(1...2)
+                        .focused($typingName)
+                        .submitLabel(.done)
+                        .onChange(of: name) { _, text in
+                            // Return ends editing rather than adding a line.
+                            if text.contains("\n") { name = text.replacingOccurrences(of: "\n", with: ""); typingName = false }
+                        }
+                    if !typingName {
+                        Button { typingName = true } label: {
+                            Image(systemName: "pencil").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
                 Text(summary).font(.caption).foregroundStyle(.tertiary).padding(.top, 2)
             }
             Spacer(minLength: 0)
         }
         .padding(.top, 8)
+        .onChange(of: typingName) { _, typing in if !typing { rename(person) } }
+    }
+
+    private func rename(_ person: Person) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { name = person.name; return }
+        guard clean != person.name else { return }
+        var updated = person
+        updated.name = clean
+        store.update(updated)
+        crm.rename(id, to: clean)
     }
 
     /// "Talked 3 times · last on Oct 22" or "Haven't talked yet".
@@ -502,12 +539,7 @@ struct ContactView: View {
                     ("Into", person.interests), ("How you met", person.tie)]
             .compactMap { label, value in value.flatMap { $0.isEmpty ? nil : (label, $0) } }
         if rows.isEmpty {
-            Button { editing = true } label: {
-                Text("Add where they work, study, what they're into").font(.subheadline)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.vertical, 6)
+            Text("Nothing yet.").font(.subheadline).foregroundStyle(.secondary)
         } else {
             VStack(spacing: 0) {
                 ForEach(rows, id: \.0) { label, value in
@@ -543,8 +575,9 @@ struct ContactView: View {
     }
 
     @ViewBuilder private func history(_ person: Person) -> some View {
-        let moments = self.moments
-        if moments.isEmpty {
+        let all = self.moments
+        let moments = allHistory ? all : Array(all.prefix(2))
+        if all.isEmpty {
             Text("Talk with the mic on and each conversation with \(first(person)) is noted here.")
                 .font(.subheadline).foregroundStyle(.secondary)
         } else {
@@ -561,6 +594,10 @@ struct ContactView: View {
                         .frame(width: 7)
                         momentRow(moment).padding(.bottom, 16)
                     }
+                }
+                if all.count > moments.count {
+                    Button("See more") { withAnimation { allHistory = true } }
+                        .font(.subheadline.weight(.medium)).buttonStyle(.plain)
                 }
             }
         }
@@ -631,15 +668,24 @@ struct ContactEditor: View {
     @State private var linkedin = ""
     @State private var instagram = ""
     @State private var website = ""
+    @State private var photo: UIImage?
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Name", text: $name).textContentType(.name)
-                    TextField("What they do, in a few words", text: $role)
+                    VStack(spacing: 14) {
+                        PhotoPick(image: $photo, current: person.flatMap { store.avatars[$0.id] }, size: 120)
+                        TextField("Name", text: $name, axis: .vertical)
+                            .font(.system(size: 30, weight: .semibold, design: .serif))
+                            .multilineTextAlignment(.center)
+                            .textContentType(.name)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
                 }
                 Section("About") {
+                    TextField("What they do, in a few words", text: $role)
                     TextField("Work", text: $work)
                     TextField("School", text: $school)
                     TextField("From", text: $from)
@@ -706,8 +752,200 @@ struct ContactEditor: View {
         updated.instagram = Recap.Details.handle(instagram, after: "instagram.com/") ?? clean(instagram)
         updated.website = Recap.Details.website(website) ?? clean(website)
         store.update(updated)
+        if let photo { store.setAvatar(id, photo) }
         crm.rename(id, to: name)
         dismiss()
         saved(updated)
+    }
+}
+
+// MARK: - New person
+
+/// Adding someone is two things: their name, big, in serif, and a photo. Everything else comes
+/// later, from enrichment or a conversation.
+struct NewPersonSheet: View {
+    @Environment(Store.self) private var store
+    @Environment(CRM.self) private var crm
+    @Environment(\.dismiss) private var dismiss
+    var saved: (Person) -> Void
+
+    @State private var name = ""
+    @State private var photo: UIImage?
+    @FocusState private var typing: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                PhotoPick(image: $photo, current: nil, size: 140)
+                TextField("Name", text: $name, axis: .vertical)
+                    .font(.system(size: 34, weight: .semibold, design: .serif))
+                    .multilineTextAlignment(.center)
+                    .textContentType(.name)
+                    .focused($typing)
+                    .padding(.vertical, 18).padding(.horizontal, 16)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                quickAdd
+                Spacer()
+            }
+            .padding(24)
+            .navigationTitle("New person")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") { save() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .onAppear { typing = true }
+        }
+    }
+
+    /// The roster, one tap each: puts a removed person back exactly as they were (photos, details).
+    private var quickAdd: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionLabel("Quick add")
+            ScrollView(.horizontal) {
+                HStack(spacing: 14) {
+                    ForEach(store.people) { person in
+                        Button {
+                            store.restore(person.id)
+                            dismiss()
+                            saved(person)
+                        } label: {
+                            VStack(spacing: 6) {
+                                Avatar(person: person, size: 56)
+                                Text(person.name.split(separator: " ").first.map(String.init) ?? person.name)
+                                    .font(.footnote).foregroundStyle(.primary)
+                                Text(store.removed.contains(person.id) ? "Removed" : "Added")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func save() {
+        let name = self.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = crm.add(name: name)
+        let person = Person(id: id, name: name, role: "")
+        store.update(person)
+        if let photo { store.setAvatar(id, photo) }
+        dismiss()
+        saved(person)
+    }
+}
+
+/// A round photo you tap to pick from the library.
+struct PhotoPick: View {
+    @Binding var image: UIImage?
+    var current: UIImage?
+    var size: CGFloat
+    @State private var item: PhotosPickerItem?
+
+    var body: some View {
+        PhotosPicker(selection: $item, matching: .images) {
+            Group {
+                if let shown = image ?? current {
+                    Image(uiImage: shown).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "camera").font(.system(size: size * 0.24)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(.secondarySystemBackground))
+                }
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+            .overlay(alignment: .bottomTrailing) {
+                Image(systemName: "pencil").font(.system(size: 13, weight: .semibold))
+                    .padding(7).background(.thinMaterial, in: Circle())
+            }
+        }
+        .onChange(of: item) { _, picked in
+            Task {
+                if let data = try? await picked?.loadTransferable(type: Data.self), let loaded = UIImage(data: data) {
+                    image = loaded
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Face photos
+
+/// Everyone's face photos as a grid: tap one to delete it, the + tile (first) to take or pick another.
+/// Each photo is also a sample face ID matches against, so deleting a bad one helps.
+struct FaceGallery: View {
+    @Environment(Store.self) private var store
+    let person: Person
+    /// The photo tapped: make it the profile photo, or (one of theirs) delete it.
+    @State private var chosen: (image: UIImage, shot: Store.Shot?)?
+    @State private var adding = false
+    @State private var upload: PhotosPickerItem?
+
+    var body: some View {
+        let shots = store.shots[person.id] ?? []
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 6)], spacing: 6) {
+                // First tiles: take a photo, or upload one as the profile photo.
+                Button { adding = true } label: { action("camera") }.buttonStyle(.plain)
+                PhotosPicker(selection: $upload, matching: .images) { action("photo.badge.plus") }.buttonStyle(.plain)
+                // Their profile photo, first.
+                if let avatar = store.avatars[person.id] {
+                    tile(avatar).overlay(alignment: .bottomLeading) {
+                        Text("Profile").font(.caption2.weight(.semibold)).foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 2).background(.black.opacity(0.55), in: Capsule()).padding(5)
+                    }
+                }
+                ForEach(shots.reversed()) { shot in
+                    Button { chosen = (shot.image, shot) } label: { tile(shot.image) }.buttonStyle(.plain)
+                }
+                // The bundled photos face ID was built from; part of the app, so not deletable here.
+                ForEach(Array(store.referencePhotos(person.id).enumerated()), id: \.offset) { _, image in
+                    Button { chosen = (image, nil) } label: { tile(image) }.buttonStyle(.plain)
+                }
+            }
+            .padding(6)
+        }
+        .navigationTitle("Face photos · \(store.samples(person.id))")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $adding) { EnrollView(person: person) }
+        .onChange(of: upload) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                    store.setAvatar(person.id, image)
+                    store.addShot(person.id, embedding: nil, image: image)
+                }
+                upload = nil
+            }
+        }
+        .confirmationDialog("This photo", isPresented: Binding(get: { chosen != nil }, set: { if !$0 { chosen = nil } })) {
+            Button("Use as profile photo") {
+                if let chosen { store.setAvatar(person.id, chosen.image) }
+                chosen = nil
+            }
+            if let shot = chosen?.shot {
+                Button("Delete", role: .destructive) {
+                    store.deleteShot(person.id, shot.id)
+                    chosen = nil
+                }
+            }
+        }
+    }
+
+    private func action(_ symbol: String) -> some View {
+        Color(.secondarySystemBackground).aspectRatio(1, contentMode: .fit)
+            .overlay(Image(systemName: symbol).font(.title2.weight(.medium)).foregroundStyle(.secondary))
+    }
+
+    private func tile(_ image: UIImage) -> some View {
+        Image(uiImage: image).resizable().scaledToFill()
+            .frame(minWidth: 0, maxWidth: .infinity).aspectRatio(1, contentMode: .fit)
+            .clipped()
     }
 }

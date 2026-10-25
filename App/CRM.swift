@@ -217,6 +217,10 @@ struct Reminder: Codable, Identifiable, Equatable {
             facts = saved.facts
             reminders = saved.reminders
         }
+        // Older installs met people as pending; they're kept now too.
+        for i in contacts.indices where contacts[i].id.hasPrefix("met-") && contacts[i].consent == .pending {
+            contacts[i].consent = .saved
+        }
         expire(now: now)
     }
 
@@ -340,6 +344,9 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// gone after `pendingDays` unless kept.
     @discardableResult func meet(at now: Date = .now) -> String {
         let id = newContact(Self.newName, at: now)
+        // Kept from the start (Oct 24): someone met by face is a contact until removed in People,
+        // never a pending one that a relaunch drops from face ID or a week deletes.
+        if let i = contacts.firstIndex(where: { $0.id == id }) { contacts[i].consent = .saved }
         newcomer = id
         newcomerSpoke = false
         glancedLines = 0
@@ -370,10 +377,7 @@ struct Reminder: Codable, Identifiable, Equatable {
         live = nil
         // Someone met by face who never spoke in this conversation was in the background, not in
         // it: nothing is filed under them, and the pending contact goes.
-        if let id = newcomer, !newcomerSpoke {
-            conversation.faces.removeAll { $0 == id }
-            forgetPerson(id)
-        }
+        // A new face is kept even if they never spoke (asked for, Oct 24): named later in People.
         newcomer = nil
         newcomerSpoke = false
         watch?.cancel()

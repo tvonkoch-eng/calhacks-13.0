@@ -15,6 +15,22 @@ import Observation
     var mutedByUser = false
     /// Everyone in the conversation, in the order they joined, the one talking marked.
     private(set) var members: [Member] = []
+    /// Muse's own voice label for each transcript line (Person A, B, … follow these).
+    @ObservationIgnored private(set) var voices: [Int: String] = [:]
+    @ObservationIgnored private var lineLevels: [Float] = []
+    /// The last line loud enough to be the wearer's.
+    @ObservationIgnored private(set) var lastLoud = Date.distantPast
+    /// Loudness of each Muse voice's lines (dB, loudest 30% of each line).
+    @ObservationIgnored private var voiceLevels: [String: [Float]] = [:]
+
+    /// The wearer's voice: the loudest on average, once two voices have two lines each and the
+    /// loudest leads by `meVoiceGap` dB.
+    var meVoice: String? {
+        func median(_ v: [Float]) -> Float { v.sorted()[v.count / 2] }
+        let ranked = voiceLevels.filter { $0.value.count >= 2 }.map { ($0.key, median($0.value)) }.sorted { $0.1 > $1.1 }
+        guard ranked.count >= 2, ranked[0].1 - ranked[1].1 >= Tuning.float("meVoiceGap", 1.5) else { return nil }
+        return ranked[0].0
+    }
     /// The wearer has the floor (the glasses' own mic hears them).
     private(set) var meSpeaking = false
     /// Why the last line was given to whoever it was, for the phone ("glasses heard you (80%)").
@@ -160,11 +176,11 @@ import Observation
             .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 } ?? "Toby"
         aid = Self.makeAid(wearer: wearer)
         speakers = Speakers(wearer: wearer)
-        // New key on purpose: the glasses default of the last build shouldn't carry over.
-        // Always the iPhone mic at launch: streaming the glasses' mic through the camera stream
-        // kills both video and audio (DAT 1.0.1). The menu can still pick Glasses for one session.
-        listener.mic = .phone
-        UserDefaults.standard.set(Listener.Mic.phone.rawValue, forKey: "mic")
+        // The glasses' mic at launch (Oct 24, asked for): only it tells the wearer apart by volume.
+        // Watch for DAT 1.0.1's old failure, where streaming it with the camera killed both; the
+        // menu still switches to the iPhone mic.
+        listener.mic = .glasses
+        UserDefaults.standard.set(Listener.Mic.glasses.rawValue, forKey: "mic")
         listener.onLog = { SpeedLog.record($0) }
         Listener.speakToGlasses = voice.available
         voice.onLog = { SpeedLog.record($0) }
@@ -250,8 +266,18 @@ import Observation
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 self?.refreshGroup()
+                if let self { Transcripts.shared.tick(self, faces: (self.crm?.live?.faces ?? []) + self.members.map(\.id)) }
             }
         }
+    }
+
+    /// One conversation is over (ended by hand, or 30 s of quiet): its notes are filed and the aid
+    /// starts clean, still listening, for the next.
+    func endConversation() {
+        crm?.tick(force: true)
+        aid.reset()
+        voiceLevels = [:]
+        voices = [:]
     }
 
     func disarm() {
@@ -332,7 +358,26 @@ import Observation
         let match = speakers.ownVoiceMatch(text, start: start, end: end)
         // Glasses mic on: how much louder this line was there than at the phone underneath.
         let gap = listener.mic == .glasses ? listener.meter.gap(from: start, to: end) : nil
-        let verdict = speakers.resolve(label: muse, text: text, start: start, end: end, gap: gap)
+        var verdict = speakers.resolve(label: muse, text: text, start: start, end: end, gap: gap)
+        // Loud enough is the wearer: their mouth is closest to whichever mic is listening. A line
+        // `meLoudGap` dB over the typical line (median of the last 30) is "Me", whatever else said.
+        let level = listener.meter.level(listener.mic == .glasses ? .glasses : .phone, from: start, to: end)
+        if let level {
+            lineLevels.append(level)
+            if lineLevels.count > 30 { lineLevels.removeFirst() }
+            if let muse { voiceLevels[muse, default: []].append(level) }
+        }
+        // Glasses mic: the wearer is far louder at the glasses than at the phone. Everyone else ran
+        // 7-12 dB louder there on Oct 24; at `meGapDb` and over, it's the wearer. On the phone
+        // mic there's no telling by volume, so no line is called the wearer's here.
+        if let gap {
+            let mine = gap >= Tuning.float("meGapDb", 14)
+            if mine { verdict = Speakers.Verdict(who: .me, sure: true, why: String(format: "%.0f dB louder at the glasses", gap)) }
+            else if verdict.who == .me { verdict = Speakers.Verdict(who: .someone, sure: true, why: String(format: "only %.0f dB louder at the glasses", gap)) }
+        }
+        // Loud enough to be the wearer talking: what lets a new conversation start.
+        if let gap, gap >= Tuning.float("meGapDb", 14) { lastLoud = end }
+        else if gap == nil, let level, level >= Tuning.float("startDb", -24) { lastLoud = end }
         let label: String?
         switch verdict.who {
         case .me: label = Self.me
@@ -345,6 +390,7 @@ import Observation
                                     "sure": verdict.sure, "why": verdict.why, "words": text.split(separator: " ").count]
         if let match { entry["ownVoice"] = (Double(match) * 100).rounded() / 100 }
         if let gap { entry["gapDb"] = (Double(gap) * 10).rounded() / 10 }
+        if let level { entry["db"] = (Double(level) * 10).rounded() / 10 }
         if !speakers.ownVoiceTrusted { entry["ownVoiceTrusted"] = false }
         SpeedLog.record(entry)
 
@@ -359,6 +405,8 @@ import Observation
         if meSpeaking { lastOwnVoiceFlip = end }
         refreshGroup()
         aid.heard(line: text, speaker: label, level: nil)
+        // The raw voice, so the transcript keeps one letter per voice whoever it's matched to.
+        if let id = aid.lines.last?.id, let muse { voices[id] = muse }
         crm?.heard(text, speaker: label, command: aid.isCommand(text))
     }
 
@@ -468,7 +516,7 @@ import Observation
 
     /// The glasses held a face nobody knows while listening: a contact now, card up next scan.
     private func meet(face: [Float], photo: UIImage?) -> String? {
-        guard armed || glasses?.replaying == true, let crm, let store else { return nil }
+        guard let crm, let store else { return nil }
         let id = crm.meet()
         store.meet(Person(id: id, name: CRM.newName, role: "Just met", source: "Met just now"), face: face, photo: photo)
         newcomers.append(id)

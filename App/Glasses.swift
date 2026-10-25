@@ -54,6 +54,7 @@ enum Identification {
     /// Where each person's face last was across the frame (0 left … 1 right), to lay two cards out
     /// the way they stand.
     @ObservationIgnored private var faceX: [String: CGFloat] = [:]
+    @ObservationIgnored private var lastLook: [String: Date] = [:]
 
     /// The two on the lens, left to right as they stand, each with its share of the width.
     private var groupInView: [Member] {
@@ -95,19 +96,50 @@ enum Identification {
     }
 
     /// Rewrites the lens when who is in frame changes the group row (two in view, or back to one).
-    /// Who's on the lens, oldest first. A new face joins; a third pushes the oldest off; anyone
-    /// unseen for `groupHolds` times out. First in, first out.
+    /// Who's on the lens. A new face joins; a third replaces whoever was seen longest ago; anyone
+    /// unseen for `groupHolds` times out.
     @ObservationIgnored private var lensPeople: [String] = []
+    /// Someone is on the lens right now (seen within `groupHolds`): a conversation may start.
+    var someoneHere: Bool { !lensPeople.isEmpty }
+
+    /// Each person's side once two share the lens (0 left, 1 right). Fixed until they leave it, so
+    /// cards never swap as people move; a newcomer takes whichever side is free.
+    @ObservationIgnored private var lensSide: [String: Int] = [:]
 
     private func updateLensPeople(seen: [String]) {
         for id in seen where !lensPeople.contains(id) { lensPeople.append(id) }
-        if lensPeople.count > 2 { lensPeople.removeFirst(lensPeople.count - 2) }
+        // A third face replaces whoever was seen longest ago (not whoever came first); the newcomer
+        // takes their side.
+        while lensPeople.count > 2 {
+            let staying = Set(seen)
+            let candidates = lensPeople.filter { !staying.contains($0) }
+            guard let stalest = (candidates.isEmpty ? lensPeople : candidates)
+                .min(by: { (sighted[$0] ?? .distantPast) < (sighted[$1] ?? .distantPast) }) else { break }
+            lensPeople.removeAll { $0 == stalest }
+        }
         lensPeople.removeAll { id in sighted[id].map { clockNow.timeIntervalSince($0) >= groupHolds } ?? true }
+        lensSide = lensSide.filter { lensPeople.contains($0.key) }
+        guard lensPeople.count == 2 else { return }
+        let (a, b) = (lensPeople[0], lensPeople[1])
+        switch (lensSide[a], lensSide[b]) {
+        case (let side?, nil): lensSide[b] = 1 - side
+        case (nil, let side?): lensSide[a] = 1 - side
+        case (nil, nil):
+            // A pair forming: the newcomer takes the side of the lens they came in from, and the
+            // one already there (full width until now) moves to the other. Kept from then on.
+            // In view together: the newcomer goes on whichever side of the other person they stand.
+            // The other one gone: the half of the frame they came in on.
+            let enteredLeft = inView(a) ? (faceX[b] ?? 0.5) < (faceX[a] ?? 0.5) : (faceX[b] ?? 0.5) < 0.5
+            lensSide[b] = enteredLeft ? 0 : 1
+            lensSide[a] = enteredLeft ? 1 : 0
+        default: break
+        }
     }
 
-    /// In view right now: seen in the last second.
+    /// In view: seen in the last 1.5 s, so the glasses mark follows your gaze quickly. The mark is a
+    /// fixed small image; the glow it replaced was a fresh photo per change and swamped the link.
     private func inView(_ id: String) -> Bool {
-        sighted[id].map { clockNow.timeIntervalSince($0) < 1 } ?? false
+        sighted[id].map { clockNow.timeIntervalSince($0) < 1.5 } ?? false
     }
 
     private func refreshGroupView() {
@@ -115,7 +147,10 @@ enum Identification {
         let visible = lensPeople.map { "\($0):\(inView($0))" }
         guard visible != visibleGroup else { return }
         visibleGroup = visible
-        if lensMode == .split { renderLens() }
+        SpeedLog.record(["event": "lensPeople", "people": visible.joined(separator: " "),
+                         "sides": lensSide.map { "\($0.key):\($0.value)" }.sorted().joined(separator: " "),
+                         "identifying": identifying, "confirming": confirming])
+        if !identifying, !confirming { renderLens() }
     }
 
     func setGroup(_ group: [Member], meSpeaking: Bool) {
@@ -232,10 +267,9 @@ enum Identification {
     /// 30 fell to 504x896 within ~10 s, and per-frame sharpness falls as the rate rises. Face scans
     /// cost the same at every size. Battery is the price; push `streamFps: 2` to go back.
     ///
-    /// Now 15 again (Oct 24, 7:50 pm, asked for): smoother faces, at the risk below of dropping
-    /// under 720p. `streamFps: 7` goes back with no rebuild.
+    /// Briefly 15 (Oct 24, 7:50 pm), back to 7 at 8 pm.
     ///
-    /// Was high at 7. The evening link test (Oct 24, glasses on) never got 720p at 15 fps, not even
+    /// High at 7. The evening link test (Oct 24, glasses on) never got 720p at 15 fps, not even
     /// with the lens idle; at 7 fps it held 720p 100% idle and while writing names. Full-card
     /// writes can still push it to 504x896, so a card is written once per new person.
     /// What the currently-attached camera was actually built with, so a pushed change to
@@ -246,7 +280,7 @@ enum Identification {
     /// Off (`glassesCamera: false`, read at each connect): lens and mic only, no camera stream.
     private var cameraWanted: Bool { Tuning.bool("glassesCamera", true) }
     var streamRes: String { UserDefaults.standard.string(forKey: "streamRes") ?? "high" }
-    var streamFps: Int { Tuning.int("streamFps", 15) }
+    var streamFps: Int { Tuning.int("streamFps", 7) }
     /// Names a recorded run. A simulated pair ignores the knobs (see `streamConfig`), so say so.
     private var streamLabel: String {
         #if DEBUG
@@ -961,7 +995,9 @@ enum Identification {
         // same description `hud()` would have built.
         lensShot = LensCards.shot(result: result, identifying: false, confirming: confirming,
                                   connected: store?.connectedCount ?? 0)
-        renderLens()
+        // On the lens and in view, as a live sighting would put them: the people layout, mirrored.
+        updateLensPeople(seen: [person.id])
+        if !renderLens() { _ = lensView() }
     }
 
     /// MOCK_GLASSES=1: pair simulated Ray-Ban Display glasses (registered, permissions granted)
@@ -1897,7 +1933,8 @@ enum Identification {
     @ObservationIgnored private let cropContext = CIContext()
 
     private func noticeStranger(_ inView: [FaceTracker.Track], image: CIImage, store: Store) {
-        guard meetNew, aidArmed || replaying, !identifying, let onStranger,
+        // Mic on or off: anyone new you face becomes a person, to be named later in People.
+        guard meetNew, !identifying, let onStranger,
               clockNow.timeIntervalSince(lastMet) > 10,
               let track = inView.max(by: { $0.best.attention < $1.best.attention }),
               metTracks[track.id] == nil, track.looks >= meetLooks, track.weight >= minEvidence,
@@ -1907,7 +1944,10 @@ enum Identification {
         guard now.timeIntervalSince(track.firstSeen) >= meetSeconds, now.timeIntervalSince(track.updated) < 0.5 else { return }
         // Face to face, not the room: near the centre of the frame, with nobody in front of them.
         guard centred(track.box), !behindSomeone(track, in: inView, store: store) else { return }
-        let best = store.ranked(track.probe).first?.score ?? 0
+        let top = store.ranked(track.probe).first
+        let best = top?.score ?? 0
+        // Close to someone already met here: that's them again, never a second "New person".
+        if let top, best >= strangerBelow, store.isMet(top.person.id) { metTracks[track.id] = top.person.id }
         guard best < strangerBelow else { return }
         let photo = headshot(image, box: track.box)
         guard let id = onStranger(track.probe, photo) else { return }
@@ -1949,8 +1989,24 @@ enum Identification {
     /// closer look later in the conversation replaces it (at most every few seconds).
     private func betterLooks(_ inView: [FaceTracker.Track], hits: [FaceHit], image: CIImage, store: Store) {
         for track in inView {
-            guard let id = metTracks[track.id], let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
+            // Anyone face ID knows, on the track they were met on or recognised on a later one. People met
+            // here start with one sample, so they're held to the ordinary bar, not the confident one.
+            let loose = store.match(track.probe).map(\.person.id).flatMap { store.isMet($0) ? $0 : nil }
+            let known = metTracks[track.id] ?? store.confidentMatch(track.probe).map(\.person.id) ?? loose
+            guard let id = known, let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
+            // Every couple of seconds in view, everyone (named or not, roster or not): another look
+            // into their gallery, photo and sample, so they're recognised better each time.
+            // Only a look sharp enough for how many photos they already have, and less often as that
+            // grows: 2 s apart at first, slowing with the log of the count.
+            let have = Double(store.shots[id]?.count ?? 0)
             let score = lookScore(hit.box, hit)
+            if !hit.embedding.isEmpty, clockNow.timeIntervalSince(lastLook[id] ?? .distantPast) >= 2 * (1 + log(1 + have)),
+               store.wantsShot(id, score: score) {
+                lastLook[id] = clockNow
+                store.addShot(id, embedding: hit.embedding, image: UIImage(cgImage: hit.crop), score: score)
+            }
+            // The profile photo only upgrades itself for people met here; the roster keeps theirs.
+            guard store.isMet(id) else { continue }
             let last = photoLook[id] ?? (0, .distantPast)
             guard score > last.score * 1.25, Date().timeIntervalSince(last.at) > 3,
                   let photo = headshot(image, box: hit.box) else { continue }
@@ -2348,7 +2404,11 @@ enum Identification {
 
     private func lensView() -> FlexBox {
         let person = knownPerson
-        let mode = currentMode()
+        var mode = currentMode()
+        // Anyone on the lens gets the people layout (50/50, the glasses icon on whoever's in view),
+        // mic on or off. The identity card is only for a press: identifying or confirming.
+        if mode == .identity, !identifying, !confirming, !lensPeople.isEmpty { mode = .split }
+        if mode != lensMode { SpeedLog.record(["event": "lensLayout", "mode": "\(mode)"]) }
         lensMode = mode
         let avatar: (String) -> UIImage? = { [store] in store?.lensAvatar($0) }
         switch mode {
@@ -2357,12 +2417,13 @@ enum Identification {
         case .split:
             // The people on the lens (`lensPeople`): two side by side, 50/50, left to right as they
             // stand; one alone fills the half. Whoever is in view right now glows.
-            let people = lensPeople.compactMap { id in store?.people.first { $0.id == id } }
+            // Roster and new people alike: anyone face ID knows gets the same cards and split.
+            let people = lensPeople.compactMap { id in store?.contacts.first { $0.id == id } }
             var members: [Member] = []
             var partner = person
             if people.count == 2 {
                 members = people.map { var m = member($0, share: 0.5); m.focused = inView($0.id); return m }
-                    .sorted { (faceX[$0.id] ?? 0.5) < (faceX[$1.id] ?? 0.5) }
+                    .sorted { (lensSide[$0.id] ?? 0) < (lensSide[$1.id] ?? 0) }
                 partner = nil
             } else if let only = people.first {
                 partner = only
@@ -2398,7 +2459,9 @@ enum Identification {
     /// Lens writes, one at a time and newest wins: a burst of updates (an answer streaming in)
     /// collapses to the latest card every `minSendInterval`, and no write ever overlaps another.
     private func send(_ view: FlexBox) {
-        queuedView = view
+        // Every card, whatever its layout, stops `LensFit.buffer` above the bottom edge, where the
+        // display fades; the phone mirror keeps the same margin (`LensMetrics.bottom`).
+        queuedView = view.padding(.bottom, LensFit.buffer)
         guard lensWriter == nil else { return }
         lensWriter = Task { [weak self] in
             while let self, !Task.isCancelled, self.queuedView != nil {

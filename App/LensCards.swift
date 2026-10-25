@@ -113,8 +113,7 @@ enum LensCards {
     /// with the space between filled so the card reads as tall as the half it sits in.
     static func personCard(_ person: Person, shot: LensShot, avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .column, spacing: 10) {
-            if shot.focused, let glow = glowBar { Image(image: glow, sizePreset: .fill, cornerRadius: .none) }
-            header(photo: avatar(person.id), name: person.name, width: LensFit.personWidth, bright: true)
+            header(photo: avatar(person.id), name: person.name, width: LensFit.personWidth, bright: true, focused: shot.focused)
             // Why they matter, straight under the header: every bullet that fits.
             for line in shot.primary {
                 Text(line, style: .body).flexShrink(1)
@@ -187,18 +186,20 @@ enum LensCards {
     /// A conversation of several: one card each, a quarter of the lens, side by side. Photo at the
     /// top, name and headline at the foot. Whoever is talking has the brighter name; no bubble.
     static func groupCards(_ group: [Member], avatar: (String) -> UIImage?) -> FlexBox {
-        FlexBox(direction: .row, spacing: 12) {
+        // One filler for both, sized by the fuller card, and the row stretches them to one height:
+        // the two cards always start and end on the same lines.
+        let fill = group.prefix(2).map { LensFit.member($0, lines: $0.lines).left }.min() ?? 0
+        return FlexBox(direction: .row, spacing: 12, crossAlignment: .stretch) {
             for member in group.prefix(2) {
                 FlexBox(direction: .column, spacing: 8) {
-                    if member.focused, let glow = glowBar { Image(image: glow, sizePreset: .fill, cornerRadius: .none) }
                     header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
-                           width: LensFit.memberWidth(member), bright: member.speaking)
+                           width: LensFit.memberWidth(member), bright: member.speaking, focused: member.focused)
                     for line in member.lines {
-                        Text(line, style: .meta).flexShrink(1)
+                        Text(line, style: .body).flexShrink(1)
                     }
-                    FlexBox(direction: .column) {}.padding(.top, LensFit.member(member, lines: member.lines).left)
+                    FlexBox(direction: .column) {}.padding(.top, fill)
                 }
-                .padding(22)
+                .padding(LensFit.splitPad)
                 .background(.card)
                 .flexGrow(Float(member.share))
                 .flexShrink(1)
@@ -209,19 +210,46 @@ enum LensCards {
     /// The photo on the left, sized to stand as tall as the full name beside it; everything else
     /// is bullets below. The lens has only icon-sized or filling images, so the photo fills a
     /// share of the row.
-    private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool) -> FlexBox {
+    private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool, focused: Bool) -> FlexBox {
+        // 50/50: the photo and the icon on one row, the name under them in the bold heading, full
+        // width, as big as on the single card.
+        if !LensFit.full(width) {
+            // The card's top-right corner holds the glasses mark (its slot is always there, so nothing
+            // moves when focus does); under it, a square photo as tall as the two name lines, the
+            // bold name beside it.
+            return FlexBox(direction: .column, spacing: 4) {
+                FlexBox(direction: .row) {
+                    FlexBox(direction: .column) {}.flexGrow(Float(1 - LensFit.markShare))
+                    FlexBox(direction: .column) {
+                        if focused, let mark = glassesMark { Image(image: mark, sizePreset: .fill, cornerRadius: .none) }
+                        else { FlexBox(direction: .column) {}.padding(.top, LensFit.markSide) }
+                    }
+                    .flexGrow(Float(LensFit.markShare))
+                }
+                FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
+                    FlexBox(direction: .column) { Image(image: photo ?? placeholder ?? UIImage(), sizePreset: .fill, cornerRadius: .none) }
+                        .flexGrow(Float(LensFit.splitPhotoShare)).flexShrink(0)
+                    Text(LensFit.nameText(name, width: width), style: .heading,
+                         color: bright ? .primary : .secondary).flexGrow(Float(1 - LensFit.splitPhotoShare)).flexShrink(1)
+                }
+            }
+        }
         let share = Float(LensFit.photoShare(width))
         return FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
-            if let photo {
-                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
+            // The photo's box is always there, a grey square until the photo lands, so the name and
+            // bullets never move when it arrives.
+            if let photo = photo ?? placeholder {
+                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .none) }
                     .flexGrow(share).flexShrink(0)
             }
             FlexBox(direction: .column) {
                 // The lens can't shrink text to fit, so a name too wide for the heading drops a style.
-                Text(twoLines(name), style: LensFit.nameFits(name, width: width) ? .heading : .body,
+                Text(LensFit.nameText(name, width: width), style: LensFit.full(width) ? .heading : .body,
                      color: bright ? .primary : .secondary).flexShrink(1)
             }
             .flexGrow(1 - share).flexShrink(1)
+            // In focus: the glasses' own icon, beside the name. Vector, so nothing heavy to send.
+            if focused, let mark = glassesMark { Image(image: mark, sizePreset: .icon, cornerRadius: .none) }
         }
     }
 
@@ -569,15 +597,64 @@ enum LensCards {
         }
     }
 
-    /// The in-focus mark: the lens draws no borders or glows, so a thin bright bar across the top
-    /// of the card, drawn as an image, stands in for one.
-    /// Greenish yellow, bright in the middle and fading out at the ends, like edge light.
-    static let glowBar: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 600, height: 12)).image { context in
-        let glow = UIColor(red: 0.80, green: 0.95, blue: 0.25, alpha: 1)
-        let colors = [glow.withAlphaComponent(0).cgColor, glow.cgColor, glow.cgColor, glow.withAlphaComponent(0).cgColor] as CFArray
-        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.2, 0.8, 1]) else { return }
-        UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: 600, height: 12), cornerRadius: 6).addClip()
-        context.cgContext.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 600, y: 0), options: [])
+    /// The in-focus mark: a small pair of glasses, drawn white on clear (the mockup's outline glyph).
+    /// One fixed image, so it's the same bytes every write; the phone mirror shows this same image.
+    static let glassesMark: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 56, height: 56)).image { _ in
+        UIColor.white.setStroke()
+        let path = UIBezierPath()
+        path.lineWidth = 3
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.append(UIBezierPath(ovalIn: CGRect(x: 8, y: 24, width: 15, height: 13)))
+        path.append(UIBezierPath(ovalIn: CGRect(x: 33, y: 24, width: 15, height: 13)))
+        path.move(to: CGPoint(x: 23, y: 29)); path.addQuadCurve(to: CGPoint(x: 33, y: 29), controlPoint: CGPoint(x: 28, y: 25))
+        path.move(to: CGPoint(x: 8, y: 29)); path.addLine(to: CGPoint(x: 4, y: 21))
+        path.move(to: CGPoint(x: 48, y: 29)); path.addLine(to: CGPoint(x: 52, y: 21))
+        path.stroke()
+    }
+
+    /// Holds the photo's place while it's on its way: the same grey as the mirror's.
+    static let placeholder: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96)).image { _ in
+        UIColor(white: 0.28, alpha: 1).setFill()
+        UIBezierPath(rect: CGRect(x: 0, y: 0, width: 96, height: 96)).fill()
+    }
+
+    /// The in-focus mark: the photo inside a soft greenish-yellow glow. The lens draws no borders
+    /// or effects, so the glow is part of the image; the phone draws this same image.
+    static let glowColor = UIColor(red: 0.80, green: 0.95, blue: 0.25, alpha: 1)
+
+    /// Made once per photo: the same bytes each time, and no redraw on every lens write.
+    nonisolated(unsafe) private static var lit = NSMapTable<UIImage, UIImage>.weakToStrongObjects()
+
+    static func glowing(_ photo: UIImage) -> UIImage? {
+        if let made = lit.object(forKey: photo) { return made }
+        let made = drawGlow(photo)
+        if let made { lit.setObject(made, forKey: photo) }
+        return made
+    }
+
+    private static func drawGlow(_ photo: UIImage) -> UIImage? {
+        let side: CGFloat = 288, inset = side * 0.11, radius = side * 0.16
+        let box = CGRect(x: 0, y: 0, width: side, height: side).insetBy(dx: inset, dy: inset)
+        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { context in
+            let cg = context.cgContext
+            let shape = UIBezierPath(roundedRect: box, cornerRadius: radius)
+            // Two passes of bloom, wide then close, so the light falls off rather than stops.
+            for (blur, alpha) in [(inset * 1.6, 0.9), (inset * 0.7, 1.0)] as [(CGFloat, CGFloat)] {
+                cg.saveGState()
+                cg.setShadow(offset: .zero, blur: blur, color: glowColor.withAlphaComponent(alpha).cgColor)
+                glowColor.withAlphaComponent(0.6).setFill()
+                shape.fill()
+                cg.restoreGState()
+            }
+            // The photo on top, aspect-filled into the box.
+            cg.saveGState()
+            shape.addClip()
+            let scale = max(box.width / photo.size.width, box.height / photo.size.height)
+            let size = CGSize(width: photo.size.width * scale, height: photo.size.height * scale)
+            photo.draw(in: CGRect(x: box.midX - size.width / 2, y: box.midY - size.height / 2, width: size.width, height: size.height))
+            cg.restoreGState()
+        }
     }
 
     /// A small green tag with the count in it. The lens text has no colors, so the tag is drawn.
@@ -609,11 +686,14 @@ enum LensFit {
     static let spacing: CGFloat = 14
     /// Slack for the estimate: wrapping in Meta's typeface vs the system font.
     static let slack: CGFloat = 1.1
-    static let margin: CGFloat = 16
+    static let margin: CGFloat = 0
 
     /// The aid's cards take the top third of the lens when there are people to show, and the people
     /// the bottom two-thirds, so their cards carry the most. `half` is what the bottom takes.
-    static var half: CGFloat { available * 2 / 3 }
+    /// The people's share, fixed: every people card starts at the same height and never grows past it.
+    static var half: CGFloat { available - answersBand }
+    /// The answers' and definitions' band at the top, fixed.
+    static let answersBand: CGFloat = 132
     /// Padding, photo, name and one headline line: what a person card takes before its fill.
     static let cardBase: CGFloat = 190
 
@@ -642,26 +722,51 @@ enum LensFit {
     /// The same for one of two side-by-side cards.
     static func member(_ member: Member, lines pool: [String]) -> (lines: [String], left: CGFloat) {
         take(pool, name: member.fullName.isEmpty ? member.name : member.fullName,
-             width: memberWidth(member), font: meta, gap: 8)
+             width: memberWidth(member), font: body, gap: 8)
     }
 
     /// Inner widths of the one-person card and of each of two side-by-side cards.
     static let personWidth: CGFloat = panel - 44
-    static func memberWidth(_ member: Member) -> CGFloat { (panel - 12) * member.share - 44 }
+    /// Two-up cards pad tighter than a full card's 22, so a bold name fits beside the photo.
+    static let splitPad: CGFloat = 12
+    static func memberWidth(_ member: Member) -> CGFloat { (panel - 12) * member.share - 2 * splitPad }
     static let photoGap: CGFloat = 14
 
     /// The width beside the photo, where the name goes.
     static func beside(_ width: CGFloat) -> CGFloat { (width - photoGap) * (1 - photoShare(width)) }
 
-    /// Whether every word of the name fits beside the photo in the heading style.
+    /// Room kept beside the name for the in-focus icon, on every card, so a name's size doesn't
+    /// change as focus moves.
+    static let iconRoom: CGFloat = 40
+
+    /// Whether every word of the name fits beside the photo in the heading style. Names get extra
+    /// slack: Meta's face runs wider than the system font, and "Mirabelle" broke mid-word at 50/50.
+    /// One fixed name size per layout: the heading on a full-width card, body at 50/50.
+    static func full(_ width: CGFloat) -> Bool { width > 400 }
+
+    /// First name over last, each line clipped to what that layout holds ("Alexandria" fits; a
+    /// longer word ends in "…"), so a name never wraps mid-word or changes size.
+    static func nameText(_ name: String, width: CGFloat) -> String {
+        let most = full(width) ? 18 : 8
+        return LensCards.twoLines(name).split(separator: "\n").map { line in
+            line.count > most ? line.prefix(most - 1) + "\u{2026}" : String(line)
+        }.joined(separator: "\n")
+    }
+
     static func nameFits(_ name: String, width: CGFloat) -> Bool {
         name.split(separator: " ").allSatisfy {
-            (String($0) as NSString).size(withAttributes: [.font: heading]).width * slack <= beside(width)
+            (String($0) as NSString).size(withAttributes: [.font: heading]).width * 1.25 <= beside(width) - iconRoom
         }
     }
 
     /// The photo's share of the header row: tall enough for a full name on two heading lines.
     /// A narrow card (the 40% one) keeps an icon-sized photo so the name has room beside it.
+    /// 50/50 header: the mark's share of the top row and its side, and the photo's share of the row
+    /// under it (about two heading lines tall).
+    static let markShare: CGFloat = 0.12
+    static var markSide: CGFloat { ((panel - 12) / 2 - 2 * splitPad) * markShare }
+    static let splitPhotoShare: CGFloat = 0.28
+
     static func photoShare(_ width: CGFloat) -> CGFloat {
         width > 400 ? 0.2 : width > 260 ? 0.38 : min(0.38, 64 / (width - photoGap))
     }
@@ -670,12 +775,21 @@ enum LensFit {
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
         // Padding, then the header: the photo, or the name beside it if taller.
         let photo = (width - photoGap) * photoShare(width)
-        let header = max(photo, lines(LensCards.twoLines(name), nameFits(name, width: width) ? heading : body,
-                                      width - photoGap - photo) * slack)
-        var left = half - (44 + header + gap)
+        let splitPhoto = (width - photoGap) * splitPhotoShare
+        let header = !full(width) ? markSide + 4 + max(splitPhoto, lines(nameText(name, width: width), heading, width - photoGap - splitPhoto) * slack)
+            : max(photo, lines(nameText(name, width: width), heading,
+                                      width - photoGap - photo - iconRoom) * slack)
+        let pad = full(width) ? 44 : 2 * splitPad
+        var left = half - (pad + header + gap)
         var out: [String] = []
-        for line in pool {
-            let h = lines(line, font, width) * slack + gap
+        // Rigid: a bullet is at most two lines, cut with "…" by a character count that assumes
+        // Meta's wider face, and its height is budgeted as if it wrapped wide. So no card can run
+        // taller than its half, whatever the glasses' font does.
+        let perLine = Int(width / (font.pointSize * 0.66))
+        for raw in pool {
+            let line = raw.count > perLine * 2 ? String(raw.prefix(perLine * 2 - 1)) + "\u{2026}" : raw
+            let rows = min(2, (line.count + perLine - 1) / max(1, perLine))
+            let h = CGFloat(rows) * font.lineHeight * 1.35 + gap
             // Too tall here, but a shorter one further down may still fit.
             if h > left { continue }
             left -= h
@@ -723,7 +837,9 @@ enum LensFit {
         return max(0, (aid - content(shot, bottom: bottom)).rounded(.down))
     }
 
-    private static var available: CGFloat { panel - floor - margin }
+    /// Clear space kept above the bottom edge, which fades into haze on the glass.
+    static let buffer: CGFloat = 44
+    private static var available: CGFloat { panel - floor - margin - buffer }
 
     /// The aid's part only: the cards and the extras, spacing included.
     static func content(_ shot: LensShot, bottom: LensCards.Bottom) -> CGFloat {

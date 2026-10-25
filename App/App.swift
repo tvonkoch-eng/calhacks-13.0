@@ -46,6 +46,12 @@ struct CalHacksApp: App {
                                 ?? crm.contacts.first(where: { $0.id == id }).map(crm.person) else { return }
                         store.fill(base, with: details)
                     }
+                    // Once: the duplicate unnamed people from before go, keeping only the newest.
+                    if !UserDefaults.standard.bool(forKey: "dedupedNewPeople") {
+                        UserDefaults.standard.set(true, forKey: "dedupedNewPeople")
+                        let unnamed = crm.contacts.filter { $0.name == CRM.newName }.sorted { $0.created > $1.created }
+                        for contact in unnamed.dropFirst() { crm.forgetPerson(contact.id) }
+                    }
                     // Listening is on from launch; the mic pill turns it off.
                     Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
@@ -225,19 +231,7 @@ struct HomeView: View {
                     .padding(.top, 8)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("People")
-                            .font(.system(size: 34, weight: .semibold, design: .serif))
-                            .padding(.horizontal, 20)
-                            .padding(.top, 10)
-                        Text(summary)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 20)
-                            .padding(.top, 2)
-                            .padding(.bottom, 14)
-                        SearchField(text: $query)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 14)
+                        Color.clear.frame(height: 10)
                         // Every slot from here to the person card is a fixed size, present or not, so
                         // the chat and the card never jump when a line appears, wraps or goes away.
                         notice
@@ -250,28 +244,6 @@ struct HomeView: View {
                             .clipped()
                             .padding(.horizontal, 20)
                             .padding(.bottom, 10)
-                        TimelineView(.periodic(from: .now, by: 30)) { context in
-                            VStack(spacing: 0) {
-                                if query.isEmpty { FollowUps(now: context.date) }
-                                ForEach(items(now: context.date)) { item in
-                                    switch item {
-                                    case .section(let title):
-                                        SectionLabel(title)
-                                            .padding(.horizontal, 20)
-                                            .padding(.top, 18)
-                                            .padding(.bottom, 2)
-                                    case .current(let person):
-                                        CurrentCard(person: person)
-                                            .padding(.horizontal, 16)
-                                            .padding(.bottom, 4)
-                                            .transition(.scale(scale: 0.96).combined(with: .opacity))
-                                    case .row(let person):
-                                        ContactRow(person: person, seen: store.lastSeen[person.id], now: context.date)
-                                    }
-                                }
-                            }
-                        }
-                        .animation(.spring(response: 0.55, dampingFraction: 0.82), value: store.recents.map(\.id))
                     }
                     .padding(.bottom, 24)
                 }
@@ -658,11 +630,12 @@ struct TagRow: View {
 
 struct SearchField: View {
     @Binding var text: String
+    var prompt = "Search people, schools, companies"
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search people, schools, companies", text: $text)
+            TextField(prompt, text: $text)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             if !text.isEmpty {
@@ -989,7 +962,7 @@ struct LensMetrics {
     let radius = tune("mirrorRadius", 27)
     /// The gap the real renderer leaves under the card. Measured off a captured lens frame:
     /// 30 px of a 531 px panel, which is 34 of the lens's own 600.
-    let bottom = tune("mirrorBottom", 34)
+    let bottom = tune("mirrorBottom", 34) + LensFit.buffer
 
     private static func tune(_ key: String, _ fallback: CGFloat) -> CGFloat {
         CGFloat(Tuning.float(key, Float(fallback)))
@@ -1031,7 +1004,7 @@ struct LensMirror: View {
     /// Mirror of `LensCards.personCard`: photo at the top, name and what they do at the foot.
     private func personCard(id: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            header(id: id, name: shot.name ?? "", width: LensFit.personWidth, bright: true)
+            header(id: id, name: shot.name ?? "", width: LensFit.personWidth, bright: true, focused: shot.focused)
             ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
                 Text(line).font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
             }
@@ -1039,7 +1012,7 @@ struct LensMirror: View {
         }
         .padding(m.pad)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .modifier(LensCardBackground(radius: m.radius, glow: shot.focused))
+        .modifier(LensCardBackground(radius: m.radius))
     }
 
     /// Mirror of `LensCards.groupCards`: a quarter of the lens each, photo at the top, name and
@@ -1049,39 +1022,88 @@ struct LensMirror: View {
             ForEach(shot.group.prefix(2), id: \.id) { member in
                 VStack(alignment: .leading, spacing: 8) {
                     header(id: member.id, name: member.fullName.isEmpty ? member.name : member.fullName,
-                           width: LensFit.memberWidth(member), bright: member.speaking)
+                           width: LensFit.memberWidth(member), bright: member.speaking, focused: member.focused)
                     ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: m.meta)).fixedSize(horizontal: false, vertical: true)
+                        Text(line).font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(m.pad)
+                .padding(LensFit.splitPad)
                 .frame(maxHeight: .infinity, alignment: .topLeading)
                 .frame(width: memberWidth(member))
-                .modifier(LensCardBackground(radius: m.radius, glow: member.focused))
+                .modifier(LensCardBackground(radius: m.radius))
             }
         }
     }
 
     /// Mirror of `LensCards.header`: photo left, full name over what they do on the right.
-    private func header(id: String, name: String, width: CGFloat, bright: Bool) -> some View {
+    @ViewBuilder private func header(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool) -> some View {
+        if LensFit.full(width) {
+            wideHeader(id: id, name: name, width: width, bright: bright, focused: focused)
+        } else {
+            // Mirror of the lens's 50/50 header: photo and icon on a row, the bold name under them.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Spacer(minLength: 0)
+                    if let mark = LensCards.glassesMark {
+                        Image(uiImage: mark).resizable().frame(width: LensFit.markSide, height: LensFit.markSide)
+                            .opacity(focused ? 1 : 0)
+                    }
+                }
+                HStack(alignment: .center, spacing: LensFit.photoGap) {
+                    photoBox(id: id, size: (width - LensFit.photoGap) * LensFit.splitPhotoShare)
+                    Text(LensFit.nameText(name, width: width))
+                        .font(.system(size: m.heading, weight: .semibold)).lineLimit(2)
+                        .foregroundStyle(bright ? Color.white : secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// The lens's own glasses mark, at the lens's icon size.
+    @ViewBuilder private var glassesMark: some View {
+        if let mark = LensCards.glassesMark { Image(uiImage: mark).resizable().frame(width: m.icon, height: m.icon) }
+    }
+
+    @ViewBuilder private func photoBox(id: String, size: CGFloat) -> some View {
+        if let photo = avatar(id), !(shot.photoPending && id == shot.photo) {
+            Image(uiImage: photo)
+                .resizable().aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: 0))
+        } else {
+            RoundedRectangle(cornerRadius: 0)
+                .fill(Color(white: 0.28)).frame(width: size, height: size)
+        }
+    }
+
+    private func wideHeader(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool) -> some View {
         let size = (width - LensFit.photoGap) * LensFit.photoShare(width)
         return HStack(alignment: .center, spacing: LensFit.photoGap) {
             // Grey until the photo's write lands, as on the lens.
             if shot.photoPending && id == shot.photo {
-                RoundedRectangle(cornerRadius: size * 0.16, style: .continuous)
+                RoundedRectangle(cornerRadius: 0)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
             } else if let photo = avatar(id) {
                 Image(uiImage: photo)
                     .resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: size * 0.16, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 0))
+            } else {
+                // No photo yet: its box holds the place, as on the lens.
+                RoundedRectangle(cornerRadius: 0)
+                    .fill(Color(white: 0.28))
+                    .frame(width: size, height: size)
             }
-            Text(LensCards.twoLines(name))
-                .font(.system(size: LensFit.nameFits(name, width: width) ? m.heading : m.body, weight: .semibold))
+            Text(LensFit.nameText(name, width: width))
+                .font(.system(size: LensFit.full(width) ? m.heading : m.body, weight: .semibold))
+                .lineLimit(2)
                 .foregroundStyle(bright ? Color.white : secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            glassesMark.opacity(focused ? 1 : 0)
         }
     }
 
