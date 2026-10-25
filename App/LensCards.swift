@@ -445,6 +445,9 @@ enum LensCards {
         return pool.filter { !$0.isEmpty && seen.insert($0).inserted }.map { "\u{2022} " + $0 }
     }
 
+    /// Whether the lens can draw this icon. The lens drops a name it doesn't know, so the phone must too.
+    static func drawsIcon(_ lensIcon: String) -> Bool { IconName(rawValue: lensIcon) != nil }
+
     /// The phone's stand-in for an aid card's lens icon.
     static func symbol(lensIcon: String) -> String {
         switch lensIcon {

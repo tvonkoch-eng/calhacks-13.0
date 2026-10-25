@@ -1103,7 +1103,9 @@ struct LensMirror: View {
                 Text(detail).font(.system(size: m.meta)).foregroundStyle(secondary)
             }
             HStack(spacing: 10) {
-                if let icon = card.icon { Image(systemName: LensCards.symbol(lensIcon: icon)).font(.system(size: m.glyph)) }
+                if let icon = card.icon, LensCards.drawsIcon(icon) {
+                    Image(systemName: LensCards.symbol(lensIcon: icon)).font(.system(size: m.glyph))
+                }
                 Text(card.title).font(.system(size: newest ? m.heading : m.body, weight: newest ? .semibold : .regular))
             }
             if !card.asked, let detail = card.detail {
