@@ -220,7 +220,7 @@ enum Tools {
     /// round's calls run together) and reading their results, then answers. The last turn has
     /// no tools, so it always ends in an answer. `step` gets each round's work, for the lens.
     static func think(_ request: String, context: String, personal: String, wearer: String,
-                      toolbox: any Toolbox, model: Aid.Model, rounds: Int = 4,
+                      toolbox: any Toolbox, model: Aid.Model, rounds: Int = 3,
                       step: @escaping @Sendable (String) async -> Void) async throws -> String {
         let now = Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
             + ", " + TimeZone.current.identifier
@@ -419,7 +419,7 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
 
     static let research = """
       {"type": "function", "function": {"name": "research",
-        "description": "Public facts from the web: news and anything recent, prices, scores, opening hours, a company's or product's public details, places matching conditions (open late, quiet, vegetarian). Never a person, and nothing only the people talking would know. Takes several seconds.",
+        "description": "Public facts from the web: news and anything recent, prices, scores, opening hours, a company's or product's public details, places matching conditions (open late, quiet, vegetarian). Never a person, and nothing only the people talking would know. To find an article, paper, post or video, ask for its title, where it was published and when: the glasses show text, never a link or the article itself. Takes several seconds.",
         "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "The full task, self-contained: 'her company' or 'that bill' resolved from the conversation, 'near here' replaced by where they are, and no names of the people talking"}}, "required": ["task"]}}}
     """
 

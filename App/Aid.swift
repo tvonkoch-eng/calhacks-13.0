@@ -311,6 +311,25 @@ enum Talk {
 /// The Compositor (Lens.swift) decides what of all that is on the lens at any moment.
 ///
 /// Pure Foundation, so the phone (Assistant) and the Mac (tools/live-mac.swift) run the same aid.
+/// Ran past its time limit. Nothing on the lens may think forever: a request that takes longer
+/// than this is given up and says so.
+struct Deadline: LocalizedError {
+    var errorDescription: String? { "took too long" }
+}
+
+/// `work`, or `Deadline` after `seconds`, whichever comes first; the loser is cancelled.
+func withDeadline<T>(_ seconds: Double, _ work: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await work() }
+        group.addTask {
+            try await Task.sleep(for: .seconds(seconds))
+            throw Deadline()
+        }
+        defer { group.cancelAll() }
+        return try await group.next()!
+    }
+}
+
 @MainActor @Observable final class Aid {
     struct Model: Equatable {
         var provider: Provider
@@ -1150,7 +1169,7 @@ enum Talk {
                         self.publish()
                     } : nil
                     defer { ack?.cancel(); self.compositor.endWork(id: card); self.publish() }
-                    let result = try await toolbox.run(name, arguments: arguments)
+                    let result = try await withDeadline(15) { try await toolbox.run(name, arguments: arguments) }
                     ack?.cancel()
                     guard !Task.isCancelled else { return }
                     self.compositor.endWork(id: card)
@@ -1180,6 +1199,8 @@ enum Talk {
     // MARK: - Jarvis: asked by name, thinks, shows its work
 
     @ObservationIgnored private var jarvisTask: Task<Void, Never>?
+    /// The longest Jarvis may think, tools and all, before it gives up and says so.
+    nonisolated static let jarvisLimit: TimeInterval = 25
 
     /// The wearer asked Jarvis: its panel goes up at once, every step shows as it happens, and
     /// the answer lands in the panel (and in their ear, `onJarvis`). A new request replaces one
@@ -1227,15 +1248,25 @@ enum Talk {
             }
             var used = model
             var answer: String
+            let started = Date()
             do {
                 do {
-                    answer = try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: model, step: step)
-                } catch where fallback != nil && !Task.isCancelled {
-                    // The big model is down or rate-limited: the fast one still answers.
+                    answer = try await withDeadline(Self.jarvisLimit) {
+                        try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: model, step: step)
+                    }
+                } catch where fallback != nil && !Task.isCancelled && !(error is Deadline) {
+                    // The big model is down or rate-limited: the fast one still answers, in what's left.
                     await MainActor.run { self?.log(.status, "Jarvis on the fast model: \(error.localizedDescription)") }
                     used = fallback!
-                    answer = try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: used, step: step)
+                    let left = max(4, Self.jarvisLimit - Date().timeIntervalSince(started))
+                    answer = try await withDeadline(left) {
+                        try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: used, step: step)
+                    }
                 }
+            } catch is Deadline {
+                guard !Task.isCancelled else { return }
+                self?.log(.status, "Jarvis gave up after \(Int(Self.jarvisLimit)) s: \(request)")
+                answer = "That was taking too long. Try asking for just the name or the key fact."
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.log(.status, "Jarvis failed: \(error.localizedDescription)")
@@ -1703,7 +1734,7 @@ enum Talk {
         let condenser = (config.perMinute != nil ? config.backup : nil) ?? config.answers ?? config.backup
         lookupTask = Task { [weak self] in
             do {
-                let finding = try await researcher.research(question, context: context)
+                let finding = try await withDeadline(15) { try await researcher.research(question, context: context) }
                 var result = ToolResult(title: String(finding.prefix(60)), detail: "", icon: "starCircleTriangleAi")
                 if let condenser {
                     result = try await Tools.card(from: finding, about: question, provider: condenser.provider,
