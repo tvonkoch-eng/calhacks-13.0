@@ -8,7 +8,7 @@ import FoundationNetworking
 /// ~100-250 ms, which is the whole ballgame on a wearable. Muse is Meta's Muse Spark: always
 /// reasons first, so ~1.2 s to first token (see Tests/muse-latency.py).
 enum Provider: String {
-    case groq, cerebras, openai, muse, anthropic, openrouter
+    case groq, cerebras, openai, muse, anthropic, openrouter, asi1
 
     var endpoint: URL {
         switch self {
@@ -16,6 +16,8 @@ enum Provider: String {
         case .cerebras: URL(string: "https://api.cerebras.ai/v1/chat/completions")!
         case .openai: URL(string: "https://api.openai.com/v1/chat/completions")!
         case .muse: URL(string: "https://api.meta.ai/v1/chat/completions")!
+        // Fetch.ai's ASI:One, OpenAI-compatible chat with function tools (2026-10-24: 0.8 s to a call).
+        case .asi1: URL(string: "https://api.asi1.ai/v1/chat/completions")!
         // Not OpenAI-compatible: requests are translated (`Claude.body`).
         case .anthropic: Claude.endpoint
         // Pay-as-you-go access to the same hosts (Cerebras first) when their own free tiers run
@@ -40,6 +42,7 @@ enum Provider: String {
         // 1.1 over 1.3: both 20/20 on answer-vs-SKIP, 1.1 median first token 1.17 s vs 1.87 s
         // (2026-10-23, Tests/muse-latency.py). Override with ANSWER_MODEL.
         case .muse: "muse-spark-1.1"
+        case .asi1: "asi1"
         // Haiku with thinking off: the quickest Claude, if a lane is pointed at it.
         case .anthropic: "claude-haiku-5-5"
         case .openrouter: "qwen/qwen3.8-27b"
@@ -96,27 +99,30 @@ struct Answerer {
     "Frank Herbert", "June 1944"), no sentence, no punctuation at the end. Only when the question \
     truly needs explaining (how or why something works) give one or two short sentences, at most \
     25 words: the core idea only, no list of every factor. \
-    Never a preamble or the question restated. A number keeps its unit, always in US units: miles, feet, °F, pounds, gallons; never km, \
-    meters, °C or kg, and never both. Plain facts only. If the \
-    conversation or what's known about them answers it, answer from that.
+    Never a preamble or the question restated. "What is X" (a term, a method, a statistic) wants \
+    what X is, in a few words ("Cohen's kappa" → "Agreement between raters beyond chance, 0 to 1"), \
+    never just X's name back. A number keeps its unit, always in US units: miles, feet, °F, pounds, gallons; never km, \
+    meters, °C or kg, and never both. Plain facts only. The conversation and what's known about \
+    them are for understanding the question ("it", "they"), never the answer to repeat back.
 
     Stable facts (distances between places, sizes, dates, definitions, history) come from memory, \
     never WEB: a quick answer beats a slow lookup.
 
     Reply with exactly WEB, and nothing else, if it is a public fact you can't give reliably from \
-    memory: news or anything recent, prices, scores, schedules, or a specific company, product or \
-    paper you don't know well. You do know the current date and time (below): use them for time \
+    memory: news or anything recent, prices, scores, schedules, awards, or a specific person, \
+    company, product or paper you don't know well. You do know the current date and time (below): use them for time \
     zones, ages and countdowns.
 
     "Where" names the event and place they're at: use it for "here" and "this thing". A question \
     about this place or event that nothing above answers is WEB only when "Where" names the \
     event; otherwise SKIP.
 
-    Reply with exactly SKIP, and nothing else, if the question is personal or social (about the \
-    people talking, their feelings, plans, opinions or preferences, or anything that's theirs: \
-    their company, project, school, family) and nothing above answers it; or if it is rhetorical, \
-    a request to do something, or too fragmentary to guess at. Never guess about the people \
-    talking, and never send them to the web.
+    Reply with exactly SKIP, and nothing else, if the question is about the people talking or \
+    anything that's theirs (their work, project, product, company, school, plans, opinions, \
+    feelings), even when the conversation says the answer: they know their own lives, and an \
+    answer there speaks for them ("is it like Cluely?" about the wearer's project is SKIP). Also \
+    SKIP if it is rhetorical, a request to do something, or too fragmentary to guess at. Never send \
+    the people talking to the web.
     """
 
     /// "I don't have real-time…", "Sorry, …": a refusal on the lens is worse than nothing, so it is

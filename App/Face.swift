@@ -75,6 +75,16 @@ enum FaceEngine {
     static var usingSCRFD: Bool { SCRFD.model != nil && Tuning.bool("useSCRFD", true) }
     static var detectorName: String { usingSCRFD ? "scrfd-500m" : "vision" }
 
+    /// Apple's "how good a photo of this face is" (blur, light, pose, expression, anything in
+    /// front of it), 0-1, for the largest face in `image`; nil when Vision finds no face at all.
+    /// Only comparable between photos of the same person. Measured on App/References: blur takes
+    /// ~0.4 to under 0.1, a hand over the mouth ~0.45 to ~0.33; a band over the eyes barely moves it.
+    static func captureQuality(_ image: CGImage) -> Float? {
+        let request = VNDetectFaceCaptureQualityRequest()
+        try? VNImageRequestHandler(cgImage: image).perform([request])
+        return request.results?.max { $0.boundingBox.width < $1.boundingBox.width }?.faceCaptureQuality
+    }
+
     /// Live faces narrower than this (px in the frame) are not embedded or tracked. ArcFace on a
     /// 25 px face is close to noise, and on the hackathon floor every frame has a dozen of them in
     /// the background: they cost time and are the likeliest source of a stranger matching someone.

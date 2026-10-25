@@ -39,7 +39,9 @@ do {
     check(lens.view.cards.map(\.title) == ["384,400 km away"], "the older one drops off on its own clock")
     lens.show(answer("27 days", live: false, id: 3), at: at(3))
     lens.show(answer("1969", live: false, id: 4), at: at(4))
-    check(lens.view.cards.map(\.title) == ["1969", "27 days"], "a third answer pushes out the oldest")
+    check(lens.view.cards.map(\.title) == ["1969", "27 days", "384,400 km away"], "three answers up at once")
+    lens.show(answer("Apollo 11", live: false, id: 5), at: at(5))
+    check(lens.view.cards.map(\.title) == ["Apollo 11", "1969", "27 days"], "a fourth answer pushes out the oldest")
 }
 
 // An answer goes up at once and holds while live.
@@ -49,7 +51,8 @@ do {
     lens.show(answer("\u{2026}", live: true), at: at(0.5))
     check(lens.view.card?.kind == .answer && lens.view.cards.count == 2, "answer goes on top of a definition")
     lens.show(other, at: at(1))
-    check(lens.view.cards.map(\.kind) == [.answer, .definition] && lens.view.cards[1] == definition,
+    lens.show(third, at: at(1.5))
+    check(lens.view.cards.map(\.kind) == [.definition, .answer, .definition] && lens.view.cards[2] == definition,
           "a definition doesn't push out one that just went up")
     lens.tick(at: at(60))
     check(lens.view.cards.map(\.kind) == [.answer], "a live answer never times out")
@@ -65,17 +68,19 @@ do {
     lens.show(answer("1969", live: false), at: at(0))
     lens.show(definition, at: at(1))
     lens.show(other, at: at(2))
-    check(lens.view.cards == [definition, answer("1969", live: false)], "full: the next definition queues")
+    lens.show(third, at: at(2.5))
+    check(lens.view.cards == [other, definition, answer("1969", live: false)], "full: the next definition queues")
     lens.tick(at: at(Compositor.answerDwell + 0.1))
-    check(lens.view.cards == [other, definition], "then takes the finished answer's place")
+    check(lens.view.cards == [third, other, definition], "then takes the finished answer's place")
     lens.remove(id: 1, kind: .definition, at: at(6))
-    check(lens.view.cards == [other], "removing a card leaves the rest")
+    check(lens.view.cards == [third, other], "removing a card leaves the rest")
     var stale = Compositor()
     stale.show(answer("x", live: true, id: 7), at: at(0))
     stale.show(answer("y", live: true), at: at(0))
+    stale.show(answer("z", live: true, id: 8), at: at(0))
     stale.show(definition, at: at(0))
     stale.remove(id: 9, kind: .answer, at: at(Compositor.maxWait[.definition]! + 1))
-    check(stale.view.cards.map(\.title) == ["x"], "a definition that waited too long is dropped")
+    check(stale.view.cards.map(\.title) == ["z", "x"], "a definition that waited too long is dropped")
     var twice = Compositor()
     twice.show(definition, at: at(0))
     twice.show(Card(kind: .definition, title: "ColBERT", detail: "again", id: 5), at: at(1))
@@ -176,6 +181,38 @@ do {
     check(s4.closed == ["How large is the moon?"], "a trailing question mark closes")
 }
 
+// Jarvis's loop on Claude: its own tool calls and their results translate to Claude blocks.
+do {
+    let call = Claude.message(["role": "assistant", "content": NSNull(), "tool_calls": [["id": "toolu_1", "type": "function",
+                               "function": ["name": "weather", "arguments": "{\"when\": \"tonight\"}"]]]])
+    let blocks = call["content"] as? [[String: Any]] ?? []
+    check(blocks.count == 1 && blocks[0]["type"] as? String == "tool_use" && blocks[0]["id"] as? String == "toolu_1"
+          && (blocks[0]["input"] as? [String: Any])?["when"] as? String == "tonight", "a tool call becomes tool_use")
+    let result = Claude.message(["role": "tool", "tool_call_id": "toolu_1", "content": "57°F, clear"])
+    let block = (result["content"] as? [[String: Any]])?.first
+    check(result["role"] as? String == "user" && block?["type"] as? String == "tool_result"
+          && block?["tool_use_id"] as? String == "toolu_1", "a tool result becomes tool_result")
+}
+
+// Jarvis's panel: steps tick off, the answer replaces them, then it goes on its own clock.
+do {
+    let t = Date(timeIntervalSince1970: 1_000_000)
+    var c = Compositor()
+    c.startJarvis("who should I follow up with?", at: t)
+    c.jarvisStep("Reading your notes", at: t)
+    c.jarvisStep("Searching: Priya Raman", at: t.addingTimeInterval(1))
+    check(c.view.jarvis?.steps.map(JarvisPanel.line) == ["\u{2713} Reading your notes", "Searching: Priya Raman\u{2026}"], "steps tick off")
+    check(c.view.jarvis?.header(at: t.addingTimeInterval(4)) == "Jarvis \u{00B7} 4s", "it counts up while it thinks")
+    c.jarvisAnswer("Priya: you owe her the deck by tomorrow.", at: t.addingTimeInterval(5))
+    check(c.view.jarvis?.thinking == false && c.view.jarvis?.header(at: t) == "Jarvis", "answered")
+    check(c.nextDeadline == t.addingTimeInterval(5 + 12), "an answer stays 12 s: \(String(describing: c.nextDeadline))")
+    c.tick(at: t.addingTimeInterval(17.1))
+    check(c.view.jarvis == nil, "then it goes")
+    c.startJarvis("x", at: t)
+    c.tick(at: t.addingTimeInterval(121))
+    check(c.view.jarvis == nil, "a think that never ends is dropped after two minutes")
+}
+
 // Tools: the wake word, what counts as a tool question, and how results read.
 do {
     check(Tools.command(in: "Lens, how far is the nearest Target?") == "how far is the nearest Target?", "wake word")
@@ -183,6 +220,14 @@ do {
     check(Tools.command(in: "The lens on these is great") == nil, "talking about lenses is not a command")
     check(Tools.command(in: "Lens.") == nil, "the wake word alone asks nothing")
     check(Tools.command(in: "Lens, weather?") == "weather?", "a one-word command")
+    check(Tools.command(in: "Jarvis, who did I meet today?") == "who did I meet today?", "Jarvis opens")
+    check(Tools.command(in: "Um, hey Jarvis what did I promise Avi") == "what did I promise Avi", "filler before the name")
+    check(Tools.command(in: "What's the weather, Jarvis?") == "What's the weather?", "Jarvis closes a question")
+    check(Tools.command(in: "who here works at Google jarvis") == "who here works at Google", "closing, unpunctuated")
+    check(Tools.command(in: "I just bought a new lens") == nil, "only Jarvis may close a command")
+    check(Tools.command(in: "Jarvis.") == nil && Tools.wakeOnly("Jarvis.") && Tools.wakeOnly("hey Jarvis"), "the name alone wakes it")
+    check(!Tools.wakeOnly("Jarvis, weather?"), "a request isn't a bare wake")
+    check(Tools.byName("Jervis, who's next?") && !Tools.byName("Lens, weather?"), "by name, as misheard")
     check(Tools.wants("how far is the nearest Target"), "places")
     check(Tools.wants("is it going to rain later"), "weather")
     check(Tools.wants("remind me to email Maya at six"), "reminders")
@@ -247,6 +292,8 @@ do {
     let ask = Coach.parse(#"{"ask": "How much did Figure AI raise in its latest round?", "define": [], "suggest": null}"#)
     check(ask?.ask == "How much did Figure AI raise in its latest round?", "a rebuilt request")
     check(Coach.parse("no json here") == nil, "prose without JSON is rejected")
+    let extra = Coach.parse(#"{"ask": null, "define": [{"term": "GARCH model", "meaning": "volatility clustering"}], "insight": {"topic": "GARCH models", "query": "GARCH limits"}}}"#)
+    check(extra?.define.first?.term == "GARCH model" && extra?.insight?.topic == "GARCH models", "one closing brace too many still parses")
     let input = Coach.Input(wearer: "Toby", background: "finance student", known: "Priya · evals founder; Wearer promised: send the deck",
                             defined: [], suggested: ["How did the seed close?"], moment: "a silence", transcript: [])
     let message = Coach.message(input)
@@ -255,7 +302,7 @@ do {
     check(message.contains("Suggest now: yes (a silence)"), "a moment asks for a suggestion")
     var quiet = input
     quiet.moment = nil
-    check(Coach.message(quiet).contains("Suggest now: no"), "no moment, no suggestion")
+    check(!Coach.message(quiet).contains("Suggest now"), "no moment, no suggestion fields")
 }
 
 // Misheard and mixed-up: a statement isn't a request; the wearer's promise is offered, not asked about.
@@ -270,6 +317,25 @@ do {
     check(Talk.asksAbout(promise, in: "Did you send the demo video?"), "asking them whether they sent it")
     check(!Talk.asksAbout(promise, in: "Want me to send the demo video?"), "offering it is fine")
     check(!Talk.asksAbout(promise, in: "Did you make it to Lisbon?"), "a different question is fine")
+}
+
+// Questions whose answer changes go to the web, not memory.
+do {
+    check(Talk.wantsNow("who won the most recent turing award"), "most recent")
+    check(Talk.wantsNow("what's the latest on the GENIUS Act"), "latest")
+    check(Talk.wantsNow("who is the current CEO of OpenAI"), "current")
+    check(!Talk.wantsNow("who founded anthropic"), "a settled fact stays in memory")
+    check(!Talk.wantsNow("how far is berkeley from san francisco"), "a distance stays in memory")
+}
+
+// Place questions in the plural go to the device tools too.
+do {
+    check(Tools.wants("What is like a popular Chinese restaurant near us?"), "near us is a place question")
+    check(Tools.wants("anything good to eat around us"), "around us is a place question")
+    check(Tools.wants("is there a coffee shop in the area"), "in the area is a place question")
+    check(!Tools.wants("how far is Berkeley from San Francisco"), "between two named places is memory")
+    check(Tools.wants("how far is the Golden Gate Bridge from here"), "from here needs the device")
+    check(Tools.wants("how far is the nearest Target"), "the nearest needs the device")
 }
 
 // Asking the glasses for a line to say, as opposed to asking them a question.
@@ -293,6 +359,19 @@ do {
     check(strings?.suggest == "What's next for Rillet?" && strings?.score == nil && strings?.alternatives.map(\.say) == ["Hiring?"], "a plain list of lines")
     let none = Coach.parse(#"{"suggest": [], "define": []}"#)
     check(none?.suggest == nil && none?.alternatives.isEmpty == true, "an empty list is no suggestion")
+}
+
+// Insights: a topic and a fact, or nothing.
+do {
+    let one = Coach.parse(#"{"define": [], "insight": {"topic": "Humanoid robots", "query": "humanoid robot teleoperation share"}, "ask": null}"#)
+    check(one?.insight?.topic == "Humanoid robots" && one?.insight?.query == "humanoid robot teleoperation share", "an insight is read")
+    check(Coach.parse(#"{"insight": null}"#)?.insight == nil, "null is no insight")
+    check(Coach.parse(#"{"insight": {"topic": "Robots"}}"#)?.insight?.query == "Robots", "no query: the topic is the search")
+    // The part on lines to say goes out only when one is wanted.
+    check(!Coach.prompt(suggesting: false).contains("\"suggest\""), "no suggestion rules when none is wanted")
+    check(Coach.prompt(suggesting: true).contains("\"suggest\""), "suggestion rules when one is")
+    let quiet = Coach.message(Coach.Input(wearer: "Toby", known: "", defined: [], suggested: ["x"], moment: nil, transcript: ["THEM: hi"]))
+    check(!quiet.contains("Suggest now") && !quiet.contains("Already suggested"), "no suggestion fields when none is wanted")
 }
 
 // Claude behind the OpenAI-shaped requests every lane builds.
@@ -338,6 +417,8 @@ do {
     let oss = OpenRouter.adjust(["model": "openai/gpt-oss-120b", "reasoning_effort": "low"])
     check((oss["reasoning"] as? [String: String])?["effort"] == "low", "reasoning effort carried over")
     check((OpenRouter.adjust(["model": "qwen/qwen3.8-27b"])["reasoning"] as? [String: Bool])?["enabled"] == false, "Qwen defaults to no thinking")
+    check(OpenRouter.adjust(["model": "qwen/qwen3.8-27b", "response_format": ["type": "json_object"]])["response_format"] == nil,
+          "no JSON mode: it routes away from Cerebras")
 }
 
 // Exa: what needs the conversation to search, and findings as lines.

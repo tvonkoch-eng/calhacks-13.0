@@ -38,6 +38,18 @@ struct LensShot: Equatable {
     var cardIcon: String?
     /// Work in flight, already worded with its countdown: "Researching GENIUS Act · 6s".
     var working: [String] = []
+    /// Jarvis's panel as text: what `LensCards.jarvisBox` draws and the mirror redraws.
+    struct JarvisText: Equatable {
+        /// "Jarvis · 4s" while it thinks, "Jarvis" once it has answered.
+        var header: String
+        var asked: String
+        var steps: [String]
+        var answer: String?
+    }
+    var jarvis: JarvisText?
+    /// A Jarvis answer too long for the top third has the whole lens; the people come back when
+    /// its panel goes.
+    var peopleYield = false
     var name: String?
     var headline: String?
     /// One line of context under the person at the bottom of the split lens.
@@ -79,6 +91,7 @@ enum LensCards {
                       photoPending: Bool = false, focused: Bool = false, avatar: (String) -> UIImage?) -> FlexBox {
         var shot = Self.shot(split: view, person: person, group: group, meSpeaking: meSpeaking)
         shot.focused = focused
+        let person = shot.peopleYield ? nil : person, group = shot.peopleYield ? [] : group
         let gap = LensFit.gap(shot, bottom: bottom(person: person, group: group))
         return FlexBox(direction: .column, spacing: LensFit.spacing) {
             for (index, card) in shot.cards.enumerated() { cardBox(card, newest: index == 0) }
@@ -144,6 +157,8 @@ enum LensCards {
     /// Work in flight and the line to say next, under the cards.
     private static func extrasBox(_ shot: LensShot, fill: CGFloat = 0) -> FlexBox {
         FlexBox(direction: .column, spacing: 10) {
+            // Jarvis owns the top while it's up: it was asked for by name.
+            if let jarvis = shot.jarvis { jarvisBox(jarvis) }
             for line in shot.working {
                 FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
                     Icon(name: .starCircleTriangleAi, style: .outline)
@@ -156,7 +171,7 @@ enum LensCards {
                     Text(followup, style: .body).flexShrink(1)
                 }
             }
-            let blank = shot.working.isEmpty && shot.followup == nil && shot.cards.isEmpty ? LensFit.blank : 0
+            let blank = shot.working.isEmpty && shot.followup == nil && shot.cards.isEmpty && shot.jarvis == nil ? LensFit.blank : 0
             if blank + fill > 0 {
                 FlexBox(direction: .column) {}.padding(.top, blank + fill)
             }
@@ -268,6 +283,32 @@ enum LensCards {
             }
             if group.count > shown.count {
                 Text("+\(group.count - shown.count)", style: .meta, color: .secondary)
+            }
+        }
+    }
+
+    /// Once answered the steps go: the answer is what's worth the glance.
+    static func jarvisText(_ panel: JarvisPanel, at now: Date) -> LensShot.JarvisText {
+        LensShot.JarvisText(header: panel.header(at: now), asked: panel.request,
+                            steps: panel.thinking ? panel.steps.map(JarvisPanel.line) : [], answer: panel.answer)
+    }
+
+    /// Jarvis at the top of the lens: who's talking and for how long, the request small and grey,
+    /// each step as it happens, then the answer as the heading.
+    private static func jarvisBox(_ jarvis: LensShot.JarvisText) -> FlexBox {
+        FlexBox(direction: .column, spacing: 8) {
+            FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                Icon(name: .starCircleTriangleAi, style: jarvis.answer == nil ? .outline : .filled)
+                Text(jarvis.header, style: .meta, color: .secondary)
+            }
+            if !jarvis.asked.isEmpty {
+                Text(jarvis.asked, style: .meta, color: .secondary).flexShrink(1)
+            }
+            for step in jarvis.steps {
+                Text(step, style: .meta).flexShrink(1)
+            }
+            if let answer = jarvis.answer {
+                Text(answer, style: .body).flexShrink(1)
             }
         }
     }
@@ -434,6 +475,7 @@ enum LensCards {
         }
         shot.followup = view.followup
         shot.working = view.working.map { workLine($0, at: Date()) }
+        shot.jarvis = view.jarvis.map { jarvisText($0, at: Date()) }
         return shot
     }
 
@@ -441,6 +483,21 @@ enum LensCards {
     static func shot(split view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false) -> LensShot {
         var shot = shot(aid: view, person: person, group: group, meSpeaking: meSpeaking)
         shot.kind = .split
+        var person = person, group = group
+        let wanted = bottom(person: person, group: group)
+        // Measured at its smallest (no cards, no question echo): the trimming in `fit` gets the
+        // panel that far before the people have to go.
+        var answerOnly = shot
+        answerOnly.cards = []
+        answerOnly.jarvis?.asked = ""
+        answerOnly.jarvis?.steps = []
+        if shot.jarvis?.answer != nil, wanted != .none, LensFit.content(answerOnly, bottom: wanted) > LensFit.room(wanted) {
+            shot.peopleYield = true
+            shot.group = []
+            shot.photo = nil
+            person = nil
+            group = []
+        }
         // What doesn't fit goes here, once, so the glass and the mirror drop the same thing.
         _ = LensFit.fit(&shot, bottom: bottom(person: person, group: group))
         if group.count >= 2 {
@@ -748,7 +805,21 @@ enum LensFit {
         // detail, then go; last of all the newest gives up its echo of the question.
         while content(shot, bottom: bottom) > room(bottom) {
             let last = shot.cards.count - 1
-            if last < 0 { break }
+            if last < 0 {
+                // Jarvis alone and still too tall: the question echo goes, then all but the
+                // newest step; the answer always stays.
+                guard var jarvis = shot.jarvis else { break }
+                if jarvis.steps.count > 1 { jarvis.steps.removeFirst(jarvis.steps.count - 1) }
+                else if !jarvis.asked.isEmpty { jarvis.asked = "" }
+                else { break }
+                shot.jarvis = jarvis
+                continue
+            }
+            // Jarvis was asked for by name: the passing cards make way for it first.
+            if shot.jarvis != nil {
+                shot.cards.removeLast()
+                continue
+            }
             // The newest answer keeps its question: it's one small line, and the answer needs it.
             if shot.cards[last].detail != nil, !(last == 0 && shot.cards[0].asked) {
                 shot.cards[last].detail = nil
@@ -780,11 +851,16 @@ enum LensFit {
             if let detail = card.detail { h += 4 + lines(detail, newest && !card.asked ? body : meta, width) }
             return h
         }
-        if shot.working.isEmpty && shot.followup == nil {
+        if shot.working.isEmpty && shot.followup == nil && shot.jarvis == nil {
             // The blank box only holds its line open when there is nothing else up top.
             pieces.append(40 + (shot.cards.isEmpty ? blank : 0))
         } else {
             var h: CGFloat = 40
+            if let jarvis = shot.jarvis {
+                h += 30 + 8 + (jarvis.asked.isEmpty ? 0 : lines(jarvis.asked, meta, width) + 8)
+                h += jarvis.steps.map { lines($0, meta, width) + 8 }.reduce(0, +)
+                if let answer = jarvis.answer { h += lines(answer, body, width) + 8 }
+            }
             h += shot.working.map { lines($0, meta, width - 38) + 10 }.reduce(0, +)
             if let followup = shot.followup { h += lines(followup, body, width - 38) } else { h -= 10 }
             pieces.append(h)

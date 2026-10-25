@@ -1,0 +1,22 @@
+# The first two minutes with a judge: Toby wears the glasses, the judge walks up and talks.
+# What should happen: nothing on the personal questions (no flicker either); a definition or an
+# insight on the real jargon; an answer from memory (Berkeley to SF, who founded Anthropic, and
+# the follow-up "when did they start it"); a lookup where memory isn't enough (the latest Turing
+# Award); a place for the coffee question. Wrong is worse than nothing.
+THEM: Hey, I'm Priya, I'm one of the judges. What are you guys building?
+ME: Hey Priya. It's a conversation aid for the Meta Ray-Ban Display glasses.
+ME: It listens, works out who said what with speaker diarization, and puts answers on the lens.
+THEM: Oh nice. So is it kind of like Cluely, but for in-person conversations?
+ME: Sort of, except it never tells you what to say. It just gives you facts.
+THEM: Got it. I did RLHF at Anthropic for a few years, mostly reward modeling, so I care a lot about hallucinations.
+ME: Anything recent gets grounded with a web search.
+THEM: Okay, quick test. Who won the most recent Turing Award?
+PAUSE: 3
+THEM: And roughly how far is Berkeley from San Francisco?
+PAUSE: 2
+THEM: Who founded Anthropic?
+PAUSE: 1
+THEM: When did they start it?
+PAUSE: 2
+THEM: Last thing, is there a good coffee place near here? I need caffeine.
+PAUSE: 4
