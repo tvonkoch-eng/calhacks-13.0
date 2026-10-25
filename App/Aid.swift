@@ -178,6 +178,22 @@ enum Talk {
                 " you know how ", " is there ", " are there ", " can you ", " could you ", " tell me "].contains { t.contains($0) }
     }
 
+    /// "How much did they raise?", "when did that pass", "who runs the company": the question leans on
+    /// something said earlier, so on its own it can't be answered or searched. Phrases where the
+    /// word points at nothing ("is there", "what time is it") don't count.
+    static func needsContext(_ question: String) -> Bool {
+        var q = " " + normalized(question) + " "
+        for idiom in [" is there ", " are there ", " was there ", " were there ", " what time is it ", " what day is it ",
+                      " how far is it from ", " is it true ", " over there ", " out there "] {
+            q = q.replacingOccurrences(of: idiom, with: " ")
+        }
+        let pointers = [" it ", " its ", " they ", " them ", " their ", " that ", " this ", " those ", " these ",
+                        " he ", " him ", " his ", " she ", " her ", " there ", " the company ", " the startup ",
+                        " the guy ", " the bill ", " the thing ", " the one ", " the same ", " the other ", " the place ",
+                        " the book ", " the movie ", " the show ", " the paper ", " the law ", " the deal "]
+        return pointers.contains { q.contains($0) }
+    }
+
     /// "Who won the most recent Turing Award", "the latest on the GENIUS Act", "the current CEO": a
     /// question whose answer changes, so memory can't be trusted with it.
     static func wantsNow(_ question: String) -> Bool {
@@ -295,6 +311,25 @@ enum Talk {
 /// The Compositor (Lens.swift) decides what of all that is on the lens at any moment.
 ///
 /// Pure Foundation, so the phone (Assistant) and the Mac (tools/live-mac.swift) run the same aid.
+/// Ran past its time limit. Nothing on the lens may think forever: a request that takes longer
+/// than this is given up and says so.
+struct Deadline: LocalizedError {
+    var errorDescription: String? { "took too long" }
+}
+
+/// `work`, or `Deadline` after `seconds`, whichever comes first; the loser is cancelled.
+func withDeadline<T>(_ seconds: Double, _ work: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await work() }
+        group.addTask {
+            try await Task.sleep(for: .seconds(seconds))
+            throw Deadline()
+        }
+        defer { group.cancelAll() }
+        return try await group.next()!
+    }
+}
+
 @MainActor @Observable final class Aid {
     struct Model: Equatable {
         var provider: Provider
@@ -423,7 +458,7 @@ enum Talk {
         // "Jarvis" starting the sentence still being said shows the listening row now. The request
         // itself still waits for the sentence to close (`command`), so nothing fires early.
         // Only the wearer's own "Jarvis": someone else in the room saying it must not wipe an answer.
-        if !wakeShownThisTurn, mine, Tools.opensWithJarvis(open) {
+        if !wakeShownThisTurn, Tools.byName(open) {
             wakeShownThisTurn = true
             if wokenAt == nil { showWake() }
         }
@@ -640,6 +675,12 @@ enum Talk {
             if endpointed { commit(nil) }
             return
         }
+        // "How much did they raise?": who "they" are was said earlier. Wait for the whole question,
+        // rewrite it to stand alone from the last few minutes, then answer that.
+        if !resolvedPass, Talk.needsContext(candidate.text), Answerer.local(candidate.text) == nil {
+            if endpointed { resolveThenAnswer(candidate.text, mine: mine) }
+            return
+        }
         if config.explicitOnly, endpointed, !text.trimmed.hasSuffix("?"), candidate.confidence != .strong {
             abandon()
             return
@@ -674,6 +715,39 @@ enum Talk {
         }
         guard candidate.confidence == .strong else { return }
         if firedText.isEmpty || shouldRefire(candidate.text) { fire(candidate.text) }
+    }
+
+    /// Set while a rewritten question goes back through `answerHeard`, so it isn't rewritten again.
+    @ObservationIgnored private var resolvedPass = false
+    @ObservationIgnored private var resolving: String?
+
+    private func resolveThenAnswer(_ question: String, mine: Bool) {
+        guard resolving != question, let using = model(config.answers, blockedUntil: answersBlockedUntil) ?? config.backup else { return }
+        resolving = question
+        // Far more of the conversation than a plain answer gets: the referent can be minutes back.
+        let context = self.context(last: 30)
+        let started = Date()
+        Task { [weak self] in
+            let standalone = try? await Answerer.standalone(question, context: context, provider: using.provider,
+                                                            key: using.key, model: using.model)
+            guard let self else { return }
+            self.resolving = nil
+            switch standalone {
+            case nil:
+                // The rewrite failed: the question as said, with the conversation as context, still
+                // beats nothing.
+                self.resolvedPass = true
+                self.answerHeard(question + "?", endpointed: true, mine: mine)
+                self.resolvedPass = false
+            case let text? where text == "SKIP":
+                self.log(.status, "Skipped \"\(question)\": personal, or the conversation doesn't say what it means")
+            case let text?:
+                self.log(.status, "Resolved \"\(question)\" → \(text) · \(self.ms(since: started)) ms")
+                self.resolvedPass = true
+                self.answerHeard(text, endpointed: true, mine: mine)
+                self.resolvedPass = false
+            }
+        }
     }
 
     private func shouldRefire(_ text: String) -> Bool {
@@ -1095,7 +1169,7 @@ enum Talk {
                         self.publish()
                     } : nil
                     defer { ack?.cancel(); self.compositor.endWork(id: card); self.publish() }
-                    let result = try await toolbox.run(name, arguments: arguments)
+                    let result = try await withDeadline(15) { try await toolbox.run(name, arguments: arguments) }
                     ack?.cancel()
                     guard !Task.isCancelled else { return }
                     self.compositor.endWork(id: card)
@@ -1125,6 +1199,8 @@ enum Talk {
     // MARK: - Jarvis: asked by name, thinks, shows its work
 
     @ObservationIgnored private var jarvisTask: Task<Void, Never>?
+    /// The longest Jarvis may think, tools and all, before it gives up and says so.
+    nonisolated static let jarvisLimit: TimeInterval = 25
 
     /// The wearer asked Jarvis: its panel goes up at once, every step shows as it happens, and
     /// the answer lands in the panel (and in their ear, `onJarvis`). A new request replaces one
@@ -1172,15 +1248,25 @@ enum Talk {
             }
             var used = model
             var answer: String
+            let started = Date()
             do {
                 do {
-                    answer = try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: model, step: step)
-                } catch where fallback != nil && !Task.isCancelled {
-                    // The big model is down or rate-limited: the fast one still answers.
+                    answer = try await withDeadline(Self.jarvisLimit) {
+                        try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: model, step: step)
+                    }
+                } catch where fallback != nil && !Task.isCancelled && !(error is Deadline) {
+                    // The big model is down or rate-limited: the fast one still answers, in what's left.
                     await MainActor.run { self?.log(.status, "Jarvis on the fast model: \(error.localizedDescription)") }
                     used = fallback!
-                    answer = try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: used, step: step)
+                    let left = max(4, Self.jarvisLimit - Date().timeIntervalSince(started))
+                    answer = try await withDeadline(left) {
+                        try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: used, step: step)
+                    }
                 }
+            } catch is Deadline {
+                guard !Task.isCancelled else { return }
+                self?.log(.status, "Jarvis gave up after \(Int(Self.jarvisLimit)) s: \(request)")
+                answer = "That was taking too long. Try asking for just the name or the key fact."
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.log(.status, "Jarvis failed: \(error.localizedDescription)")
@@ -1648,7 +1734,7 @@ enum Talk {
         let condenser = (config.perMinute != nil ? config.backup : nil) ?? config.answers ?? config.backup
         lookupTask = Task { [weak self] in
             do {
-                let finding = try await researcher.research(question, context: context)
+                let finding = try await withDeadline(15) { try await researcher.research(question, context: context) }
                 var result = ToolResult(title: String(finding.prefix(60)), detail: "", icon: "starCircleTriangleAi")
                 if let condenser {
                     result = try await Tools.card(from: finding, about: question, provider: condenser.provider,

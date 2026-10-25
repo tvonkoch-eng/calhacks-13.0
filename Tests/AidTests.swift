@@ -87,11 +87,12 @@ do {
     check(twice.view.cards.count == 1, "the same term twice shows once")
 }
 
-// Nothing new goes up while the wearer talks, except an answer.
+// Only insights wait while the wearer talks; definitions and answers go up at once.
+let insight = Card(kind: .insight, title: "Reward hacking", detail: "a fact", id: 2)
 do {
     var lens = Compositor()
     lens.hold(true, at: at(0))
-    lens.show(definition, at: at(0.5))
+    lens.show(insight, at: at(0.5))
     lens.pin("What made you pick CAR T?", at: at(0.6))
     check(lens.view.cards.isEmpty && lens.view.followup == nil, "held while the wearer talks")
     lens.show(answer("2,225 nautical miles", live: false), at: at(1))
@@ -104,8 +105,8 @@ do {
     check(late.view.card == definition && late.view.followup == "What made you pick CAR T?", "shown when they stop, if fresh")
     var stale = Compositor()
     stale.hold(true, at: at(0))
-    stale.show(definition, at: at(0))
-    stale.hold(false, at: at(Compositor.maxWait[.definition]! + 1))
+    stale.show(insight, at: at(0))
+    stale.hold(false, at: at(Compositor.maxWait[.insight]! + 1))
     check(stale.view.cards.isEmpty, "dropped if they talked too long")
 }
 
@@ -120,6 +121,10 @@ do {
           == "how many moons does jupiter have", "a question buried in run-on talk")
     check(QuestionGate.candidate(in: "I was like I know what you mean honestly") == nil, "\"what you mean\" is not a question")
     check(QuestionGate.candidate(in: "he told me how much it cost them last year") == nil, "\"how much it cost\" is not a question")
+    check(Talk.needsContext("how much did they raise"), "\"they\" needs the conversation")
+    check(Talk.needsContext("when did that bill pass"), "\"that bill\" needs the conversation")
+    check(!Talk.needsContext("how many moons does jupiter have"), "a self-contained question")
+    check(!Talk.needsContext("is there a coffee place near here"), "\"is there\" points at nothing")
     check(QuestionGate.candidate(in: "Were you there?") == nil, "a real \"were\" question to the listener stays personal")
     check(QuestionGate.candidate(in: "how did you end") == nil, "\"how did you end (up…)\" is personal, even as a fragment")
     check(QuestionGate.candidate(in: "how do you say thank you in Japanese")?.confidence == .strong, "generic-you how-to still passes")
@@ -209,8 +214,8 @@ do {
     check(c.view.jarvis?.header(at: t.addingTimeInterval(4)) == "Jarvis \u{00B7} 4s", "it counts up while it thinks")
     c.jarvisAnswer("Priya: you owe her the deck by tomorrow.", at: t.addingTimeInterval(5))
     check(c.view.jarvis?.thinking == false && c.view.jarvis?.header(at: t) == "Jarvis", "answered")
-    check(c.nextDeadline == t.addingTimeInterval(5 + 12), "an answer stays 12 s: \(String(describing: c.nextDeadline))")
-    c.tick(at: t.addingTimeInterval(17.1))
+    check(c.nextDeadline == t.addingTimeInterval(5 + 20), "an answer stays 20 s: \(String(describing: c.nextDeadline))")
+    c.tick(at: t.addingTimeInterval(25.1))
     check(c.view.jarvis == nil, "then it goes")
     c.startJarvis("x", at: t)
     c.tick(at: t.addingTimeInterval(121))
