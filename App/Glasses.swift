@@ -232,10 +232,9 @@ enum Identification {
     /// 30 fell to 504x896 within ~10 s, and per-frame sharpness falls as the rate rises. Face scans
     /// cost the same at every size. Battery is the price; push `streamFps: 2` to go back.
     ///
-    /// Now 15 again (Oct 24, 7:50 pm, asked for): smoother faces, at the risk below of dropping
-    /// under 720p. `streamFps: 7` goes back with no rebuild.
+    /// Briefly 15 (Oct 24, 7:50 pm), back to 7 at 8 pm.
     ///
-    /// Was high at 7. The evening link test (Oct 24, glasses on) never got 720p at 15 fps, not even
+    /// High at 7. The evening link test (Oct 24, glasses on) never got 720p at 15 fps, not even
     /// with the lens idle; at 7 fps it held 720p 100% idle and while writing names. Full-card
     /// writes can still push it to 504x896, so a card is written once per new person.
     /// What the currently-attached camera was actually built with, so a pushed change to
@@ -244,7 +243,7 @@ enum Identification {
     @ObservationIgnored private var liveStreamSettings: String?
     private var streamSettings: String { "\(streamFps)/\(streamRes)" }
     var streamRes: String { UserDefaults.standard.string(forKey: "streamRes") ?? "high" }
-    var streamFps: Int { Tuning.int("streamFps", 15) }
+    var streamFps: Int { Tuning.int("streamFps", 7) }
     /// Names a recorded run. A simulated pair ignores the knobs (see `streamConfig`), so say so.
     private var streamLabel: String {
         #if DEBUG
