@@ -850,6 +850,10 @@ enum Talk {
         guard let toolbox = config.toolbox, let primary = model(config.answers, blockedUntil: answersBlockedUntil) else { return }
         nextCard += 1
         let card = nextCard, echo = Self.echo(request), started = Date()
+        // In flight counts as answered: the coach's second look at the same line ("…near Cal Hacks
+        // 13.0?") put "Great China" up twice.
+        answeredAt = started
+        answeredText = request
         if let instant = Answerer.local(request) {
             compositor.show(Card(kind: .answer, title: instant, detail: echo, id: card, icon: "clock"), at: started)
             log(.answer, instant, detail: "\(request) · local")
@@ -880,6 +884,7 @@ enum Talk {
                 switch decision {
                 case .skip:
                     if command { self.put(Card(kind: .answer, title: "Not sure", detail: echo, id: card)) }
+                    self.log(.lookup, request, detail: "tool model skipped · \(used.model)")
                     return
                 case .answer(let text):
                     self.put(Card(kind: .answer, title: text, detail: echo, id: card))
@@ -1072,7 +1077,10 @@ enum Talk {
         }
         // A fact or bit of context about the topic: more to know, never a line to say. Once per
         // topic, not one a definition or an answer just covered, not on a question (it gets an answer).
+        // And only about what was just said: a garbled line ("you never sink holy") got an insight
+        // on Calvisius from 40 s before.
         if config.insights, let insight = advice.insight, !Talk.asks(lines.last?.text ?? ""),
+           Talk.mentioned(insight.topic, in: recent) || Talk.mentioned(insight.fact, in: recent),
            !noted.contains(where: { Talk.same($0, insight.topic) }),
            !defined.contains(where: { Talk.same($0, insight.topic) || Talk.mentioned($0, in: Talk.normalized(insight.topic)) }),
            !Talk.mentioned(insight.topic, in: answered) {

@@ -275,6 +275,13 @@ do {
     check(!Talk.asksAbout(promise, in: "Did you make it to Lisbon?"), "a different question is fine")
 }
 
+// Place questions in the plural go to the device tools too.
+do {
+    check(Tools.wants("What is like a popular Chinese restaurant near us?"), "near us is a place question")
+    check(Tools.wants("anything good to eat around us"), "around us is a place question")
+    check(Tools.wants("is there a coffee shop in the area"), "in the area is a place question")
+}
+
 // Asking the glasses for a line to say, as opposed to asking them a question.
 do {
     check(Talk.asksForSuggestion("what should I ask?"), "what should I ask")

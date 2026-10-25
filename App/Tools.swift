@@ -61,6 +61,8 @@ enum Tools {
     private static let cues = [
         // places
         "nearest", "closest", "near me", "near here", "nearby", "around here", "close by", "close to here",
+        // "us" and "you" as often as "me": "a popular Chinese restaurant near us" went unanswered.
+        "near us", "near you", "around us", "close to us", "in the area", "around the corner", "walk from here",
         "how far", "walking distance", "where's the", "where is the", "where can i", "where do i find",
         "directions to", "get to the",
         // weather
