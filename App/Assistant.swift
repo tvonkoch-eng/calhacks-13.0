@@ -331,7 +331,14 @@ import Observation
             lineLevels.append(level)
             if lineLevels.count > 30 { lineLevels.removeFirst() }
             let typical = lineLevels.sorted()[lineLevels.count / 2]
-            if lineLevels.count >= 4, level >= typical + Tuning.float("meLoudGap", 6) {
+            // Close to the mic is the wearer: at or above `meLoudDb` outright (Oct 24: the wearer
+            // ran -36…-33 dB on the iPhone mic), or well over the room's typical line. Wins over the
+            // glasses' own-voice check, which scored the wearer 0% on the phone mic and then
+            // locked their voice as someone else's.
+            let loudDb = Tuning.float("meLoudDb", -38)
+            if level >= loudDb {
+                verdict = Speakers.Verdict(who: .me, sure: true, why: String(format: "loud: %.0f dB", level))
+            } else if lineLevels.count >= 4, level >= typical + Tuning.float("meLoudGap", 6) {
                 verdict = Speakers.Verdict(who: .me, sure: false, why: String(format: "loud: %.0f dB over typical", level - typical))
             }
         }
