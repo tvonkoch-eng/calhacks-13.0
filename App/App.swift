@@ -234,16 +234,6 @@ struct HomeView: View {
                             .clipped()
                             .padding(.horizontal, 20)
                             .padding(.bottom, 10)
-                        AidStrip.template.hidden()
-                            .overlay(alignment: .topLeading) {
-                                if assistant.armed, !assistant.aid.lens.isEmpty {
-                                    AidStrip(view: assistant.aid.lens)
-                                }
-                            }
-                            .clipped()
-                            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color(.separator)))
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 10)
                         TimelineView(.periodic(from: .now, by: 30)) { context in
                             VStack(spacing: 0) {
                                 if query.isEmpty { FollowUps(now: context.date) }
@@ -442,6 +432,36 @@ struct WorkRow: View {
                     .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// The aid's answers and suggestion over the lens's top third, at lens scale, text on the glass.
+struct AidOverlay: View {
+    let view: LensView
+    private let m = LensMetrics()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(view.cards.enumerated()), id: \.element.id) { index, card in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.title).font(.system(size: index == 0 ? m.heading : m.body, weight: index == 0 ? .semibold : .regular))
+                    if !card.detail.isEmpty {
+                        Text(card.detail).font(.system(size: index == 0 ? m.body : m.meta)).foregroundStyle(Color(white: 0.83))
+                    }
+                }
+            }
+            if let work = view.working.first {
+                Label(work.label, systemImage: "sparkles").font(.system(size: m.meta))
+            }
+            if let followup = view.followup {
+                Label(followup, systemImage: "bubble.left").font(.system(size: m.body))
+            }
+        }
+        .padding(m.pad)
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.7), radius: 3)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .clipped()
     }
 }
 
@@ -1374,6 +1394,9 @@ struct LensPanel: View {
     /// The lens's 600 x 600 boundary, dashed. Off by default: only the cards show.
     @AppStorage("lensBoundary") private var boundary = false
     let lens: UIView?
+    /// The aid's answers and suggestion. Drawn in the lens's top third whenever the lens itself
+    /// isn't already showing them (the split does), so they're never only below the dialogue.
+    var aid: LensView? = nil
     let pov: UIImage?
     let mocking: Bool
     let connected: Bool
@@ -1485,11 +1508,15 @@ struct LensPanel: View {
                 // glass; only the bottom `shown` of it is kept.
                 // The mirror first: the SDK's preview view paints its cards opaque, so only the
                 // mirror can show them as glass. The SDK view stays for the side-by-side compare.
-                Group {
+                ZStack(alignment: .top) {
                     if let shot {
                         LensMirror(shot: shot, avatar: avatar)
                     } else if let lens {
                         MockLens(view: lens)
+                    }
+                    if let aid, !aid.isEmpty, shot?.kind != .split {
+                        AidOverlay(view: aid)
+                            .frame(width: LensMetrics.canvas, height: LensMetrics.canvas / 3, alignment: .topLeading)
                     }
                 }
                 .frame(width: LensMetrics.canvas, height: LensMetrics.canvas)
@@ -1636,10 +1663,11 @@ struct HomeHeader: View {
 /// The lens mirror and camera tile, reading the per-frame state itself so nothing around it redraws.
 struct LiveLensPanel: View {
     @Environment(Store.self) private var store
+    @Environment(Assistant.self) private var assistant
     @Environment(Glasses.self) private var glasses
 
     var body: some View {
-        LensPanel(lens: glasses.mockLens, pov: glasses.pov, mocking: glasses.mocking,
+        LensPanel(lens: glasses.mockLens, aid: assistant.armed ? assistant.aid.lens : nil, pov: glasses.pov, mocking: glasses.mocking,
                   connected: glasses.connected, identifying: glasses.identifying,
                   cameraNote: glasses.cameraNote, shot: glasses.lensShot, avatar: { store.lensAvatar($0) },
                   frameSize: glasses.frameSize)
