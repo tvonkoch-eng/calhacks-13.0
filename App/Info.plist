@@ -78,6 +78,8 @@
 	<string>Tells you what is next on your calendar.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Recognizes your teammates' faces on device.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Saves people you met to your Contacts when you ask.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Lets your phone find and connect to your glasses over Wi-Fi.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

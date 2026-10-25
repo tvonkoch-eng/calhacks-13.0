@@ -144,7 +144,8 @@ struct PeopleHome: View {
         guard !query.isEmpty else { return sorted }
         let q = query.lowercased()
         return sorted.filter { person in
-            ([person.name, person.role, person.work, person.school, person.from, person.interests, crm.label(person.id)]
+            ([person.name, person.role, person.work, person.school, person.from, person.interests, crm.label(person.id),
+              person.email, person.phone, person.linkedin, person.instagram]
                 .compactMap { $0 } + (person.tags ?? [])).contains { $0.lowercased().contains(q) }
         }
     }
@@ -356,6 +357,7 @@ struct ContactView: View {
     @Environment(CRM.self) private var crm
     let id: String
     @State private var editing = false
+    @State private var addingToContacts = false
     @State private var note = ""
     @State private var learned = ""
     @FocusState private var typingFact: Bool
@@ -372,6 +374,7 @@ struct ContactView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     header(person)
+                    ReachActions(person: person)
                     PersonCRM(person: person, conversations: false, learned: false)
                     section("Notes") {
                         TextField("Anything worth remembering about \(first(person))", text: $note, axis: .vertical)
@@ -381,6 +384,7 @@ struct ContactView: View {
                             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     section("What you know") { knowledge(person) }
+                    section("Contact") { ContactRows(person: person) { editing = true } }
                     section("About") { about(person) }
                     section("History") { history(person) }.id("history")
                     if crm.consent(id) != .pending {
@@ -411,9 +415,20 @@ struct ContactView: View {
             .scrollDismissesKeyboard(.interactively)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Edit") { editing = true } }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Add to iPhone Contacts", systemImage: "person.crop.circle.badge.plus") { addingToContacts = true }
+                        ShareLink(item: VCard(person: person), preview: SharePreview(person.name)) {
+                            Label("Share contact", systemImage: "square.and.arrow.up")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    Button("Edit") { editing = true }
+                }
             }
             .sheet(isPresented: $editing) { ContactEditor(person: person) { _ in } }
+            .sheet(isPresented: $addingToContacts) { NewContactSheet(person: person).ignoresSafeArea() }
             .onAppear { note = store.notes[id] ?? "" }
             .onChange(of: note) { _, text in store.setNote(id, text) }
         } else {
@@ -611,6 +626,11 @@ struct ContactEditor: View {
     @State private var from = ""
     @State private var interests = ""
     @State private var tie = ""
+    @State private var phone = ""
+    @State private var email = ""
+    @State private var linkedin = ""
+    @State private var instagram = ""
+    @State private var website = ""
 
     var body: some View {
         NavigationStack {
@@ -626,6 +646,15 @@ struct ContactEditor: View {
                     TextField("Into", text: $interests, axis: .vertical)
                     TextField("How you met", text: $tie, axis: .vertical)
                 }
+                Section("Contact") {
+                    TextField("Phone", text: $phone).textContentType(.telephoneNumber).keyboardType(.phonePad)
+                    TextField("Email", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress)
+                    TextField("LinkedIn profile or URL", text: $linkedin).keyboardType(.URL)
+                    TextField("Instagram", text: $instagram)
+                    TextField("Website", text: $website).keyboardType(.URL)
+                }
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
             }
             .navigationTitle(person == nil ? "New contact" : "Edit")
             .navigationBarTitleDisplayMode(.inline)
@@ -648,6 +677,11 @@ struct ContactEditor: View {
         from = person.from ?? ""
         interests = person.interests ?? ""
         tie = person.tie ?? ""
+        phone = person.phone ?? ""
+        email = person.email ?? ""
+        linkedin = person.linkedin ?? ""
+        instagram = person.instagram.map { "@" + $0 } ?? ""
+        website = person.website ?? ""
     }
 
     private func save() {
@@ -665,6 +699,12 @@ struct ContactEditor: View {
         updated.from = clean(from)
         updated.interests = clean(interests)
         updated.tie = clean(tie)
+        // What was typed stands; links are cut down to the handle when they can be.
+        updated.phone = clean(phone)
+        updated.email = clean(email)
+        updated.linkedin = Recap.Details.handle(linkedin, after: "/in/") ?? clean(linkedin)
+        updated.instagram = Recap.Details.handle(instagram, after: "instagram.com/") ?? clean(instagram)
+        updated.website = Recap.Details.website(website) ?? clean(website)
         store.update(updated)
         crm.rename(id, to: name)
         dismiss()
