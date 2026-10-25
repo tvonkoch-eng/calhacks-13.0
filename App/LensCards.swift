@@ -195,7 +195,9 @@ enum LensCards {
     private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool, focused: Bool) -> FlexBox {
         let share = Float(LensFit.photoShare(width))
         return FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
-            if let photo {
+            // The photo's box is always there, a grey square until the photo lands, so the name and
+            // bullets never move when it arrives.
+            if let photo = photo ?? placeholder {
                 FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
                     .flexGrow(share).flexShrink(0)
             }
@@ -510,6 +512,12 @@ enum LensCards {
         case .from: .house
         case .interests: .heart
         }
+    }
+
+    /// Holds the photo's place while it's on its way: the same grey as the mirror's.
+    static let placeholder: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96)).image { _ in
+        UIColor(white: 0.28, alpha: 1).setFill()
+        UIBezierPath(rect: CGRect(x: 0, y: 0, width: 96, height: 96)).fill()
     }
 
     /// The in-focus mark: the photo inside a soft greenish-yellow glow. The lens draws no borders

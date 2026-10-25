@@ -1061,6 +1061,11 @@ struct LensMirror: View {
                     .resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.16, style: .continuous))
+            } else {
+                // No photo yet: its box holds the place, as on the lens.
+                RoundedRectangle(cornerRadius: size * 0.16, style: .continuous)
+                    .fill(Color(white: 0.28))
+                    .frame(width: size, height: size)
             }
             Text(LensFit.nameText(name, width: width))
                 .font(.system(size: LensFit.full(width) ? m.heading : m.body, weight: .semibold))
