@@ -241,9 +241,11 @@ struct Reminder: Codable, Identifiable, Equatable {
             reminders = saved.reminders
             profiles = saved.profiles ?? [:]
         }
-        // Older installs met people as pending; they're kept now too.
-        for i in contacts.indices where contacts[i].id.hasPrefix("met-") && contacts[i].consent == .pending {
-            contacts[i].consent = .saved
+        // Older installs met people as pending; with `keepMetFaces` they're kept now too.
+        if Self.knob("keepMetFaces", true) {
+            for i in contacts.indices where contacts[i].id.hasPrefix("met-") && contacts[i].consent == .pending {
+                contacts[i].consent = .saved
+            }
         }
         expire(now: now)
     }
@@ -303,6 +305,11 @@ struct Reminder: Codable, Identifiable, Equatable {
         if let same = contacts.first(where: { Talk.same($0.name, name) && $0.created > recent }) { return same.id }
         guard filesStrangers else { return nil }
         return newContact(name, at: encounter.at)
+    }
+
+    /// A switch from the tuning file or UserDefaults (Tuning.swift is not in the pure test build).
+    static func knob(_ key: String, _ fallback: Bool) -> Bool {
+        (UserDefaults.standard.object(forKey: key) as? NSNumber)?.boolValue ?? fallback
     }
 
     private func newContact(_ name: String, at date: Date) -> String {
@@ -371,9 +378,12 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// gone after `pendingDays` unless kept.
     @discardableResult func meet(at now: Date = .now) -> String {
         let id = newContact(Self.newName, at: now)
-        // Kept from the start (Oct 24): someone met by face is a contact until removed in People,
-        // never a pending one that a relaunch drops from face ID or a week deletes.
-        if let i = contacts.firstIndex(where: { $0.id == id }) { contacts[i].consent = .saved }
+        // Kept from the start (Oct 24, Joaquin): someone met by face is a contact until removed in
+        // People, never a pending one that a relaunch drops from face ID or a week deletes. Off
+        // (`keepMetFaces: false`): pending, unrecognisable, and forgotten after a week unless kept.
+        if Self.knob("keepMetFaces", true), let i = contacts.firstIndex(where: { $0.id == id }) {
+            contacts[i].consent = .saved
+        }
         newcomer = id
         newcomerSpoke = false
         glancedLines = 0
@@ -403,8 +413,12 @@ struct Reminder: Codable, Identifiable, Equatable {
         guard var conversation = live, force || now.timeIntervalSince(lastLine) >= gap else { return }
         live = nil
         // Someone met by face who never spoke in this conversation was in the background, not in
-        // it: nothing is filed under them, and the pending contact goes.
-        // A new face is kept even if they never spoke (asked for, Oct 24): named later in People.
+        // it: nothing is filed under them, and the contact goes. Joaquin's Oct 24 change kept them
+        // (named later in People); `removeSilentFaces: false` brings that back.
+        if let id = newcomer, !newcomerSpoke, Self.knob("removeSilentFaces", true) {
+            conversation.faces.removeAll { $0 == id }
+            forgetPerson(id)
+        }
         newcomer = nil
         newcomerSpoke = false
         watch?.cancel()
