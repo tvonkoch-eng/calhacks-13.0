@@ -260,7 +260,7 @@ struct SavedConversation: Codable, Identifiable, Equatable {
         let partial = assistant.aid.partial
         if !partial.isEmpty {
             let mine = assistant.meSpeaking
-            let other = assistant.aid.lines.last { $0.speaker != Assistant.me && !$0.command }.map { assistant.voices[$0.id] ?? $0.speaker }
+            let other = assistant.aid.lines.last { $0.speaker != Assistant.me && !$0.command }.flatMap { assistant.voices[$0.id] ?? $0.speaker }
             out.append(SavedLine(id: "live", who: mine ? "Me" : person(other), text: partial, me: mine, speaking: true))
         }
         return out
