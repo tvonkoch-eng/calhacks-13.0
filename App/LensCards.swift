@@ -191,7 +191,9 @@ enum LensCards {
                     .flexGrow(share).flexShrink(0)
             }
             FlexBox(direction: .column) {
-                Text(twoLines(name), style: .heading, color: bright ? .primary : .secondary).flexShrink(1)
+                // The lens can't shrink text to fit, so a name too wide for the heading drops a style.
+                Text(twoLines(name), style: LensFit.nameFits(name, width: width) ? .heading : .body,
+                     color: bright ? .primary : .secondary).flexShrink(1)
             }
             .flexGrow(1 - share).flexShrink(1)
         }
@@ -565,6 +567,16 @@ enum LensFit {
     static let memberWidth: CGFloat = (panel - 12) / 2 - 44
     static let photoGap: CGFloat = 14
 
+    /// The width beside the photo, where the name goes.
+    static func beside(_ width: CGFloat) -> CGFloat { (width - photoGap) * (1 - photoShare(width)) }
+
+    /// Whether every word of the name fits beside the photo in the heading style.
+    static func nameFits(_ name: String, width: CGFloat) -> Bool {
+        name.split(separator: " ").allSatisfy {
+            (String($0) as NSString).size(withAttributes: [.font: heading]).width * slack <= beside(width)
+        }
+    }
+
     /// The photo's share of the header row: tall enough for a full name on two heading lines.
     static func photoShare(_ width: CGFloat) -> CGFloat { width > 400 ? 0.2 : 0.38 }
 
@@ -572,7 +584,8 @@ enum LensFit {
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
         // Padding, then the header: the photo, or the name beside it if taller.
         let photo = (width - photoGap) * photoShare(width)
-        let header = max(photo, lines(LensCards.twoLines(name), heading, width - photoGap - photo) * slack)
+        let header = max(photo, lines(LensCards.twoLines(name), nameFits(name, width: width) ? heading : body,
+                                      width - photoGap - photo) * slack)
         var left = half - (44 + header + gap)
         var out: [String] = []
         for line in pool {
