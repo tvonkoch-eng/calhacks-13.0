@@ -407,7 +407,6 @@ struct ContactView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("Edit", systemImage: "pencil") { editing = true }
                         // Roster people come back from New person's quick add; anyone else is forgotten.
                         Button("Remove", systemImage: "person.badge.minus", role: .destructive) {
                             if store.people.contains(where: { $0.id == id }) { store.remove(id) } else { crm.forgetPerson(id) }
@@ -426,9 +425,25 @@ struct ContactView: View {
 
     private func header(_ person: Person) -> some View {
         HStack(alignment: .center, spacing: 16) {
-            Avatar(person: person, size: 76, corner: 22)
+            // One tap on the photo or the name edits them; the little pencils say so.
+            Button { editing = true } label: {
+                Avatar(person: person, size: 76, corner: 22)
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "pencil").font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color(.systemBackground))
+                            .frame(width: 22, height: 22).background(Color.primary, in: Circle())
+                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                            .offset(x: 5, y: 5)
+                    }
+            }
+            .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 3) {
-                Text(person.name).font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(2)
+                Button { editing = true } label: {
+                    (Text(person.name) + Text("  ") + Text(Image(systemName: "pencil")).font(.system(size: 15, weight: .semibold)).foregroundColor(.secondary))
+                        .font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain)
                 Text(crm.label(id) ?? person.headline).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 Text(summary).font(.caption).foregroundStyle(.tertiary).padding(.top, 2)
             }
