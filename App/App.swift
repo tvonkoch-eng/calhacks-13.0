@@ -1071,7 +1071,7 @@ struct LensMirror: View {
 
     /// The lens's own glasses mark, at the lens's icon size.
     @ViewBuilder private var glassesMark: some View {
-        if let mark = LensCards.glassesMark { Image(uiImage: mark).resizable().frame(width: m.icon * 0.6, height: m.icon * 0.6) }
+        if let mark = LensCards.glassesMark { Image(uiImage: mark).resizable().frame(width: m.icon, height: m.icon) }
     }
 
     @ViewBuilder private func photoBox(id: String, size: CGFloat) -> some View {
