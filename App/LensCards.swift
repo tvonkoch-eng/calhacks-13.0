@@ -93,8 +93,6 @@ enum LensCards {
                 personCard(person, shot: shot, avatar: { photoPending ? nil : avatar($0) })
             }
         }
-        // A margin above the bottom edge, where the display fades: the last bullet stays readable.
-        .padding(.bottom, LensFit.buffer)
         .flexGrow(1)
     }
 
@@ -756,7 +754,7 @@ enum LensFit {
     }
 
     /// Clear space kept above the bottom edge, which fades into haze on the glass.
-    static let buffer: CGFloat = 28
+    static let buffer: CGFloat = 44
     private static var available: CGFloat { panel - floor - margin - buffer }
 
     /// The aid's part only: the cards and the extras, spacing included.

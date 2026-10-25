@@ -2399,7 +2399,9 @@ enum Identification {
     /// Lens writes, one at a time and newest wins: a burst of updates (an answer streaming in)
     /// collapses to the latest card every `minSendInterval`, and no write ever overlaps another.
     private func send(_ view: FlexBox) {
-        queuedView = view
+        // Every card, whatever its layout, stops `LensFit.buffer` above the bottom edge, where the
+        // display fades; the phone mirror keeps the same margin (`LensMetrics.bottom`).
+        queuedView = view.padding(.bottom, LensFit.buffer)
         guard lensWriter == nil else { return }
         lensWriter = Task { [weak self] in
             while let self, !Task.isCancelled, self.queuedView != nil {
