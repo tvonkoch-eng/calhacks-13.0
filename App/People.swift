@@ -821,6 +821,8 @@ struct FaceGallery: View {
                         .overlay(Image(systemName: "plus").font(.title2.weight(.medium)).foregroundStyle(.secondary))
                 }
                 .buttonStyle(.plain)
+                // Their profile photo, first.
+                if let avatar = store.avatars[person.id] { tile(avatar) }
                 ForEach(shots.reversed()) { shot in
                     Button { doomed = shot } label: { tile(shot.image) }.buttonStyle(.plain)
                 }
