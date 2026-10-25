@@ -778,6 +778,18 @@ enum Talk {
     }
 
     /// The lens is small: echo just enough of the question to make the answer legible.
+    /// A tool's title and detail as one answer: each "·" part once, and none the question already
+    /// says. "London · 5368 mi" + "~13 hr flight · London" for "how far is London" → "5368 mi · ~13 hr flight".
+    private static func tidy(_ title: String, _ detail: String, asked: String) -> String {
+        let question = asked.lowercased()
+        var seen = Set<String>()
+        let parts = (title + " \u{00B7} " + detail).components(separatedBy: "\u{00B7}")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+        let fresh = parts.filter { !question.contains($0.lowercased()) }
+        return (fresh.isEmpty ? parts : fresh).joined(separator: " \u{00B7} ")
+    }
+
     /// The question exactly as asked: small and grey, it wraps rather than being cut.
     private static func echo(_ question: String) -> String {
         question.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -870,7 +882,7 @@ enum Talk {
                         return
                     }
                     // The question line is only ever the question: the tool's own detail joins the answer.
-                    let answer = result.detail.isEmpty ? result.title : result.title + " \u{00B7} " + result.detail
+                    let answer = Self.tidy(result.title, result.detail, asked: request)
                     self.put(Card(kind: .answer, title: answer, detail: echo, id: card, icon: result.icon))
                     self.log(.answer, result.title, detail: "\(request) · \(name) · \(self.ms(since: started)) ms · \(used.model)")
                 }
