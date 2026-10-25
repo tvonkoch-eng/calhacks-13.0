@@ -1037,7 +1037,7 @@ struct LensMirror: View {
                     .frame(width: size, height: size)
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.16, style: .continuous))
             }
-            Text(name).font(.system(size: m.heading, weight: .semibold))
+            Text(LensCards.twoLines(name)).font(.system(size: m.heading, weight: .semibold))
                 .foregroundStyle(bright ? Color.white : secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

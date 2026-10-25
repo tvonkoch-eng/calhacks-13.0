@@ -191,10 +191,16 @@ enum LensCards {
                     .flexGrow(share).flexShrink(0)
             }
             FlexBox(direction: .column) {
-                Text(name, style: .heading, color: bright ? .primary : .secondary).flexShrink(1)
+                Text(twoLines(name), style: .heading, color: bright ? .primary : .secondary).flexShrink(1)
             }
             .flexGrow(1 - share).flexShrink(1)
         }
+    }
+
+    /// First name over the rest, so every name stands two lines tall beside its photo.
+    static func twoLines(_ name: String) -> String {
+        guard let space = name.firstIndex(of: " ") else { return name }
+        return name[..<space] + "\n" + name[name.index(after: space)...].trimmingCharacters(in: .whitespaces)
     }
 
     /// A headline cut to fit half the lens: "Founder, Rillet (YC W24)" → "Founder, Rillet…".
@@ -566,12 +572,13 @@ enum LensFit {
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
         // Padding, then the header: the photo, or the name beside it if taller.
         let photo = (width - photoGap) * photoShare(width)
-        let header = max(photo, lines(name, heading, width - photoGap - photo) * slack)
+        let header = max(photo, lines(LensCards.twoLines(name), heading, width - photoGap - photo) * slack)
         var left = half - (44 + header + gap)
         var out: [String] = []
         for line in pool {
             let h = lines(line, font, width) * slack + gap
-            if h > left { break }
+            // Too tall here, but a shorter one further down may still fit.
+            if h > left { continue }
             left -= h
             out.append(line)
         }
