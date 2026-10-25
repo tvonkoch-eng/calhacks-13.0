@@ -241,6 +241,25 @@ enum Talk {
         return String(text[range])
     }
 
+    /// "What's your name?" (or "who are you"), from anyone: the next short line may be the answer.
+    static func asksName(_ text: String) -> Bool {
+        let t = " " + normalized(text) + " "
+        return [" whats your name", " what is your name", " your name ", " who are you", " whats ur name"].contains { t.contains($0) }
+    }
+
+    /// The answer to "what's your name?": "Avi Shah", "It's Priya.", "Toby" → the name. One to three
+    /// capitalized words, after an optional "it's" / "I'm" / "my name is"; anything longer or
+    /// lower-case is a sentence, not a name.
+    static func answeredName(_ text: String) -> String? {
+        if let name = introducedName(in: text) { return name }
+        var words = text.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            .split(separator: " ").map(String.init)
+        if let first = words.first?.lowercased(), ["it's", "its", "uh", "um", "oh", "yeah", "hi", "hey"].contains(first) { words.removeFirst() }
+        guard (1...3).contains(words.count),
+              words.allSatisfy({ $0.first?.isUppercase == true && $0.allSatisfy(\.isLetter) }) else { return nil }
+        return words.joined(separator: " ")
+    }
+
     /// Two short notes that say the same thing ("paralegal for two years" vs "was a paralegal for
     /// two years"): most content words shared, either way round.
     static func same(_ a: String, _ b: String) -> Bool {
@@ -517,7 +536,10 @@ func withDeadline<T>(_ seconds: Double, _ work: @escaping () async throws -> T) 
             // Someone introducing themselves settles who's who: our name means the wearer,
             // any other name means the other person, and is their name. Only an introduction names
             // them (or face ID): a name merely mentioned is usually someone else's.
-            if let name = Talk.introducedName(in: text) {
+            // "I'm Priya", or a bare "Priya" answering "what's your name?" a moment ago (speaker
+            // labels can't be trusted to tell who asked, so the answer is the line after).
+            let answered = lines.last.map { Talk.asksName($0.text) && Date().timeIntervalSince($0.at) < 20 } == true
+            if let name = Talk.introducedName(in: text) ?? (answered ? Talk.answeredName(text) : nil) {
                 let ours = name.caseInsensitiveCompare(config.wearer) == .orderedSame
                 if !roles.sure, ours {
                     roles.lock(speaker)
@@ -593,6 +615,16 @@ func withDeadline<T>(_ seconds: Double, _ work: @escaping () async throws -> T) 
         // Someone known, met for the first time this conversation: the moment for an opener from
         // what we know (last time, a promise). Not again each time the focus comes back to them.
         if !them.facts.isEmpty, before == nil { offer(.recognised) }
+    }
+
+    /// Someone nobody knows just became a contact: they're who the conversation is with now, and
+    /// whoever face ID named before steps back, so the name they give is taken as theirs.
+    func metStranger() {
+        guard them.recognised else { return }
+        others = Array(([them] + others.filter { $0.name != them.name }).prefix(4))
+        them = Them()
+        compositor.setHeader(nil)
+        publish()
     }
 
     /// Everyone else face ID named in this conversation, most recent first.

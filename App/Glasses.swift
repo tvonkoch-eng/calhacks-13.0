@@ -2070,7 +2070,12 @@ enum Identification {
         if ![person.tie, person.highlights?.first, person.work, person.school].compactMap({ $0 }).allSatisfy(\.isEmpty) {
             demo.learned(person.id)
         }
-        guard case .known(let match, let hit) = result, match.person.id == person.id, match.person != person else { return }
+        guard case .known(let match, let hit) = result, match.person.id == person.id, match.person != person else {
+            // On the lens without being the identified result (the split, two people): redraw,
+            // it reads them from the store.
+            if lensPeople.contains(person.id) { renderLens() }
+            return
+        }
         result = .known(Match(person: person, score: match.score), hit)
         renderLens()
     }

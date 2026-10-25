@@ -531,6 +531,7 @@ import Observation
         let id = crm.meet()
         store.meet(Person(id: id, name: CRM.newName, role: "", source: "Met just now"), face: face, photo: photo)
         newcomers.append(id)
+        aid.metStranger()
         glasses?.demo.met(id)
         // A name already heard in this conversation, before the face was in focus, is theirs.
         if crm.live != nil, let name = aid.them.name, !aid.them.recognised { introduced(name) }
@@ -564,20 +565,29 @@ import Observation
         guard let crm, var person = person(id), crm.renamable(id) || newcomers.contains(id) else { return }
         // The CRM settled the name (heard, maybe corrected); the card follows it.
         if crm.renamable(id) { person.name = crm.name(id) }
+        // The LLM heard their name: the same path as an introduction (card, People, demo task).
+        if crm.renamable(id), person.name != CRM.newName, self.person(id)?.name != person.name {
+            rename(id, person.name)
+        } else if crm.renamable(id), person.name != CRM.newName {
+            glasses?.demo.named(id)
+        }
         if let label = glance.label { person.role = label }
         let facts = crm.facts(about: id).map(\.text)
         person.tie = facts.first
         person.highlights = facts.count > 1 ? Array(facts.dropFirst().prefix(2)) : nil
         store?.updateMet(person)
         glasses?.refresh(person)
-        SpeedLog.record(["event": "metLearned", "person": id, "facts": facts.count])
+        SpeedLog.record(["event": "metLearned", "person": id, "facts": facts.count, "name": person.name,
+                         "heardName": glance.name ?? ""])
     }
 
     /// Reset demo: every contact met goes (the roster stays), and the prompt starts over.
     func resetDemo() {
         guard let crm, let store else { return }
+        crm.dropLive()
         for contact in crm.contacts { crm.forgetPerson(contact.id); store.forget(contact.id) }
         store.rosterHidden = true
+        aid.reset(trigger: "demoReset")
         newcomers = []
         joined = [:]
         met = nil

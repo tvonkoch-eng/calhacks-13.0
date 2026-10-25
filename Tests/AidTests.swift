@@ -157,6 +157,11 @@ do {
     check(Talk.introducedName(in: "Hey, I'm Priya. Are you hacking this weekend?") == "Priya", "self-introduction")
     check(Talk.introducedName(in: "Yeah, I'm building a conversation aid") == nil, "\"I'm building\" is not a name")
     check(Talk.introducedName(in: "Nice to meet you, my name is Daniela.") == "Daniela", "my name is …")
+    check(Talk.asksName("Yo, what's your name?"), "what's your name asks for a name")
+    check(Talk.answeredName("Avi Shah") == "Avi Shah", "a bare name answers it (Oct 25 demo)")
+    check(Talk.answeredName("It's Toby.") == "Toby", "it's …")
+    check(Talk.answeredName("like do you get what I'm saying") == nil, "a sentence is not a name")
+    check(Talk.answeredName("thank you") == nil, "lower-case words are not a name")
 }
 
 // Text rules.

@@ -432,6 +432,12 @@ struct Reminder: Codable, Identifiable, Equatable {
         live?.faces.append(id)
     }
 
+    /// Demo reset: the conversation so far is dropped, not filed, so the next person starts clean.
+    func dropLive() {
+        live = nil
+        newcomer = nil
+    }
+
     /// Called on a timer and when the mic goes off. Closes the live conversation once it's been
     /// quiet for `gap`, or now when `force`.
     func tick(now: Date = .now, force: Bool = false) {
@@ -1245,7 +1251,10 @@ struct Glance: Equatable {
 
     Reply with one JSON object with exactly these keys:
     "name": THEM's name if they said it (first, plus last if said), else null. If the input gives \
-    a name and THEM said or spelled it differently, or corrected it, the corrected spelling.
+    a name and THEM said or spelled it differently, or corrected it, the corrected spelling. \
+    Speaker tags are often wrong: a short reply that is just a name ("Avi Shah", "It's Toby") \
+    right after someone asks "what's your name?" is THEM's name whichever tag either line has. \
+    Use the newest such answer; a name only mentioned in passing is someone else's.
     "label": who THEM is in at most 4 words, lowercase, from what they said: "evals startup \
     founder", "berkeley eecs junior". null if unclear.
     "facts": up to 3 durable things THEM said about themselves (job, school, project, where \
