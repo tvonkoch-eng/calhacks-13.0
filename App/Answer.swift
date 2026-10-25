@@ -51,11 +51,11 @@ enum Provider: String {
     func extras(model: String) -> [String: Any] {
         if model.contains("gpt-oss") { return ["max_tokens": 600, "reasoning_effort": "low"] }
         // Cerebras runs Qwen3 with thinking on by default; "none" turns it off (3 tokens, not 30).
-        if self == .cerebras || self == .openrouter, model.contains("qwen") { return ["max_tokens": 48, "reasoning_effort": "none"] }
+        if self == .cerebras || self == .openrouter, model.contains("qwen") { return ["max_tokens": 120, "reasoning_effort": "none"] }
         switch self {
         case .muse: return ["max_tokens": 400, "reasoning_effort": "minimal"]
-        case .anthropic: return ["max_tokens": 64, "reasoning_effort": "none"]
-        default: return ["max_tokens": 48]
+        case .anthropic: return ["max_tokens": 160, "reasoning_effort": "none"]
+        default: return ["max_tokens": 120]
         }
     }
 }
@@ -92,9 +92,10 @@ struct Answerer {
     jargon: read "the sharp on a market making book" as the Sharpe ratio, and so on, when the \
     conversation makes the meaning clear.
 
-    Answer in at most 5 words: just the fact, glanceable on glasses ("21,196 km", "Frank Herbert", \
-    "June 1944"). No sentence, no preamble, no restating the question, no punctuation at the end. \
-    A number keeps its unit. Plain facts only. If the \
+    As short as the question allows. A fact is a few words, glanceable on glasses ("21,196 km", \
+    "Frank Herbert", "June 1944"), no sentence, no punctuation at the end. Only when the question \
+    truly needs explaining (how or why something works) give a short paragraph, at most 40 words. \
+    Never a preamble or the question restated. A number keeps its unit. Plain facts only. If the \
     conversation or what's known about them answers it, answer from that.
 
     Reply with exactly WEB, and nothing else, if it is a public fact you can't give reliably from \

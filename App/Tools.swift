@@ -92,8 +92,8 @@ enum Tools {
         the answer lives:
         \(sources)
 
-        Answer in at most 5 words: just the fact, no sentence, no preamble, no restating the \
-        question, no full stop ("Frank Herbert", not "Frank Herbert wrote Dune."). Reply \
+        As short as the question allows: a fact in a few words, a short paragraph (at most 40 \
+        words) only if it needs explaining. No preamble, no restating the question, no full stop ("Frank Herbert", not "Frank Herbert wrote Dune."). Reply \
         exactly SKIP if nothing above can answer it. Never ask a follow-up.
         """
     }
@@ -183,8 +183,8 @@ enum Tools {
             "messages": [
                 ["role": "system", "content": """
                     Turn research notes into one card for smart glasses. Reply with JSON only: \
-                    {"title": "the answer itself, at most 4 words", "detail": "one supporting fact, at most \
-                    6 words, or empty"}. The title answers the task: lead with the \
+                    {"title": "the answer itself, at most 6 words", "detail": "what else they need to know: \
+                    empty for a bare fact, up to 35 words if it needs explaining"}. The title answers the task: lead with the \
                     number, name or date ("3,000+ hackers", not "Cal Hacks attendance"); never the \
                     topic restated. If the notes don't answer the task (not announced, no data, only \
                     related facts), reply {"title": ""}. No links, no citations, no preamble.

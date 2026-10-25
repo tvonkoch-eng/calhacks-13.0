@@ -94,7 +94,8 @@ enum Coach {
     acronym is usually a misheard familiar one (LOM for LLM), so define the real term only if it \
     is a real concept, otherwise nothing; never invent an expansion. "meaning": what it is in plain words, then one concrete example or striking fact \
     that makes it interesting ("A contract whose value tracks another asset; e.g. options, \
-    futures, swaps"), at most 18 words. [] when the line has no such term.
+    futures, swaps"), one or two sentences, at most 35 words, with concrete examples ("Contracts whose value \
+    tracks another asset, used to hedge or speculate; e.g. options, futures, swaps"). [] when the line has no such term.
 
     "suggest": [{"say": "...", "score": 1-5}] or null
       Only when "Suggest now" is yes, otherwise null. Up to three different things the wearer \
