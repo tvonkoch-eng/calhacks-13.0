@@ -367,7 +367,8 @@ struct ContactView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     header(person)
-                    section("LinkedIn") { linkedin(person) }
+                    // Filled in by the backend's enrichment; nothing to type here.
+                    section("About") { about(person) }
                     section("Notes") {
                         TextField("Anything worth remembering about \(first(person))", text: $note, axis: .vertical)
                             .font(.subheadline)
@@ -488,7 +489,9 @@ struct ContactView: View {
         let rows = [("Work", person.work), ("School", person.school), ("From", person.from),
                     ("Into", person.interests), ("How you met", person.tie)]
             .compactMap { label, value in value.flatMap { $0.isEmpty ? nil : (label, $0) } }
-        if !rows.isEmpty {
+        if rows.isEmpty {
+            Text("Nothing yet.").font(.subheadline).foregroundStyle(.secondary)
+        } else {
             VStack(spacing: 0) {
                 ForEach(rows, id: \.0) { label, value in
                     HStack(alignment: .firstTextBaseline, spacing: 0) {
@@ -611,7 +614,6 @@ struct ContactEditor: View {
     @State private var from = ""
     @State private var interests = ""
     @State private var tie = ""
-    @State private var linkedin = ""
     @State private var photo: UIImage?
 
     var body: some View {
@@ -627,10 +629,6 @@ struct ContactEditor: View {
                     }
                     .frame(maxWidth: .infinity)
                     .listRowBackground(Color.clear)
-                }
-                Section("LinkedIn") {
-                    TextField("linkedin.com/in/…", text: $linkedin)
-                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
                 Section("About") {
                     TextField("What they do, in a few words", text: $role)
@@ -662,7 +660,6 @@ struct ContactEditor: View {
         from = person.from ?? ""
         interests = person.interests ?? ""
         tie = person.tie ?? ""
-        linkedin = person.linkedin ?? ""
     }
 
     private func save() {
@@ -680,7 +677,6 @@ struct ContactEditor: View {
         updated.from = clean(from)
         updated.interests = clean(interests)
         updated.tie = clean(tie)
-        updated.linkedin = clean(linkedin)
         store.update(updated)
         if let photo { store.setAvatar(id, photo) }
         crm.rename(id, to: name)
@@ -692,7 +688,7 @@ struct ContactEditor: View {
 // MARK: - New person
 
 /// Adding someone is two things: their name, big, in serif, and a photo. Everything else comes
-/// later, from their LinkedIn or a conversation.
+/// later, from enrichment or a conversation.
 struct NewPersonSheet: View {
     @Environment(Store.self) private var store
     @Environment(CRM.self) private var crm
