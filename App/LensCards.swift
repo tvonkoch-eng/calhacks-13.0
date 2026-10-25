@@ -196,14 +196,18 @@ enum LensCards {
         // 50/50: the photo and the icon on one row, the name under them in the bold heading, full
         // width, as big as on the single card.
         if !LensFit.full(width) {
-            return FlexBox(direction: .column, spacing: 6) {
-                FlexBox(direction: .row, crossAlignment: .center) {
-                    if let photo = photo ?? placeholder { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                    FlexBox(direction: .column) {}.flexGrow(1)
-                    if focused { Icon(name: .smartGlasses, style: .outline).flexShrink(0) }
+            return FlexBox(direction: .row, spacing: LensFit.photoGap) {
+                if let photo = photo ?? placeholder { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                FlexBox(direction: .column, spacing: 2) {
+                    // The glasses mark sits top right, above the name, so the name keeps its width.
+                    FlexBox(direction: .row) {
+                        FlexBox(direction: .column) {}.flexGrow(1)
+                        if focused, let mark = glassesMark { Image(image: mark, sizePreset: .icon, cornerRadius: .none) }
+                    }
+                    Text(LensFit.nameText(name, width: width), style: .heading,
+                         color: bright ? .primary : .secondary).flexShrink(1)
                 }
-                Text(LensFit.nameText(name, width: width), style: .heading,
-                     color: bright ? .primary : .secondary).flexShrink(1)
+                .flexGrow(1).flexShrink(1)
             }
         }
         let share = Float(LensFit.photoShare(width))
@@ -221,7 +225,7 @@ enum LensCards {
             }
             .flexGrow(1 - share).flexShrink(1)
             // In focus: the glasses' own icon, beside the name. Vector, so nothing heavy to send.
-            if focused { Icon(name: .smartGlasses, style: .outline).flexShrink(0) }
+            if focused, let mark = glassesMark { Image(image: mark, sizePreset: .icon, cornerRadius: .none) }
         }
     }
 
@@ -527,6 +531,22 @@ enum LensCards {
         }
     }
 
+    /// The in-focus mark: a small pair of glasses, drawn white on clear (the mockup's outline glyph).
+    /// One fixed image, so it's the same bytes every write; the phone mirror shows this same image.
+    static let glassesMark: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 56, height: 56)).image { _ in
+        UIColor.white.setStroke()
+        let path = UIBezierPath()
+        path.lineWidth = 3
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.append(UIBezierPath(ovalIn: CGRect(x: 8, y: 24, width: 15, height: 13)))
+        path.append(UIBezierPath(ovalIn: CGRect(x: 33, y: 24, width: 15, height: 13)))
+        path.move(to: CGPoint(x: 23, y: 29)); path.addQuadCurve(to: CGPoint(x: 33, y: 29), controlPoint: CGPoint(x: 28, y: 25))
+        path.move(to: CGPoint(x: 8, y: 29)); path.addLine(to: CGPoint(x: 4, y: 21))
+        path.move(to: CGPoint(x: 48, y: 29)); path.addLine(to: CGPoint(x: 52, y: 21))
+        path.stroke()
+    }
+
     /// Holds the photo's place while it's on its way: the same grey as the mirror's.
     static let placeholder: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96)).image { _ in
         UIColor(white: 0.28, alpha: 1).setFill()
@@ -656,7 +676,7 @@ enum LensFit {
     /// First name over last, each line clipped to what that layout holds ("Alexandria" fits; a
     /// longer word ends in "…"), so a name never wraps mid-word or changes size.
     static func nameText(_ name: String, width: CGFloat) -> String {
-        let most = full(width) ? 18 : 11
+        let most = full(width) ? 18 : 9
         return LensCards.twoLines(name).split(separator: "\n").map { line in
             line.count > most ? line.prefix(most - 1) + "\u{2026}" : String(line)
         }.joined(separator: "\n")
@@ -678,7 +698,7 @@ enum LensFit {
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
         // Padding, then the header: the photo, or the name beside it if taller.
         let photo = (width - photoGap) * photoShare(width)
-        let header = !full(width) ? 56 + 6 + lines(nameText(name, width: width), heading, width) * slack
+        let header = !full(width) ? max(56, 30 + lines(nameText(name, width: width), heading, width - 56 - photoGap) * slack)
             : max(photo, lines(nameText(name, width: width), heading,
                                       width - photoGap - photo - iconRoom) * slack)
         var left = half - (44 + header + gap)

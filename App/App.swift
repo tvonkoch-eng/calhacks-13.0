@@ -1053,19 +1053,25 @@ struct LensMirror: View {
             wideHeader(id: id, name: name, width: width, bright: bright, focused: focused)
         } else {
             // Mirror of the lens's 50/50 header: photo and icon on a row, the bold name under them.
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    photoBox(id: id, size: m.icon)
-                    Spacer(minLength: 0)
-                    Image(systemName: "eyeglasses").font(.system(size: m.glyph))
-                        .foregroundStyle(.white).opacity(focused ? 1 : 0)
+            HStack(alignment: .top, spacing: LensFit.photoGap) {
+                photoBox(id: id, size: m.icon)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Spacer(minLength: 0)
+                        glassesMark.opacity(focused ? 1 : 0)
+                    }
+                    Text(LensFit.nameText(name, width: width))
+                        .font(.system(size: m.heading, weight: .semibold)).lineLimit(2)
+                        .foregroundStyle(bright ? Color.white : secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(LensFit.nameText(name, width: width))
-                    .font(.system(size: m.heading, weight: .semibold)).lineLimit(2)
-                    .foregroundStyle(bright ? Color.white : secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// The lens's own glasses mark, at the lens's icon size.
+    @ViewBuilder private var glassesMark: some View {
+        if let mark = LensCards.glassesMark { Image(uiImage: mark).resizable().frame(width: m.icon * 0.6, height: m.icon * 0.6) }
     }
 
     @ViewBuilder private func photoBox(id: String, size: CGFloat) -> some View {
@@ -1105,10 +1111,7 @@ struct LensMirror: View {
                 .foregroundStyle(bright ? Color.white : secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            // Mirror of the lens's smartGlasses icon.
-            Image(systemName: "eyeglasses").font(.system(size: m.glyph))
-                .foregroundStyle(.white).opacity(focused ? 1 : 0)
-                .frame(width: LensFit.iconRoom - LensFit.photoGap)
+            glassesMark.opacity(focused ? 1 : 0)
         }
     }
 
