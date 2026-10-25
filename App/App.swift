@@ -1470,11 +1470,13 @@ struct LensPanel: View {
 
                 // Laid out at the lens's own 600 and scaled, so line breaks land where they do on
                 // glass; only the bottom `shown` of it is kept.
+                // The mirror first: the SDK's preview view paints its cards opaque, so only the
+                // mirror can show them as glass. The SDK view stays for the side-by-side compare.
                 Group {
-                    if let lens {
-                        MockLens(view: lens)
-                    } else if let shot {
+                    if let shot {
                         LensMirror(shot: shot, avatar: avatar)
+                    } else if let lens {
+                        MockLens(view: lens)
                     }
                 }
                 .frame(width: LensMetrics.canvas, height: LensMetrics.canvas)
