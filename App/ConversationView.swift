@@ -110,6 +110,7 @@ struct EventRow: View {
         switch event.kind {
         case .answer: "text.bubble"
         case .define: "book"
+        case .insight: "lightbulb"
         case .followup: "bubble.left"
         case .research, .lookup: "magnifyingglass"
         case .learned: "person.text.rectangle"

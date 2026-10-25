@@ -20,6 +20,10 @@ func option(_ name: String) -> String? {
     return arguments[i + 1]
 }
 let file = option("--file").map { URL(fileURLWithPath: $0) }
+/// --record people.txt: what Jarvis knows of the wearer's life (CRM.digest() on the phone).
+let recordFile = option("--record")
+/// --crm people.json: a real, writable CRM (the phone's format), so "Jarvis, remember…" is kept.
+let crmFile = option("--crm")
 let typing = arguments.contains("--type")
 arguments.removeAll { $0 == "--type" }
 /// --trace x.jsonl: every line, event and lens state with its time in the recording, for
@@ -62,11 +66,16 @@ func drawLens(_ view: LensView) {
     if let header = view.header, !view.isEmpty { rows.append(Style.dim + header.uppercased() + Style.reset) }
     for card in view.cards {
         if card != view.cards.first { rows.append(Style.dim + String(repeating: "\u{00B7}", count: 6) + Style.reset) }
-        let mark = card.kind == .answer ? "A" : card.kind == .definition ? "i" : "?"
+        let mark = card.kind == .answer ? "A" : card.kind == .definition ? "i" : "*"
         let title = card.title + (card.live && !card.title.hasSuffix("\u{2026}") ? " \u{2026}" : "")
             + (card.icon.map { "  " + Style.dim + "[\($0)]" + Style.reset } ?? "")
         for (i, line) in wrap(title, width - 4).enumerated() { rows.append((i == 0 ? "\(mark)  " : "   ") + Style.bold + line + Style.reset) }
         for line in wrap(card.detail, width - 4) { rows.append("   " + Style.dim + line + Style.reset) }
+    }
+    if let jarvis = view.jarvis {
+        rows.append(Style.dim + "\u{2726}  " + jarvis.header(at: Date()) + "  " + jarvis.request + Style.reset)
+        if jarvis.thinking { for step in jarvis.steps { rows.append("   " + JarvisPanel.line(step)) } }
+        for (i, line) in wrap(jarvis.answer ?? "", width - 4).enumerated() { rows.append((i == 0 ? "J  " : "   ") + Style.bold + line + Style.reset) }
     }
     for work in view.working {
         rows.append(Style.dim + "\u{22EF}  " + work.label + (work.remaining(at: Date()).map { " · \($0) s" } ?? "") + Style.reset)
@@ -90,6 +99,7 @@ func drawLens(_ view: LensView) {
 @MainActor final class Session {
     let listener = Listener()
     let aid: Aid
+    var crm: CRM?
     var lensDraw: Task<Void, Never>?
     var drawn = LensView()
 
@@ -103,8 +113,24 @@ func drawLens(_ view: LensView) {
         config.suggestions = env["AID_SUGGEST"] == "1"
         config.answerMine = env["AID_ANSWER_MINE"] != "0"
         config.explicitOnly = env["AID_EXPLICIT_ONLY"] != "0"
+        config.defineMine = env["AID_DEFINE_MINE"] == "1"
         aid = Aid(config: config)
-        listener.keywords = [wearer, "Lens"]
+        aid.warm()
+        listener.keywords = [wearer, "Lens", "Jarvis"]
+        // --record people.txt: the wearer's record for Jarvis, as CRM.digest() writes it on the phone.
+        if let path = recordFile { aid.personal = { (try? String(contentsOfFile: path, encoding: .utf8)) ?? "" } }
+        if let path = crmFile {
+            let crm = CRM(url: URL(fileURLWithPath: path))
+            let roster = ((try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: "App/people.json")))) as? [[String: Any]] ?? [])
+                .filter { $0["isMe"] as? Bool != true }
+            crm.rosterIDs = roster.compactMap { $0["id"] as? String }
+            crm.roster = { id in
+                roster.first { $0["id"] as? String == id }.map { CRM.Known(name: $0["name"] as? String ?? id, about: $0["role"] as? String ?? "") }
+            }
+            self.crm = crm
+            aid.personal = { crm.digest() }
+            aid.jarvisTools = crm.jarvisTools(current: { nil })
+        }
         listener.file = file
 
         listener.onPartial = { [weak self] text in
@@ -192,6 +218,7 @@ func drawLens(_ view: LensView) {
             out("\(s)  \(color)\(pad(tag, 5)) \(event.text)\(Style.reset)" + dim(event.detail))
         case .answer: out("\(s)  \(Style.aid)  answer   \(event.text)\(Style.reset)" + dim(event.detail))
         case .define: out("\(s)  \(Style.aid)  define   \(event.text)\(Style.reset)" + dim("— " + event.detail))
+        case .insight: out("\(s)  \(Style.aid)  insight  \(event.text)\(Style.reset)" + dim("— " + event.detail))
         case .followup:
             let note = ["used", "passed", "cleared"].contains(event.text) ? "\(event.text): \(event.detail)" : event.text
             out("\(s)  \(Style.aid)  suggest  \(note)\(Style.reset)")
@@ -226,12 +253,30 @@ func drawLens(_ view: LensView) {
     }
 
     /// A typed line, as if heard: "them: …" from the other person, anything else from the wearer.
+    /// With AID_STREAM=1 it arrives as speech does, a word at a time as growing partials (~3.5
+    /// words a second) before the finished line, so mid-sentence answers, placeholders and mid-turn
+    /// coaching run as they would live. Without it the whole line lands at once.
     func type(_ text: String) {
         let them = text.lowercased().hasPrefix("them:")
         let said = them ? String(text.dropFirst(5)).trimmingCharacters(in: .whitespaces) : text
         let wearer = aid.roles.wearer ?? "B"
-        aid.heard(line: said, speaker: them ? (wearer == "A" ? "B" : "A") : wearer)
+        let speaker = them ? (wearer == "A" ? "B" : "A") : wearer
+        guard ProcessInfo.processInfo.environment["AID_STREAM"] == "1" else {
+            aid.heard(line: said, speaker: speaker)
+            return
+        }
+        let words = said.split(separator: " ")
+        let previous = streaming
+        streaming = Task { [weak self] in
+            await previous?.value   // one line at a time, in order
+            for count in 1...max(1, words.count) {
+                self?.aid.heard(partial: words.prefix(count).joined(separator: " "))
+                try? await Task.sleep(for: .milliseconds(285))
+            }
+            self?.aid.heard(line: said, speaker: speaker)
+        }
     }
+    private var streaming: Task<Void, Never>?
 
     func finish() {
         listener.stop()

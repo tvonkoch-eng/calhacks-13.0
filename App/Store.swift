@@ -32,6 +32,18 @@ struct Person: Codable, Identifiable, Hashable {
     /// glasses that knew their name is "how did you know that?".
     var source: String?
 
+    // How to reach them. Typed in Edit, or heard in a conversation (`Store.fill`).
+    var phone: String?
+    var email: String?
+    /// Profile slug, linkedin.com/in/<this>.
+    var linkedin: String?
+    /// Without the @.
+    var instagram: String?
+    /// Without the scheme: "priya.dev".
+    var website: String?
+
+    var hasContactInfo: Bool { [phone, email, linkedin, instagram, website].contains { $0?.isEmpty == false } }
+
     /// What the lens leads with under the name: what they do now, not where they studied.
     var headline: String { work ?? school ?? role }
 
@@ -386,6 +398,8 @@ struct Match {
     /// A contact the CRM deleted: no face, no photo.
     func forget(_ id: String) {
         met[id] = nil
+        if edits.removeValue(forKey: id) != nil { saveEdits() }
+        if notes[id] != nil { setNote(id, "") }
         reset(id)
     }
 
@@ -397,7 +411,28 @@ struct Match {
     func update(_ person: Person) {
         edits[person.id] = person
         if let i = people.firstIndex(where: { $0.id == person.id }) { people[i] = person }
+        if met[person.id] != nil { met[person.id] = person }
+        saveEdits()
+    }
+
+    private func saveEdits() {
         try? JSONEncoder().encode(edits).write(to: editsURL, options: [.atomic, .completeFileProtection])
+    }
+
+    /// What a conversation turned up about someone, onto their card. Blanks only: a typed value
+    /// or the roster's own copy is never overwritten by something heard.
+    func fill(_ base: Person, with details: Recap.Details) {
+        var person = edits[base.id] ?? base
+        func blank(_ value: String?) -> Bool { value?.isEmpty != false }
+        if blank(person.work) { person.work = details.work }
+        if blank(person.school) { person.school = details.school }
+        if blank(person.from) { person.from = details.from }
+        if blank(person.phone) { person.phone = details.phone }
+        if blank(person.email) { person.email = details.email }
+        if blank(person.linkedin) { person.linkedin = details.linkedin }
+        if blank(person.instagram) { person.instagram = details.instagram }
+        if blank(person.website) { person.website = details.website }
+        if person != (edits[base.id] ?? base) { update(person) }
     }
 
     /// Contacts, most recently seen first; people you haven't met keep their file order.

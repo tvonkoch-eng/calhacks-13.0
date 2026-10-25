@@ -20,6 +20,8 @@ enum Coach {
         var situation = ""
         var known: String          // "Priya · evals startup founder; Berkeley CS; Last talked Oct 12: …"
         var defined: [String]
+        /// Insights already shown (their topics), so none comes round twice.
+        var noted: [String] = []
         /// Suggestions already shown, so none comes round twice.
         var suggested: [String]
         /// Why the wearer needs a suggestion right now ("a silence"), or nil: then none is wanted.
@@ -38,11 +40,14 @@ enum Coach {
         /// THEM asked for a fact or a task in words the recognizer mangled or left implicit: the
         /// request rebuilt as one clear question, for the answer lane to take.
         var ask: String?
+        /// A topic worth one striking fact, and the web search that finds it (`Aid` grounds it).
+        var insight: (topic: String, query: String)?
 
         static func == (a: Advice, b: Advice) -> Bool {
             a.define.map { "\($0.term)=\($0.meaning)" } == b.define.map { "\($0.term)=\($0.meaning)" }
                 && a.suggest == b.suggest && a.score == b.score
                 && a.alternatives.map { "\($0.say)=\($0.score ?? 0)" } == b.alternatives.map { "\($0.say)=\($0.score ?? 0)" } && a.ask == b.ask
+                && a.insight?.topic == b.insight?.topic && a.insight?.query == b.insight?.query
         }
     }
 
@@ -52,7 +57,13 @@ enum Coach {
     // coach no longer names people (a name mentioned in passing became THEM's) or looks things up
     // (it researched our own product): names come from introductions and face ID, lookups only
     // from questions someone asked.
-    static let prompt = """
+    /// The prompt for one call. The part on lines to say goes out only when one is wanted: with
+    /// suggestions off it was 22 lines on every call that the model read and answered with null.
+    static func prompt(suggesting: Bool) -> String {
+        base + (suggesting ? "\n\n" + suggestPart : "")
+    }
+
+    private static let base = """
     You are a quiet conversation aid inside AR glasses. The wearer is in a live, in-person \
     conversation with one or more other people and should stay present in it. Lines are tagged ME \
     (the wearer), the speaker's first name when face ID knows them, or THEM (someone else); THEM \
@@ -62,7 +73,7 @@ enum Coach {
     LLM). Everything you write uses the intended words, never the misheard ones. Questions asked \
     out loud are answered by a separate system; never answer them here.
 
-    Reply with one JSON object with exactly these keys:
+    Reply with one JSON object with these keys:
 
     "ask": "..." or null
       The second look at the newest line, from either speaker. A separate system answers \
@@ -75,8 +86,9 @@ enum Coach {
     did Figure AI raise in its latest round?"). Duplicates are filtered out for you. null if it is \
     personal or social (about the people talking, "how did you get into that", "what are you \
     working on"), rhetorical, already answered in the transcript, or no request at all. A question \
-    about this place or event ("how many people are at this thing", "when does it end") only when \
-    "Where" names it, resolved to it ("How many attendees does Cal Hacks 13.0 have?"); otherwise null.
+    about this event ("how many people are at this thing", "when does it end") only when "Where" \
+    names it, resolved to it ("How many attendees does Cal Hacks 13.0 have?"); otherwise null. "Near \
+    here" stays "near here": the device knows where it is.
 
     "define": [{"term": "...", "meaning": "..."}]
       At most one: the most interesting technical or specialist term in the newest line, from \
@@ -86,17 +98,28 @@ enum Coach {
     a line has a real concept or topic in it, even one the wearer roughly knows; when in doubt, give \
     one. A well-known topic counts too (a famous company, place, historical event, field or \
     movement), defined by what is stable about it ("Bauhaus": "1920s German art school; form \
-    follows function"); never its latest news, numbers that change, or a private person. Never plain everyday or generic business words (startup, meeting, team, money, \
-    app, AI, coding, hackathon). Skip a term the speaker explains in the same breath and pick the \
-    next one instead. Speech recognition mangles jargon: if a term looks misheard, define what \
-    was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
-    unsure. Never define an acronym or word you don't know as an established term: an unfamiliar \
-    acronym is usually a misheard familiar one (LOM for LLM), so define the real term only if it \
-    is a real concept, otherwise nothing; never invent an expansion. "meaning": what it is in plain words, then one concrete example or striking fact \
-    that makes it interesting ("A contract whose value tracks another asset; e.g. options, \
-    futures, swaps"), one or two sentences, at most 35 words, with concrete examples ("Contracts whose value \
-    tracks another asset, used to hedge or speculate; e.g. options, futures, swaps"). [] when the line has no such term.
+    follows function"); never its latest news, numbers that change, or a private person. Never \
+    plain everyday or generic business words (startup, meeting, team, money, app, AI, coding, \
+    hackathon). Skip a term the speaker explains in the same breath and pick the next one instead. \
+    Speech recognition mangles jargon: if a term looks misheard, define what was clearly meant \
+    under its real name ("lawyer adapter" → LoRA adapter), or skip it if unsure. Never define an \
+    acronym or word you don't know as an established term: an unfamiliar acronym is usually a \
+    misheard familiar one (LOM for LLM), so define the real term only if it is a real concept, \
+    otherwise nothing; never invent an expansion. "meaning": what it is in plain words, with one \
+    concrete example if it helps, at most 20 words ("Contracts whose value tracks another asset; \
+    e.g. options, futures, swaps"). [] when the line has no such term.
 
+    "insight": {"topic": "...", "query": "..."} or null
+      The newest line's most interesting public topic, from either speaker: a field, company, \
+    technology, place, event or idea worth one striking fact. "topic" is a few words ("Reward \
+    modeling"); "query" is a short web search that would turn up a specific, surprising fact about \
+    it in this context ("reward model overoptimization examples"). A search finds the fact, so \
+    never write one yourself. Lean toward giving one when the line has a real topic; null for \
+    small talk, the people talking themselves, this event, a topic in "Already noted", or a line \
+    that asks a question (it gets an answer).
+    """
+
+    private static let suggestPart = """
     "suggest": [{"say": "...", "score": 1-5}] or null
       Only when "Suggest now" is yes, otherwise null. Up to three different things the wearer \
     could say next, best first, each scored: 5 = specific to this person and moment and clearly \
@@ -123,13 +146,17 @@ enum Coach {
 
     static func message(_ input: Input) -> String {
         func list(_ items: [String]) -> String { items.isEmpty ? "none" : items.joined(separator: ", ") }
+        // Only when a line to say is wanted, as with the prompt's part on it.
+        let suggesting = input.moment.map { moment in
+            "\nAlready suggested: " + (input.suggested.isEmpty ? "none" : input.suggested.map { "\"\($0)\"" }.joined(separator: ", "))
+                + "\nSuggest now: yes (\(moment))"
+        } ?? ""
         return """
         Wearer: \(input.wearer)\(input.background.isEmpty ? "" : " (\(input.background))")
         Where: \(input.situation.isEmpty ? "unknown" : input.situation)
         Known about them: \(input.known.isEmpty ? "nothing yet" : input.known)
         Already defined: \(list(input.defined))
-        Already suggested: \(input.suggested.isEmpty ? "none" : input.suggested.map { "\"\($0)\"" }.joined(separator: ", "))
-        Suggest now: \(input.moment.map { "yes (\($0))" } ?? "no")
+        Already noted: \(list(input.noted))\(suggesting)
 
         Transcript (oldest first; the last line is new):
         \(input.transcript.isEmpty ? "(nothing said yet)" : input.transcript.joined(separator: "\n"))
@@ -142,7 +169,7 @@ enum Coach {
             "temperature": 0.3,
             "response_format": ["type": "json_object"],
             "messages": [
-                ["role": "system", "content": prompt],
+                ["role": "system", "content": prompt(suggesting: input.moment != nil)],
                 ["role": "user", "content": message(input)],
             ],
         ]
@@ -151,7 +178,7 @@ enum Coach {
             body.merge(["max_tokens": 1200, "reasoning_effort": "low"]) { _, new in new }
         } else if provider == .cerebras || provider == .openrouter, model.contains("qwen") {
             // Room for three scored suggestions as well as a definition.
-            body.merge(["max_tokens": 320, "reasoning_effort": "none"]) { _, new in new }
+            body.merge(["max_tokens": 420, "reasoning_effort": "none"]) { _, new in new }
         } else if provider == .muse {
             body.merge(["max_tokens": 900, "reasoning_effort": "minimal"]) { _, new in new }
         } else {
@@ -162,6 +189,29 @@ enum Coach {
         let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 10)
         guard let result = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
         return result
+    }
+
+    /// The fact on an insight card, written only from what a search found: nil when the notes have
+    /// nothing specific and interesting. Memory alone put up a wrong Turing Award winner.
+    static func fact(about topic: String, line: String, notes: String,
+                     provider: Provider, key: String, model: String) async throws -> String? {
+        var body: [String: Any] = [
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                ["role": "system", "content": """
+                    From the search notes, write the single most striking, specific fact about the \
+                    topic for someone who just heard the line: a number, a name, a date or a \
+                    comparison, at most 18 words, plain text, no preamble, no source. Only what the \
+                    notes say. Reply NONE if they have nothing specific and interesting.
+                    """],
+                ["role": "user", "content": "Topic: \(topic)\nLine: \(line)\n\nNotes:\n\(notes.prefix(3000))"],
+            ],
+        ]
+        body.merge(provider.extras(model: model)) { _, extra in extra }
+        let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 6)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
+        return text.isEmpty || text.uppercased().hasPrefix("NONE") ? nil : text
     }
 
     /// Lenient on purpose: models wrap JSON in prose, return one definition as an object instead of
@@ -197,6 +247,9 @@ enum Coach {
             result.suggest = clean(object["suggest"])
         }
         result.ask = clean(object["ask"])
+        if let insight = object["insight"] as? [String: Any], let topic = clean(insight["topic"]) {
+            result.insight = (topic, clean(insight["query"]) ?? topic)
+        }
         return result
     }
 }
@@ -337,6 +390,8 @@ enum LLM {
     struct Reply {
         var content: String?
         var calls: [(name: String, arguments: String)]
+        /// Each call's id, in order, for answering it with a `tool` message ("" if none given).
+        var ids: [String] = []
     }
 
     /// The first choice's message: its text and any tool calls. Claude's endpoint gets the same
@@ -359,6 +414,9 @@ enum LLM {
             let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "retry-after")
             throw Failure.rateLimited(retryAfter: header.flatMap(TimeInterval.init) ?? 20)
         }
+        // Out of quota ("payment required", Cerebras on 2026-10-24): the same as a long rate limit,
+        // so every lane goes to its backup instead of failing.
+        if code == 402 { throw Failure.rateLimited(retryAfter: 600) }
         guard code == 200 else {
             let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
                 .flatMap { ($0["error"] as? [String: Any])?["message"] as? String }
@@ -374,11 +432,14 @@ enum LLM {
               let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any] else {
             throw Failure.unreadable(String(decoding: data.prefix(120), as: UTF8.self))
         }
-        let calls = ((message["tool_calls"] as? [[String: Any]]) ?? []).compactMap { call -> (String, String)? in
-            guard let function = call["function"] as? [String: Any], let name = function["name"] as? String else { return nil }
-            return (name, function["arguments"] as? String ?? "{}")
+        let raw = ((message["tool_calls"] as? [[String: Any]]) ?? []).filter {
+            (($0["function"] as? [String: Any])?["name"] as? String) != nil
         }
-        return Reply(content: message["content"] as? String, calls: calls)
+        let calls = raw.map { call -> (String, String) in
+            let function = call["function"] as! [String: Any]
+            return (function["name"] as! String, function["arguments"] as? String ?? "{}")
+        }
+        return Reply(content: message["content"] as? String, calls: calls, ids: raw.map { $0["id"] as? String ?? "" })
     }
 }
 
@@ -409,8 +470,7 @@ enum Claude {
         let model = chat["model"] as? String ?? ""
         var body: [String: Any] = [
             "model": model,
-            "messages": messages.filter { $0["role"] as? String != "system" }
-                .map { ["role": $0["role"] as? String ?? "user", "content": $0["content"] as? String ?? ""] },
+            "messages": messages.filter { $0["role"] as? String != "system" }.map(message),
         ]
         if !system.isEmpty { body["system"] = system.joined(separator: "\n\n") }
         if chat["stream"] as? Bool == true { body["stream"] = true }
@@ -439,17 +499,39 @@ enum Claude {
         return body
     }
 
+    /// One OpenAI-shaped message as Claude's: an assistant's `tool_calls` become `tool_use`
+    /// blocks, a `tool` result becomes the user's `tool_result` block.
+    static func message(_ m: [String: Any]) -> [String: Any] {
+        let role = m["role"] as? String ?? "user"
+        let text = m["content"] as? String ?? ""
+        if role == "tool" {
+            return ["role": "user", "content": [["type": "tool_result", "tool_use_id": m["tool_call_id"] as? String ?? "",
+                                                 "content": text]]]
+        }
+        if role == "assistant", let calls = m["tool_calls"] as? [[String: Any]], !calls.isEmpty {
+            var blocks: [[String: Any]] = text.isEmpty ? [] : [["type": "text", "text": text]]
+            for call in calls {
+                let function = call["function"] as? [String: Any] ?? [:]
+                let input = (function["arguments"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }
+                blocks.append(["type": "tool_use", "id": call["id"] as? String ?? "", "name": function["name"] as? String ?? "",
+                               "input": input ?? [String: Any]()])
+            }
+            return ["role": "assistant", "content": blocks]
+        }
+        return ["role": role, "content": text]
+    }
+
     /// The text blocks joined, and any tool calls with their input as JSON text.
     static func reply(_ json: [String: Any]) -> LLM.Reply {
         let blocks = (json["content"] as? [[String: Any]]) ?? []
         let text = blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
-        let calls = blocks.filter { $0["type"] as? String == "tool_use" }.compactMap { block -> (String, String)? in
-            guard let name = block["name"] as? String else { return nil }
+        let uses = blocks.filter { $0["type"] as? String == "tool_use" && $0["name"] is String }
+        let calls = uses.map { block -> (String, String) in
             let input = (try? JSONSerialization.data(withJSONObject: block["input"] ?? [String: Any]()))
                 .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
-            return (name, input)
+            return (block["name"] as! String, input)
         }
-        return LLM.Reply(content: text.isEmpty ? nil : text, calls: calls)
+        return LLM.Reply(content: text.isEmpty ? nil : text, calls: calls, ids: uses.map { $0["id"] as? String ?? "" })
     }
 
     /// One server-sent event's text, if it carries any (`content_block_delta` / `text_delta`).
@@ -479,7 +561,9 @@ struct Exa: Researcher {
 
     func research(_ query: String, context: String) async throws -> String {
         var search = query
-        if let resolver, !context.isEmpty, Self.leans(query) {
+        // Resolve against the conversation when the question leans on it, and always when we know
+        // where they are: "the closing ceremony" alone found the FIFA World Cup's.
+        if let resolver, !context.isEmpty, Self.leans(query) || context.contains("Where:") {
             search = (try? await LLM.complete(resolver.provider.endpoint, key: resolver.key, body: [
                 "model": resolver.model,
                 "max_tokens": 40,
@@ -556,6 +640,9 @@ enum OpenRouter {
             body["reasoning"] = ["effort": effort == "minimal" ? "low" : effort]
         }
         body["provider"] = ["order": ["cerebras", "groq"], "allow_fallbacks": true]
+        // JSON mode sends the request to a host that supports it, not Cerebras (0.6 s became ~6 s
+        // for the coach). The parsers take JSON wrapped in prose anyway.
+        body.removeValue(forKey: "response_format")
         return body
     }
 }

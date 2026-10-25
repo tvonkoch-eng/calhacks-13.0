@@ -84,6 +84,7 @@ import Observation
             crm.models = Self.recapModels(aid.config)
             crm.glanceModels = Self.glanceModels(aid.config)
             crm.onGlance = { [weak self] id, glance in self?.learned(id, glance) }
+            aid.jarvisTools = crm.jarvisTools(current: { [weak self] in self?.met ?? self?.glasses?.facing })
             // ME for the wearer, a first name for someone face ID knows, else THEM.
             crm.retag = { [weak self] label in
                 guard let self else { return label ?? "?" }
@@ -141,6 +142,15 @@ import Observation
         // so their questions still get answered.
         aid.liveWearer = { [weak self] in self?.speakers.wearerTalking() ?? false }
         aid.onName = { [weak self] name in self?.introduced(name) }
+        // Jarvis answers from everything the wearer has on record.
+        aid.personal = { [weak self] in self?.crm?.digest() ?? "" }
+        // "Jarvis, remember…", "remind me to…", "save her": written to the record, about whoever
+        // was named or, by default, whoever the wearer is talking to.
+        aid.jarvisTools = crm?.jarvisTools(current: { [weak self] in self?.met ?? self?.glasses?.facing }) ?? []
+        aid.onJarvis = { [weak self] text in
+            guard Tuning.bool("jarvisVoice", true) else { return }
+            self?.voice.speak(text)
+        }
         aid.nameFor = { [weak self] label in
             guard let self, label.hasPrefix("p:"), let person = self.person(String(label.dropFirst(2))) else { return nil }
             return self.firstName(person.name)
@@ -157,6 +167,8 @@ import Observation
     @ObservationIgnored private var museLabel: [String: String] = [:]
     @ObservationIgnored private var lastPersonLine = Date.distantPast
     @ObservationIgnored private var tick: Task<Void, Never>?
+    /// Jarvis's voice in the glasses (Cartesia). Knob `jarvisVoice` false keeps it on the lens only.
+    @ObservationIgnored let voice = Voice()
 
     init() {
         // Until the roster is in, the bundle's WearerName (WEARER_NAME), else Toby.
@@ -170,6 +182,12 @@ import Observation
         listener.mic = .glasses
         UserDefaults.standard.set(Listener.Mic.glasses.rawValue, forKey: "mic")
         listener.onLog = { SpeedLog.record($0) }
+        Listener.speakToGlasses = voice.available
+        voice.onLog = { SpeedLog.record($0) }
+        // Deaf while it talks, and a moment after: its own voice must not become a request.
+        voice.onSpeaking = { [weak self] seconds in
+            self?.listener.mute(until: Date().addingTimeInterval((seconds ?? 0) + 0.4))
+        }
         listener.onPartial = { [weak self] text in
             guard let self else { return }
             if self.turnStarted == nil { self.turnStarted = Date().addingTimeInterval(-0.5) }
@@ -192,6 +210,7 @@ import Observation
         // and catching questions the fast lane missed.
         config.suggestions = Tuning.bool("aidSuggest", false)
         config.answerMine = Tuning.bool("aidAnswerMine", true)
+        config.defineMine = Tuning.bool("aidDefineMine", false)
         return Aid(config: config)
     }
 
@@ -216,6 +235,7 @@ import Observation
         armed = true
         // A new conversation starts clean; the last one stays readable on the phone until then.
         aid.reset()
+        aid.warm()
         aid.assume(wearer: Self.me)
         speakers = Speakers(wearer: aid.config.wearer)
         speakers.roster = roster()
@@ -234,7 +254,7 @@ import Observation
         // Whoever is in front of you right now is who you're about to talk to.
         if let id = glasses?.facing { facingChanged(id) }
         // Names of people likely here, so speech recognition spells them right.
-        if let crm { listener.keywords = crm.keywords(roster: store?.people.map(\.name) ?? []) }
+        if let crm { listener.keywords = ["Jarvis"] + crm.keywords(roster: store?.people.map(\.name) ?? []) }
         await listener.start()
         if !listener.listening {
             armed = false
@@ -387,10 +407,11 @@ import Observation
         aid.heard(line: text, speaker: label, level: nil)
         // The raw voice, so the transcript keeps one letter per voice whoever it's matched to.
         if let id = aid.lines.last?.id, let muse { voices[id] = muse }
-        crm?.heard(text, speaker: label, command: Tools.command(in: text) != nil)
+        crm?.heard(text, speaker: label, command: aid.isCommand(text))
     }
 
     private func ownSpeech(_ text: String) {
+        guard !voice.speaking else { return }   // the glasses' mics hearing Jarvis
         speakers.ownVoice(text)
         guard armed, !meSpeaking, speakers.wearerTalking() == true else { return }
         meSpeaking = true
