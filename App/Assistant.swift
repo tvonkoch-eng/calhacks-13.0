@@ -15,6 +15,9 @@ import Observation
     var mutedByUser = false
     /// Everyone in the conversation, in the order they joined, the one talking marked.
     private(set) var members: [Member] = []
+    /// Muse's own voice label for each transcript line (Person A, B, … follow these).
+    @ObservationIgnored private(set) var voices: [Int: String] = [:]
+    @ObservationIgnored private var lineLevels: [Float] = []
     /// The wearer has the floor (the glasses' own mic hears them).
     private(set) var meSpeaking = false
     /// Why the last line was given to whoever it was, for the phone ("glasses heard you (80%)").
@@ -320,7 +323,18 @@ import Observation
         let match = speakers.ownVoiceMatch(text, start: start, end: end)
         // Glasses mic on: how much louder this line was there than at the phone underneath.
         let gap = listener.mic == .glasses ? listener.meter.gap(from: start, to: end) : nil
-        let verdict = speakers.resolve(label: muse, text: text, start: start, end: end, gap: gap)
+        var verdict = speakers.resolve(label: muse, text: text, start: start, end: end, gap: gap)
+        // Loud enough is the wearer: their mouth is closest to whichever mic is listening. A line
+        // `meLoudGap` dB over the typical line (median of the last 30) is "Me", whatever else said.
+        let level = listener.meter.level(listener.mic == .glasses ? .glasses : .phone, from: start, to: end)
+        if let level {
+            lineLevels.append(level)
+            if lineLevels.count > 30 { lineLevels.removeFirst() }
+            let typical = lineLevels.sorted()[lineLevels.count / 2]
+            if lineLevels.count >= 4, level >= typical + Tuning.float("meLoudGap", 6) {
+                verdict = Speakers.Verdict(who: .me, sure: false, why: String(format: "loud: %.0f dB over typical", level - typical))
+            }
+        }
         let label: String?
         switch verdict.who {
         case .me: label = Self.me
@@ -333,6 +347,7 @@ import Observation
                                     "sure": verdict.sure, "why": verdict.why, "words": text.split(separator: " ").count]
         if let match { entry["ownVoice"] = (Double(match) * 100).rounded() / 100 }
         if let gap { entry["gapDb"] = (Double(gap) * 10).rounded() / 10 }
+        if let level { entry["db"] = (Double(level) * 10).rounded() / 10 }
         if !speakers.ownVoiceTrusted { entry["ownVoiceTrusted"] = false }
         SpeedLog.record(entry)
 
@@ -347,6 +362,8 @@ import Observation
         if meSpeaking { lastOwnVoiceFlip = end }
         refreshGroup()
         aid.heard(line: text, speaker: label, level: nil)
+        // The raw voice, so the transcript keeps one letter per voice whoever it's matched to.
+        if let id = aid.lines.last?.id, let muse { voices[id] = muse }
         crm?.heard(text, speaker: label, command: Tools.command(in: text) != nil)
     }
 
