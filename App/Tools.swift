@@ -55,6 +55,8 @@ enum Tools {
         // Greetings and punctuation the name leaves behind.
         rest = rest.replacingOccurrences(of: #"^\s*(?:(?:hi|hey|hello|ok|okay|um|uh|so|yo)[\s,]+)*"#, with: "", options: [.regularExpression, .caseInsensitive])
         rest = rest.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.:;!-")))
+        // "What's the weather, Jarvis?" leaves "What's the weather,  ?": the mark goes back on the words.
+        rest = rest.replacingOccurrences(of: #"[\s,;:]+([?!.])$"#, with: "$1", options: .regularExpression)
         return rest.contains(where: \.isLetter) ? rest : nil
     }
 

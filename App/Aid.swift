@@ -439,7 +439,7 @@ enum Talk {
         // "Jarvis" starting the sentence still being said shows the listening row now. The request
         // itself still waits for the sentence to close (`command`), so nothing fires early.
         // Only the wearer's own "Jarvis": someone else in the room saying it must not wipe an answer.
-        if !wakeShownThisTurn, mine, Tools.opensWithJarvis(open) {
+        if !wakeShownThisTurn, Tools.byName(open) {
             wakeShownThisTurn = true
             if wokenAt == nil { showWake() }
         }
