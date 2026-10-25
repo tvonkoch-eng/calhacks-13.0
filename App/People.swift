@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 /// Two apps in one: People, the consumer side (a personal CRM with live notes), and Dev, the
@@ -57,7 +58,7 @@ struct PeopleHome: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Person.self) { ContactView(id: $0.id) }
             .sheet(isPresented: $adding) {
-                ContactEditor(person: nil) { path.append($0) }
+                NewPersonSheet { path.append($0) }
             }
             #if DEBUG
             .onAppear {
@@ -350,6 +351,7 @@ struct ContactView: View {
     @State private var editing = false
     @State private var note = ""
     @State private var learned = ""
+    @State private var allHistory = false
     @FocusState private var typingFact: Bool
 
     /// The roster or a kept contact (with the wearer's edits), else someone met but not kept.
@@ -364,7 +366,7 @@ struct ContactView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     header(person)
-                    PersonCRM(person: person, conversations: false, learned: false)
+                    section("LinkedIn") { linkedin(person) }
                     section("Notes") {
                         TextField("Anything worth remembering about \(first(person))", text: $note, axis: .vertical)
                             .font(.subheadline)
@@ -372,8 +374,6 @@ struct ContactView: View {
                             .padding(12)
                             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
-                    section("What you know") { knowledge(person) }
-                    section("About") { about(person) }
                     section("History") { history(person) }.id("history")
                     if crm.consent(id) != .pending {
                         section("Recognition") {
@@ -472,20 +472,39 @@ struct ContactView: View {
         }
     }
 
+    // MARK: LinkedIn
+
+    /// What they do, where they studied, where they're from: filled from their LinkedIn, never by
+    /// hand on this page. The profile link opens it; Edit is where the link is set.
+    @ViewBuilder private func linkedin(_ person: Person) -> some View {
+        if let link = person.linkedin.flatMap({ URL(string: $0.hasPrefix("http") ? $0 : "https://" + $0) }) {
+            Link(destination: link) {
+                HStack {
+                    Text("Open profile").font(.subheadline)
+                    Spacer()
+                    Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+            about(person)
+        } else {
+            Button { editing = true } label: {
+                Text("Add their LinkedIn to fill in where they work and study").font(.subheadline)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 6)
+        }
+    }
+
     // MARK: About
 
     @ViewBuilder private func about(_ person: Person) -> some View {
         let rows = [("Work", person.work), ("School", person.school), ("From", person.from),
                     ("Into", person.interests), ("How you met", person.tie)]
             .compactMap { label, value in value.flatMap { $0.isEmpty ? nil : (label, $0) } }
-        if rows.isEmpty {
-            Button { editing = true } label: {
-                Text("Add where they work, study, what they're into").font(.subheadline)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.vertical, 6)
-        } else {
+        if !rows.isEmpty {
             VStack(spacing: 0) {
                 ForEach(rows, id: \.0) { label, value in
                     HStack(alignment: .firstTextBaseline, spacing: 0) {
@@ -520,8 +539,9 @@ struct ContactView: View {
     }
 
     @ViewBuilder private func history(_ person: Person) -> some View {
-        let moments = self.moments
-        if moments.isEmpty {
+        let all = self.moments
+        let moments = allHistory ? all : Array(all.prefix(2))
+        if all.isEmpty {
             Text("Talk with the mic on and each conversation with \(first(person)) is noted here.")
                 .font(.subheadline).foregroundStyle(.secondary)
         } else {
@@ -538,6 +558,10 @@ struct ContactView: View {
                         .frame(width: 7)
                         momentRow(moment).padding(.bottom, 16)
                     }
+                }
+                if all.count > moments.count {
+                    Button("See more") { withAnimation { allHistory = true } }
+                        .font(.subheadline.weight(.medium)).buttonStyle(.plain)
                 }
             }
         }
@@ -603,15 +627,29 @@ struct ContactEditor: View {
     @State private var from = ""
     @State private var interests = ""
     @State private var tie = ""
+    @State private var linkedin = ""
+    @State private var photo: UIImage?
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Name", text: $name).textContentType(.name)
-                    TextField("What they do, in a few words", text: $role)
+                    VStack(spacing: 14) {
+                        PhotoPick(image: $photo, current: person.flatMap { store.avatars[$0.id] }, size: 120)
+                        TextField("Name", text: $name, axis: .vertical)
+                            .font(.system(size: 30, weight: .semibold, design: .serif))
+                            .multilineTextAlignment(.center)
+                            .textContentType(.name)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
+                }
+                Section("LinkedIn") {
+                    TextField("linkedin.com/in/…", text: $linkedin)
+                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
                 Section("About") {
+                    TextField("What they do, in a few words", text: $role)
                     TextField("Work", text: $work)
                     TextField("School", text: $school)
                     TextField("From", text: $from)
@@ -640,6 +678,7 @@ struct ContactEditor: View {
         from = person.from ?? ""
         interests = person.interests ?? ""
         tie = person.tie ?? ""
+        linkedin = person.linkedin ?? ""
     }
 
     private func save() {
@@ -657,9 +696,97 @@ struct ContactEditor: View {
         updated.from = clean(from)
         updated.interests = clean(interests)
         updated.tie = clean(tie)
+        updated.linkedin = clean(linkedin)
         store.update(updated)
+        if let photo { store.setAvatar(id, photo) }
         crm.rename(id, to: name)
         dismiss()
         saved(updated)
+    }
+}
+
+// MARK: - New person
+
+/// Adding someone is two things: their name, big, in serif, and a photo. Everything else comes
+/// later, from their LinkedIn or a conversation.
+struct NewPersonSheet: View {
+    @Environment(Store.self) private var store
+    @Environment(CRM.self) private var crm
+    @Environment(\.dismiss) private var dismiss
+    var saved: (Person) -> Void
+
+    @State private var name = ""
+    @State private var photo: UIImage?
+    @FocusState private var typing: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                PhotoPick(image: $photo, current: nil, size: 140)
+                TextField("Name", text: $name, axis: .vertical)
+                    .font(.system(size: 34, weight: .semibold, design: .serif))
+                    .multilineTextAlignment(.center)
+                    .textContentType(.name)
+                    .focused($typing)
+                    .padding(.vertical, 18).padding(.horizontal, 16)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                Spacer()
+            }
+            .padding(24)
+            .navigationTitle("New person")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") { save() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .onAppear { typing = true }
+        }
+    }
+
+    private func save() {
+        let name = self.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = crm.add(name: name)
+        let person = Person(id: id, name: name, role: "")
+        store.update(person)
+        if let photo { store.setAvatar(id, photo) }
+        dismiss()
+        saved(person)
+    }
+}
+
+/// A round photo you tap to pick from the library.
+struct PhotoPick: View {
+    @Binding var image: UIImage?
+    var current: UIImage?
+    var size: CGFloat
+    @State private var item: PhotosPickerItem?
+
+    var body: some View {
+        PhotosPicker(selection: $item, matching: .images) {
+            Group {
+                if let shown = image ?? current {
+                    Image(uiImage: shown).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "camera").font(.system(size: size * 0.24)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(.secondarySystemBackground))
+                }
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+            .overlay(alignment: .bottomTrailing) {
+                Image(systemName: "pencil").font(.system(size: 13, weight: .semibold))
+                    .padding(7).background(.thinMaterial, in: Circle())
+            }
+        }
+        .onChange(of: item) { _, picked in
+            Task {
+                if let data = try? await picked?.loadTransferable(type: Data.self), let loaded = UIImage(data: data) {
+                    image = loaded
+                }
+            }
+        }
     }
 }

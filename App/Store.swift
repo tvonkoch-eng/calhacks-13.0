@@ -31,6 +31,8 @@ struct Person: Codable, Identifiable, Hashable {
     /// Where this came from and how old it is. On every card, because the first thing anyone asks
     /// glasses that knew their name is "how did you know that?".
     var source: String?
+    /// Their LinkedIn profile: where the About fields come from.
+    var linkedin: String?
 
     /// What the lens leads with under the name: what they do now, not where they studied.
     var headline: String { work ?? school ?? role }

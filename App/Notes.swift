@@ -75,12 +75,11 @@ struct NotesHome: View {
 
     private var pastList: some View {
         let past = Transcripts.shared.saved
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+        return List {
                 if past.isEmpty {
                     Text("Your conversations will show up here.")
                         .font(.subheadline).foregroundStyle(.secondary)
-                        .padding(.horizontal, 20).padding(.top, 16)
+                        .listRowSeparator(.hidden)
                 }
                 ForEach(past) { row in
                     NavigationLink(value: row.id) {
@@ -96,14 +95,16 @@ struct NotesHome: View {
                             Spacer(minLength: 8)
                             faces(row.people, size: 28)
                         }
-                        .padding(.horizontal, 20).padding(.vertical, 12)
+                        .padding(.vertical, 6)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    Divider().padding(.leading, 20)
+                    // Swipe left to discard.
+                    .swipeActions(edge: .trailing) {
+                        Button("Delete", systemImage: "trash", role: .destructive) { Transcripts.shared.delete(row.id) }
+                    }
                 }
-            }
         }
+        .listStyle(.plain)
         .scrollIndicators(.hidden)
     }
 
@@ -221,6 +222,11 @@ struct SavedConversation: Codable, Identifiable, Equatable {
         if assistant.aid.partial.isEmpty, let last = lines.last, Date().timeIntervalSince(last.at) >= Self.quiet {
             end(assistant)
         }
+    }
+
+    func delete(_ id: UUID) {
+        saved.removeAll { $0.id == id }
+        if let data = try? JSONEncoder().encode(saved) { try? data.write(to: Self.url, options: .atomic) }
     }
 
     func end(_ assistant: Assistant) {
