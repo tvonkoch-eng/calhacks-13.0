@@ -337,6 +337,8 @@ enum LLM {
     struct Reply {
         var content: String?
         var calls: [(name: String, arguments: String)]
+        /// Each call's id, in order, for answering it with a `tool` message ("" if none given).
+        var ids: [String] = []
     }
 
     /// The first choice's message: its text and any tool calls. Claude's endpoint gets the same
@@ -374,11 +376,14 @@ enum LLM {
               let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any] else {
             throw Failure.unreadable(String(decoding: data.prefix(120), as: UTF8.self))
         }
-        let calls = ((message["tool_calls"] as? [[String: Any]]) ?? []).compactMap { call -> (String, String)? in
-            guard let function = call["function"] as? [String: Any], let name = function["name"] as? String else { return nil }
-            return (name, function["arguments"] as? String ?? "{}")
+        let raw = ((message["tool_calls"] as? [[String: Any]]) ?? []).filter {
+            (($0["function"] as? [String: Any])?["name"] as? String) != nil
         }
-        return Reply(content: message["content"] as? String, calls: calls)
+        let calls = raw.map { call -> (String, String) in
+            let function = call["function"] as! [String: Any]
+            return (function["name"] as! String, function["arguments"] as? String ?? "{}")
+        }
+        return Reply(content: message["content"] as? String, calls: calls, ids: raw.map { $0["id"] as? String ?? "" })
     }
 }
 
@@ -409,8 +414,7 @@ enum Claude {
         let model = chat["model"] as? String ?? ""
         var body: [String: Any] = [
             "model": model,
-            "messages": messages.filter { $0["role"] as? String != "system" }
-                .map { ["role": $0["role"] as? String ?? "user", "content": $0["content"] as? String ?? ""] },
+            "messages": messages.filter { $0["role"] as? String != "system" }.map(message),
         ]
         if !system.isEmpty { body["system"] = system.joined(separator: "\n\n") }
         if chat["stream"] as? Bool == true { body["stream"] = true }
@@ -439,17 +443,39 @@ enum Claude {
         return body
     }
 
+    /// One OpenAI-shaped message as Claude's: an assistant's `tool_calls` become `tool_use`
+    /// blocks, a `tool` result becomes the user's `tool_result` block.
+    static func message(_ m: [String: Any]) -> [String: Any] {
+        let role = m["role"] as? String ?? "user"
+        let text = m["content"] as? String ?? ""
+        if role == "tool" {
+            return ["role": "user", "content": [["type": "tool_result", "tool_use_id": m["tool_call_id"] as? String ?? "",
+                                                 "content": text]]]
+        }
+        if role == "assistant", let calls = m["tool_calls"] as? [[String: Any]], !calls.isEmpty {
+            var blocks: [[String: Any]] = text.isEmpty ? [] : [["type": "text", "text": text]]
+            for call in calls {
+                let function = call["function"] as? [String: Any] ?? [:]
+                let input = (function["arguments"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }
+                blocks.append(["type": "tool_use", "id": call["id"] as? String ?? "", "name": function["name"] as? String ?? "",
+                               "input": input ?? [String: Any]()])
+            }
+            return ["role": "assistant", "content": blocks]
+        }
+        return ["role": role, "content": text]
+    }
+
     /// The text blocks joined, and any tool calls with their input as JSON text.
     static func reply(_ json: [String: Any]) -> LLM.Reply {
         let blocks = (json["content"] as? [[String: Any]]) ?? []
         let text = blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
-        let calls = blocks.filter { $0["type"] as? String == "tool_use" }.compactMap { block -> (String, String)? in
-            guard let name = block["name"] as? String else { return nil }
+        let uses = blocks.filter { $0["type"] as? String == "tool_use" && $0["name"] is String }
+        let calls = uses.map { block -> (String, String) in
             let input = (try? JSONSerialization.data(withJSONObject: block["input"] ?? [String: Any]()))
                 .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
-            return (name, input)
+            return (block["name"] as! String, input)
         }
-        return LLM.Reply(content: text.isEmpty ? nil : text, calls: calls)
+        return LLM.Reply(content: text.isEmpty ? nil : text, calls: calls, ids: uses.map { $0["id"] as? String ?? "" })
     }
 
     /// One server-sent event's text, if it carries any (`content_block_delta` / `text_delta`).

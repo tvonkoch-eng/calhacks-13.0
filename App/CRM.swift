@@ -672,6 +672,140 @@ struct Reminder: Codable, Identifiable, Equatable {
                       theyOwe: open.filter { $0.kind == .waiting }.map(\.text))
     }
 
+    /// Everything on record, one line a person, for Jarvis: "who did I meet today", "what did I
+    /// promise Avi", "who here works at Google". People talked to come first, newest first, then
+    /// anyone owed something, then the rest of the roster and the people kept. At most `limit` people,
+    /// so it stays a small prompt; it never leaves the answer model (research gets the task only).
+    func digest(now: Date = .now, limit: Int = 30) -> String {
+        let when = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()
+        var order: [String] = []
+        func add(_ id: String) { if !order.contains(id) { order.append(id) } }
+        conversations.sorted { $0.started > $1.started }.forEach { add($0.person) }
+        reminders.filter(\.open).forEach { add($0.person) }
+        facts.forEach { add($0.person) }
+        rosterIDs.forEach(add)
+        saved.forEach { add($0.id) }
+
+        var lines: [String] = []
+        for id in order.prefix(limit) {
+            var parts: [String] = []
+            let pending = contacts.first { $0.id == id }?.consent == .pending
+            var who = name(id)
+            if let about = roster(id)?.about, !about.isEmpty { who += " (\(about))" }
+            else if let label = label(id) { who += " (\(label))" }
+            if pending { who += ", met, not saved yet" }
+            parts.append(who)
+            let talks = conversations(with: id).sorted { $0.started > $1.started }
+            if let last = talks.first {
+                var met = "last talked \(last.started.formatted(when))"
+                if let place = last.place { met += " \(place)" }
+                if talks.count > 1 { met += " (\(talks.count) conversations)" }
+                if let summary = last.summary { met += ": \(summary)" }
+                if !last.topics.isEmpty { met += " Topics: \(last.topics.joined(separator: ", "))." }
+                parts.append(met)
+            } else if roster(id) != nil {
+                parts.append("haven't talked yet")
+            }
+            let known = facts(about: id).prefix(5).map(\.text)
+            if !known.isEmpty { parts.append("Facts: " + known.joined(separator: "; ")) }
+            for reminder in open(for: id) {
+                let due = reminder.due.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+                switch reminder.kind {
+                case .todo: parts.append("You promised: \(reminder.text) (due \(due))")
+                case .waiting: parts.append("They promised: \(reminder.text)")
+                case .checkIn: parts.append("Check in by \(due)")
+                }
+            }
+            lines.append("- " + parts.joined(separator: ". "))
+        }
+        return lines.isEmpty ? "" : "People:\n" + lines.joined(separator: "\n")
+    }
+
+    /// Who "Priya", "Avi Shah" or "her" means: a full name, then a first name (whoever was talked
+    /// to most recently, if two share it). A pronoun or nothing is whoever the wearer is talking to
+    /// now (`current`). Nil when nobody on record goes by that name.
+    func find(_ said: String?, current: String?) -> String? {
+        let name = (said ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let deictic = ["", "her", "him", "them", "they", "she", "he", "this person", "this guy", "the person",
+                       "the person i'm talking to", "who i'm talking to"]
+        if deictic.contains(name) { return current }
+        let recent = conversations.sorted { $0.started > $1.started }.map(\.person)
+        var ids: [String] = []
+        for id in recent + rosterIDs + contacts.map(\.id) where !ids.contains(id) { ids.append(id) }
+        if let exact = ids.first(where: { self.name($0).lowercased() == name }) { return exact }
+        let first = name.split(separator: " ").first.map(String.init) ?? name
+        return ids.first { self.first($0).lowercased() == first }
+    }
+
+    /// What Jarvis may write: remember a fact, set a follow-up, save someone met. `current` is
+    /// whoever the wearer is talking to now. Each says back what it did, for the lens and the voice.
+    func jarvisTools(current: @escaping @MainActor () -> String?) -> [ExtraTool] {
+        let person = #""person": {"type": "string", "description": "Who, as the wearer named them; empty for whoever they're talking to now"}"#
+        return [
+            ExtraTool(name: "remember", definition: """
+                {"type": "function", "function": {"name": "remember",
+                 "description": "Save a fact about someone to the wearer's record (\\"remember Priya is hiring\\").",
+                 "parameters": {"type": "object", "properties": {\(person),
+                   "fact": {"type": "string", "description": "The fact, short, in the third person: 'Hiring a founding engineer'"}},
+                  "required": ["fact"]}}}
+                """, working: "Saving it") { @MainActor [weak self] json in
+                let a = Tools.arguments(json)
+                do {
+                    guard let self else { throw CancellationError() }
+                    let fact = (a["fact"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+                    guard !fact.isEmpty else { return ToolResult(title: "Nothing to save", detail: "", icon: "exclamationCircle") }
+                    let said = a["person"] as? String
+                    guard let id = self.find(said, current: current()) ?? said.flatMap({ $0.isEmpty ? nil : self.add(name: $0) }) else {
+                        return ToolResult(title: "Who is that about?", detail: "", icon: "exclamationCircle")
+                    }
+                    self.learn(id, fact)
+                    return ToolResult(title: "Saved for \(self.first(id))", detail: fact, icon: "starCircleTriangleAi")
+                }
+            },
+            ExtraTool(name: "follow_up", definition: """
+                {"type": "function", "function": {"name": "follow_up",
+                 "description": "Something the wearer will do for or with someone, tracked on their record with a reminder (\\"remind me to send Avi the deck tomorrow\\").",
+                 "parameters": {"type": "object", "properties": {\(person),
+                   "task": {"type": "string", "description": "What the wearer will do, as an instruction: 'Send Avi the deck'"},
+                   "days": {"type": "integer", "description": "Due in this many days: 0 today, 1 tomorrow (the default)"}},
+                  "required": ["task"]}}}
+                """, working: "Setting a follow-up") { @MainActor [weak self] json in
+                let a = Tools.arguments(json)
+                do {
+                    guard let self else { throw CancellationError() }
+                    let task = (a["task"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+                    guard !task.isEmpty, let id = self.find(a["person"] as? String, current: current()) else {
+                        return ToolResult(title: "Who is that for?", detail: "", icon: "exclamationCircle")
+                    }
+                    let days = (a["days"] as? Int) ?? Int(a["days"] as? String ?? "") ?? 1
+                    let due = CRM.due(max(0, days), from: Date())
+                    self.remind(id, task, due: due)
+                    let when = days <= 0 ? "today" : days == 1 ? "tomorrow" : due.formatted(.dateTime.weekday(.wide))
+                    return ToolResult(title: "\(task), \(when)", detail: "", icon: "bell")
+                }
+            },
+            ExtraTool(name: "save_contact", definition: """
+                {"type": "function", "function": {"name": "save_contact",
+                 "description": "Keep someone the wearer just met in their contacts, so they're remembered next time.",
+                 "parameters": {"type": "object", "properties": {\(person),
+                   "name": {"type": "string", "description": "Their name, if the wearer said it"}}}}}
+                """, working: "Saving the contact") { @MainActor [weak self] json in
+                let a = Tools.arguments(json)
+                do {
+                    guard let self else { throw CancellationError() }
+                    let name = (a["name"] as? String)?.trimmingCharacters(in: .whitespaces)
+                    if let id = self.find(a["person"] as? String ?? name, current: current()) {
+                        if self.consent(id) == .pending { self.keep(id, name: name) }
+                        return ToolResult(title: "\(self.name(id)) saved", detail: "", icon: "starCircleTriangleAi")
+                    }
+                    guard let name, !name.isEmpty else { return ToolResult(title: "Who should I save?", detail: "", icon: "exclamationCircle") }
+                    let id = self.add(name: name)
+                    return ToolResult(title: "\(self.name(id)) saved", detail: "", icon: "starCircleTriangleAi")
+                }
+            },
+        ]
+    }
+
     /// Names likely to come up at the event right now, for speech recognition keywords so they're
     /// spelled right: the roster, people kept, and anyone met in the last day. First and last
     /// names separately, most recent first, no repeats.
