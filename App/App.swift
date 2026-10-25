@@ -1778,6 +1778,16 @@ struct HomeHeader: View {
                 .background(Color(.secondarySystemBackground), in: Capsule())
             }
             Spacer()
+            // Demo video: tap as someone asks "How was FaceTag built?".
+            Button {
+                let scripted = Aid.builtWith
+                assistant.aid.showScripted(scripted.question, scripted.answer)
+            } label: {
+                Image(systemName: "hammer")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 34, height: 34)
+                    .background(Color(.secondarySystemBackground), in: Circle())
+            }
             NavigationLink { StreamLabView() } label: {
                 Image(systemName: "camera.aperture")
                     .font(.system(size: 15, weight: .medium))

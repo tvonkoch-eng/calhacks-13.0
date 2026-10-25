@@ -1199,6 +1199,31 @@ func withDeadline<T>(_ seconds: Double, _ work: @escaping () async throws -> T) 
     // MARK: - Jarvis: asked by name, thinks, shows its work
 
     @ObservationIgnored private var jarvisTask: Task<Void, Never>?
+
+    /// For the demo video: someone asks "How was FaceTag built?" and a tap puts this up in Jarvis's
+    /// panel at once. Keywords only: the panel holds a few short lines.
+    static let builtWith = (
+        question: "How was FaceTag built?",
+        answer: """
+        Meta Ray-Ban Display · Wearables SDK
+        Camera + mic over Bluetooth · 15 fps
+        Native Swift app, no server
+        Faces: SCRFD + MobileFaceNet, on-device Core ML
+        Speech: Muse live transcription
+        Answers: Qwen 3.8 via OpenRouter
+        Web: Fetch.ai ASI:One
+        Jarvis: tool-calling agent
+        """
+    )
+
+    /// A fixed answer in Jarvis's panel, no model involved. It lasts as long as any Jarvis answer.
+    func showScripted(_ question: String, _ answer: String) {
+        jarvisTask?.cancel()
+        let now = Date()
+        compositor.startJarvis(Self.echo(question), at: now)
+        compositor.jarvisAnswer(answer, at: now)
+        publish()
+    }
     /// The longest Jarvis may think, tools and all, before it gives up and says so.
     nonisolated static let jarvisLimit: TimeInterval = 25
 
