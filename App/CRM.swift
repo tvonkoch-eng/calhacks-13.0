@@ -348,7 +348,9 @@ struct Reminder: Codable, Identifiable, Equatable {
         guard let conversation = live, !glancing, now.timeIntervalSince(lastGlance) >= glanceEvery,
               let id = [newcomer, facing].compactMap({ $0 }).first(where: { conversation.faces.contains($0) })
         else { return }
-        let theirs = conversation.lines.filter { $0.who != "ME" }.count
+        // Someone just met: every line counts, the wearer's too. The recognizer merges their answer
+        // into the wearer's question ("So what do you do? Yeah I'm a student at UCSB", tagged ME).
+        let theirs = id == newcomer ? conversation.lines.count : conversation.lines.filter { $0.who != "ME" }.count
         guard theirs - glancedLines[id, default: 0] >= glanceLines else { return }
         glancing = true
         lastGlance = now
@@ -1264,7 +1266,10 @@ struct Glance: Equatable {
     a name and THEM said or spelled it differently, or corrected it, the corrected spelling. \
     Speaker tags are often wrong: a short reply that is just a name ("Avi Shah", "It's Toby") \
     right after someone asks "what's your name?" is THEM's name whichever tag either line has. \
-    Use the newest such answer; a name only mentioned in passing is someone else's.
+    Use the newest such answer; a name only mentioned in passing is someone else's. \
+    The recognizer also merges turns: a ME line that asks THEM something and then answers it \
+    ("So what do you do? Yeah I'm a student at UCSB") holds THEM's answer after the question; \
+    take facts from it as THEM's, unless it plainly describes the wearer.
     "label": who THEM is in at most 4 words, lowercase, from what they said: "evals startup \
     founder", "berkeley eecs junior". null if unclear.
     "facts": up to 3 durable things THEM said about themselves (job, school, project, where \

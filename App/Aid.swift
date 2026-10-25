@@ -241,26 +241,6 @@ enum Talk {
         return String(text[range])
     }
 
-    /// "What's your name?" (or "who are you"), from anyone: the next short line may be the answer.
-    static func asksName(_ text: String) -> Bool {
-        let t = " " + normalized(text) + " "
-        return [" whats your name", " what is your name", " your name ", " who are you", " whats ur name"].contains { t.contains($0) }
-    }
-
-    /// The answer to "what's your name?": "Avi Shah", "It's Priya.", "Toby" → the name. One to three
-    /// capitalized words, after an optional "it's" / "I'm" / "my name is"; anything longer or
-    /// lower-case is a sentence, not a name.
-    static func answeredName(_ text: String) -> String? {
-        if let name = introducedName(in: text) { return name }
-        var words = text.split(separator: " ").map { $0.trimmingCharacters(in: .punctuationCharacters) }.filter { !$0.isEmpty }
-        if let first = words.first?.lowercased(), ["it's", "its", "uh", "um", "oh", "yeah", "hi", "hey"].contains(first) { words.removeFirst() }
-        // "Avi. Avi Shah." says the first name twice: four words, still a name.
-        guard (1...4).contains(words.count),
-              words.allSatisfy({ $0.first?.isUppercase == true && $0.allSatisfy(\.isLetter) }) else { return nil }
-        // A first name is enough (Oct 25): the card reads "Avi", whatever came after.
-        return words[0]
-    }
-
     /// Two short notes that say the same thing ("paralegal for two years" vs "was a paralegal for
     /// two years"): most content words shared, either way round.
     static func same(_ a: String, _ b: String) -> Bool {
@@ -489,15 +469,6 @@ func withDeadline<T>(_ seconds: Double, _ work: @escaping () async throws -> T) 
             coachedOpenWords = openWords
             coachSoon()
         }
-        // "Toby…" answering "what's your name?": the name now, not once the turn closes 8 s later.
-        if them.name == nil || !them.recognised, let last = lines.last, Talk.asksName(last.text),
-           Date().timeIntervalSince(last.at) < 20, let name = Talk.answeredName(text),
-           name.caseInsensitiveCompare(config.wearer) != .orderedSame, them.name != name {
-            them.name = name
-            compositor.setHeader(name)
-            log(.learned, "Name: \(name)", detail: "answered what's your name (as said)")
-            onName?(name)
-        }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
         closeBuriedQuestion(open, mine: mine)
         publish()
@@ -546,10 +517,7 @@ func withDeadline<T>(_ seconds: Double, _ work: @escaping () async throws -> T) 
             // Someone introducing themselves settles who's who: our name means the wearer,
             // any other name means the other person, and is their name. Only an introduction names
             // them (or face ID): a name merely mentioned is usually someone else's.
-            // "I'm Priya", or a bare "Priya" answering "what's your name?" a moment ago (speaker
-            // labels can't be trusted to tell who asked, so the answer is the line after).
-            let answered = lines.last.map { Talk.asksName($0.text) && Date().timeIntervalSince($0.at) < 20 } == true
-            if let name = Talk.introducedName(in: text) ?? (answered ? Talk.answeredName(text) : nil) {
+            if let name = Talk.introducedName(in: text) {
                 let ours = name.caseInsensitiveCompare(config.wearer) == .orderedSame
                 if !roles.sure, ours {
                     roles.lock(speaker)
