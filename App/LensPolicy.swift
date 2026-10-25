@@ -31,7 +31,6 @@ struct Member: Equatable {
     var lines: [String] = []
     /// Full name, for the split lens's card.
     var fullName: String = ""
-    /// Their share of the lens's width when two are up: half each while both are in frame; while
-    /// one is held out of frame (waiting to time out), the one in view gets two-thirds.
+    /// Their share of the lens's width when two are up: 0.6 for the dominant one, 0.4 for the other.
     var share: CGFloat = 0.5
 }

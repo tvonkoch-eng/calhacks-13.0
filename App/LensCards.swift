@@ -588,7 +588,10 @@ enum LensFit {
     }
 
     /// The photo's share of the header row: tall enough for a full name on two heading lines.
-    static func photoShare(_ width: CGFloat) -> CGFloat { width > 400 ? 0.2 : 0.38 }
+    /// A narrow card (the 40% one) keeps an icon-sized photo so the name has room beside it.
+    static func photoShare(_ width: CGFloat) -> CGFloat {
+        width > 400 ? 0.2 : width > 260 ? 0.38 : min(0.38, 64 / (width - photoGap))
+    }
 
     private static func take(_ pool: [String], name: String, width: CGFloat,
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {

@@ -59,11 +59,14 @@ enum Identification {
     private var groupInView: [Member] {
         var picked = groupHeld
         guard picked.count == 2 else { return picked }
-        // In frame: seen within the last second. Gone but still held: the one in view takes 2/3.
+        // Always 60/40: the dominant one gets 60. That's who you're facing; else the only one still
+        // in frame (seen in the last second); else whoever is talking; else whoever was seen last.
         let inFrame = picked.map { member in sighted[member.id].map { clockNow.timeIntervalSince($0) < 1 } ?? false }
-        for index in picked.indices {
-            picked[index].share = inFrame[0] == inFrame[1] ? 0.5 : (inFrame[index] ? 2.0 / 3 : 1.0 / 3)
-        }
+        let dominant = picked.firstIndex { $0.id == facing }
+            ?? (inFrame[0] != inFrame[1] ? (inFrame[0] ? 0 : 1) : nil)
+            ?? picked.firstIndex(where: \.speaking)
+            ?? ((sighted[picked[0].id] ?? .distantPast) >= (sighted[picked[1].id] ?? .distantPast) ? 0 : 1)
+        for index in picked.indices { picked[index].share = index == dominant ? 0.6 : 0.4 }
         return picked.sorted { (faceX[$0.id] ?? 0.5) < (faceX[$1.id] ?? 0.5) }
     }
 
