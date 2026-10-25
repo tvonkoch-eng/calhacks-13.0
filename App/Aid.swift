@@ -800,6 +800,15 @@ enum Talk {
         return (fresh.isEmpty ? parts : fresh).prefix(2).joined(separator: " \u{00B7} ")
     }
 
+    /// A how or why question wants a few sentences; "how far / many / much / long / old" wants a number.
+    static func explains(_ question: String) -> Bool {
+        let q = question.lowercased().trimmingCharacters(in: .whitespaces)
+        let numeric = ["how far", "how many", "how much", "how long", "how old", "how big", "how tall", "how fast"]
+        if numeric.contains(where: q.contains) { return false }
+        return q.hasPrefix("why") || q.hasPrefix("how") || q.contains(" why ") || q.contains(" how does ")
+            || q.contains("explain")
+    }
+
     /// The question exactly as asked: small and grey, it wraps rather than being cut.
     private static func echo(_ question: String) -> String {
         question.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1062,7 +1071,7 @@ enum Talk {
         // around" was rebuilt into a question and answered with a made-up number), and unless
         // that same question was answered or is in flight.
         let newest = (lines.last { !$0.command }?.text ?? "") + " " + partial
-        if let ask = advice.ask, Talk.asks(newest), lookupTask == nil, turns.first?.live != true,
+        if let ask = advice.ask, Talk.asks(newest), lookupTask == nil, turns.first?.live != true, turns.first?.lookup != true,
            !alreadyAnswered(ask, at: now), !asked.contains(where: { Talk.same($0, ask) }) {
             asked.append(ask)
             answeredAt = now
@@ -1245,7 +1254,8 @@ enum Talk {
                     return
                 }
                 // Same shape as a direct answer: the question small on top, the answer under it.
-                self.put(Card(kind: .answer, title: result.title, detail: Self.echo(question), id: card, icon: result.icon))
+                let answer = Self.explains(question) && !result.detail.isEmpty ? result.title + ". " + result.detail : result.title
+                self.put(Card(kind: .answer, title: answer, detail: Self.echo(question), id: card, icon: result.icon))
                 let ms = self.ms(since: started)
                 self.timings["research", default: []].append(ms)
                 self.log(.research, result.title, detail: "\(result.detail) · \(question) · \(ms) ms")

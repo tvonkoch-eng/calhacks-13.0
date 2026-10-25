@@ -98,6 +98,9 @@ struct Answerer {
     Never a preamble or the question restated. A number keeps its unit. Plain facts only. If the \
     conversation or what's known about them answers it, answer from that.
 
+    Stable facts (distances between places, sizes, dates, definitions, history) come from memory, \
+    never WEB: a quick answer beats a slow lookup.
+
     Reply with exactly WEB, and nothing else, if it is a public fact you can't give reliably from \
     memory: news or anything recent, prices, scores, schedules, or a specific company, product or \
     paper you don't know well. You do know the current date and time (below): use them for time \
