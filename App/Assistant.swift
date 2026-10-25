@@ -144,6 +144,10 @@ import Observation
         aid.onName = { [weak self] name in self?.introduced(name) }
         // Jarvis answers from everything the wearer has on record.
         aid.personal = { [weak self] in self?.crm?.digest() ?? "" }
+        aid.currentPerson = { [weak self] in
+            guard let self, let id = self.met ?? self.glasses?.facing, !self.isWearer(id) else { return "" }
+            return self.crm?.digest(only: id) ?? ""
+        }
         // "Jarvis, remember…", "remind me to…", "save her": written to the record, about whoever
         // was named or, by default, whoever the wearer is talking to.
         aid.jarvisTools = crm?.jarvisTools(current: { [weak self] in self?.met ?? self?.glasses?.facing }) ?? []

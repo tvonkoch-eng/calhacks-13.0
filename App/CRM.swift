@@ -738,15 +738,20 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// promise Avi", "who here works at Google". People talked to come first, newest first, then
     /// anyone owed something, then the rest of the roster and the people kept. At most `limit` people,
     /// so it stays a small prompt; it never leaves the answer model (research gets the task only).
-    func digest(now: Date = .now, limit: Int = 30) -> String {
+    /// `only`: that one person's lines (the person the wearer is talking to now), not everyone.
+    func digest(now: Date = .now, limit: Int = 30, only: String? = nil) -> String {
         let when = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()
         var order: [String] = []
         func add(_ id: String) { if !order.contains(id) { order.append(id) } }
-        conversations.sorted { $0.started > $1.started }.forEach { add($0.person) }
-        reminders.filter(\.open).forEach { add($0.person) }
-        facts.forEach { add($0.person) }
-        rosterIDs.forEach(add)
-        saved.forEach { add($0.id) }
+        if let only {
+            add(only)
+        } else {
+            conversations.sorted { $0.started > $1.started }.forEach { add($0.person) }
+            reminders.filter(\.open).forEach { add($0.person) }
+            facts.forEach { add($0.person) }
+            rosterIDs.forEach(add)
+            saved.forEach { add($0.id) }
+        }
 
         var lines: [String] = []
         for id in order.prefix(limit) {
