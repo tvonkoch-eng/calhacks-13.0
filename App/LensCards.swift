@@ -865,7 +865,8 @@ enum LensFit {
                 shot.cards.removeLast()
             } else {
                 // The newest answer alone is too tall: shorten its words, or it runs into the people.
-                shot.cards[0].title = shortened(shot.cards[0].title, shot, bottom: bottom)
+                // A definition is never cut: the room it has is the room it gets.
+                if !shot.cards[0].definition { shot.cards[0].title = shortened(shot.cards[0].title, shot, bottom: bottom) }
                 break
             }
         }
