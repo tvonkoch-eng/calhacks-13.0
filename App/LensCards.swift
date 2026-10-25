@@ -52,6 +52,9 @@ struct LensShot: Equatable {
     /// A Jarvis answer too long for the top third has the whole lens; the people come back when
     /// its panel goes.
     var peopleYield = false
+    /// The aid's band at the top of the split, in points. It grows for a long Jarvis answer, and the
+    /// people's half shrinks to match.
+    var band: CGFloat = LensFit.answersBand
     var name: String?
     var headline: String?
     /// One line of context under the person at the bottom of the split lens.
@@ -102,7 +105,7 @@ enum LensCards {
             extrasBox(shot, fill: gap)
             // The people have the bottom two-thirds: one card taking all of it, or two side by side.
             if shot.group.count >= 2 {
-                groupCards(shot.group, avatar: avatar)
+                groupCards(shot.group, band: shot.band, avatar: avatar)
             } else if let person {
                 // The photo is written after the card (`photoPending`), so the name lands first.
                 personCard(person, shot: shot, avatar: { photoPending ? nil : avatar($0) })
@@ -120,7 +123,7 @@ enum LensCards {
             for line in shot.primary {
                 Text(line, style: .body).flexShrink(1)
             }
-            FlexBox(direction: .column) {}.padding(.top, LensFit.person(person, lines: shot.primary).left)
+            FlexBox(direction: .column) {}.padding(.top, LensFit.person(person, lines: shot.primary, band: shot.band).left)
         }
         .padding(22)
         .background(.card)
@@ -185,17 +188,18 @@ enum LensCards {
     /// Everyone you're talking to, in one row: a photo and a first name each, the speech bubble in
     /// place of the photo for whoever is talking, names dimmed for the rest. Past three, "+N".
     /// "You" leads the row while the wearer talks, so the row always says who has the floor.
-    /// A conversation of several: one card each, a quarter of the lens, side by side. Photo at the
-    /// top, name and headline at the foot. Whoever is talking has the brighter name; no bubble.
-    static func groupCards(_ group: [Member], avatar: (String) -> UIImage?) -> FlexBox {
-        // One filler for both, sized by the fuller card, and the row stretches them to one height:
+    /// A conversation of several: one card each, stacked in one column, full width, the two halves
+    /// of the people's space. Photo at the top, name and headline at the foot. Whoever is talking
+    /// has the brighter name; no bubble.
+    static func groupCards(_ group: [Member], band: CGFloat, avatar: (String) -> UIImage?) -> FlexBox {
+        // One filler for both, sized by the fuller card, and the column stretches them to one height:
         // the two cards always start and end on the same lines.
-        let fill = group.prefix(2).map { LensFit.member($0, lines: $0.lines).left }.min() ?? 0
-        return FlexBox(direction: .row, spacing: 12, crossAlignment: .stretch) {
+        let fill = group.prefix(2).map { LensFit.stacked($0, lines: $0.lines, band: band).left }.min() ?? 0
+        return FlexBox(direction: .column, spacing: LensFit.stackGap, crossAlignment: .stretch) {
             for member in group.prefix(2) {
                 FlexBox(direction: .column, spacing: 8) {
                     header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
-                           width: LensFit.memberWidth(member), bright: member.speaking, focused: member.focused)
+                           width: LensFit.stackedWidth, bright: member.speaking, focused: member.focused, compact: true)
                     for line in member.lines {
                         Text(line, style: .body).flexShrink(1)
                     }
@@ -203,7 +207,7 @@ enum LensCards {
                 }
                 .padding(LensFit.splitPad)
                 .background(.card)
-                .flexGrow(Float(member.share))
+                .flexGrow(1)
                 .flexShrink(1)
             }
         }
@@ -212,7 +216,8 @@ enum LensCards {
     /// The photo on the left, sized to stand as tall as the full name beside it; everything else
     /// is bullets below. The lens has only icon-sized or filling images, so the photo fills a
     /// share of the row.
-    private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool, focused: Bool) -> FlexBox {
+    private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool, focused: Bool,
+                               compact: Bool = false) -> FlexBox {
         // 50/50: the photo and the icon on one row, the name under them in the bold heading, full
         // width, as big as on the single card.
         if !LensFit.full(width) {
@@ -236,7 +241,7 @@ enum LensCards {
                 }
             }
         }
-        let share = Float(LensFit.photoShare(width))
+        let share = Float(compact ? LensFit.stackedPhoto / (width - LensFit.photoGap) : LensFit.photoShare(width))
         return FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
             // The photo's box is always there, a grey square until the photo lands, so the name and
             // bullets never move when it arrives.
@@ -500,12 +505,19 @@ enum LensCards {
         answerOnly.cards = []
         answerOnly.jarvis?.asked = ""
         answerOnly.jarvis?.steps = []
-        if shot.jarvis?.answer != nil, wanted != .none, LensFit.content(answerOnly, bottom: wanted) > LensFit.room(wanted) {
-            shot.peopleYield = true
-            shot.group = []
-            shot.photo = nil
-            person = nil
-            group = []
+        // A long answer used to take the people off the lens. Now it is cut to the words that fit
+        // beside them, so the person stays and the answer ends in an ellipsis.
+        // Jarvis's answer takes the band it needs, up to `maxBand`; the people's half shrinks to match.
+        if shot.jarvis?.answer != nil, wanted != .none {
+            shot.band = min(max(LensFit.answersBand, LensFit.content(answerOnly, bottom: wanted) + 8), LensFit.maxBand)
+        }
+        if let full = shot.jarvis?.answer, wanted != .none, LensFit.content(answerOnly, bottom: wanted) > LensFit.room(wanted, band: shot.band) {
+            var words = full.split(separator: " ")
+            repeat {
+                words.removeLast()
+                answerOnly.jarvis?.answer = words.joined(separator: " ") + "…"
+            } while words.count > 1 && LensFit.content(answerOnly, bottom: wanted) > LensFit.room(wanted, band: shot.band)
+            shot.jarvis?.answer = answerOnly.jarvis?.answer
         }
         // What doesn't fit goes here, once, so the glass and the mirror drop the same thing.
         let before = shot.cards.map(\.title)
@@ -518,13 +530,13 @@ enum LensCards {
             // Each card gets every line that fits its own height as it wraps, and no more.
             shot.group = shot.group.map { member in
                 var member = member
-                member.lines = LensFit.member(member, lines: member.lines).lines
+                member.lines = LensFit.stacked(member, lines: member.lines, band: shot.band).lines
                 return member
             }
         } else if let person {
             // Every line that fits the person's two-thirds as it wraps, and no more.
             let pool = info(person)
-            shot.primary = LensFit.person(person, lines: pool).lines
+            shot.primary = LensFit.person(person, lines: pool, band: shot.band).lines
             shot.context = pool.first
         }
         if let newest = shot.cards.first {
@@ -709,14 +721,20 @@ enum LensFit {
     /// The aid's cards take the top third of the lens when there are people to show, and the people
     /// the bottom two-thirds, so their cards carry the most. `half` is what the bottom takes.
     /// The people's share, fixed: every people card starts at the same height and never grows past it.
-    static var half: CGFloat { available - answersBand }
+    static var half: CGFloat { half(band: answersBand) }
+    static func half(band: CGFloat) -> CGFloat { available - band }
+    /// The fewest points the people keep when a Jarvis answer takes more of the lens.
+    static let minPeople: CGFloat = 220
+    static var maxBand: CGFloat { available - minPeople }
     /// The answers' and definitions' band at the top, fixed.
     static let answersBand: CGFloat = 132
     /// Padding, photo, name and one headline line: what a person card takes before its fill.
     static let cardBase: CGFloat = 190
 
     /// Room left for the aid's cards: the top half when there are people, the whole lens when not.
-    static func room(_ bottom: LensCards.Bottom) -> CGFloat { bottom == .none ? available : available - half }
+    static func room(_ bottom: LensCards.Bottom, band: CGFloat = answersBand) -> CGFloat {
+        bottom == .none ? available : available - half(band: band)
+    }
 
     /// The space a people card needs filling down to the half: its base, plus a line for each text
     /// line that sits between the photo and the name.
@@ -726,15 +744,15 @@ enum LensFit {
 
     /// The person card's height in the split: the bottom half, grown into whatever the aid leaves.
     /// Fixed at the bottom share: the top is the suggestions', so the person never grows into it.
-    static func personRoom(_ shot: LensShot) -> CGFloat { half }
+    static func personRoom(_ shot: LensShot) -> CGFloat { half(band: shot.band) }
 
     /// The empty suggestions box's inner height: one body line.
     static let blank: CGFloat = 30
 
     /// A person card's lines: those from `pool` that fit its height measured as they wrap, and the
     /// height left over, which goes between the photo and the name.
-    static func person(_ person: Person, lines pool: [String]) -> (lines: [String], left: CGFloat) {
-        take(pool, name: person.name, width: personWidth, font: body, gap: 10)
+    static func person(_ person: Person, lines pool: [String], band: CGFloat = answersBand) -> (lines: [String], left: CGFloat) {
+        take(pool, name: person.name, width: personWidth, font: body, gap: 10, height: half(band: band))
     }
 
     /// The same for one of two side-by-side cards.
@@ -742,6 +760,18 @@ enum LensFit {
         take(pool, name: member.fullName.isEmpty ? member.name : member.fullName,
              width: memberWidth(member), font: body, gap: 8)
     }
+
+    /// The same for one of two stacked cards: full width, each half of the people's space.
+    static func stacked(_ member: Member, lines pool: [String], band: CGFloat = answersBand) -> (lines: [String], left: CGFloat) {
+        take(pool, name: member.fullName.isEmpty ? member.name : member.fullName,
+             width: stackedWidth, font: body, gap: 8, height: (half(band: band) - stackGap) / 2, photoSide: stackedPhoto)
+    }
+
+    /// Two stacked cards: the gap between them, and the inner width of one (full width, same padding).
+    static let stackGap: CGFloat = 12
+    /// The stacked cards' photo: small enough that two lines of what they do fit under the name.
+    static let stackedPhoto: CGFloat = 56
+    static var stackedWidth: CGFloat { panel - 12 - 2 * splitPad }
 
     /// Inner widths of the one-person card and of each of two side-by-side cards.
     static let personWidth: CGFloat = panel - 44
@@ -797,15 +827,17 @@ enum LensFit {
     }
 
     private static func take(_ pool: [String], name: String, width: CGFloat,
-                             font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
+                             font: UIFont, gap: CGFloat, height: CGFloat? = nil,
+                             photoSide: CGFloat? = nil) -> (lines: [String], left: CGFloat) {
+        let room = height ?? half
         // Padding, then the header: the photo, or the name beside it if taller.
-        let photo = (width - photoGap) * photoShare(width)
+        let photo = photoSide ?? (width - photoGap) * photoShare(width)
         let splitPhoto = (width - photoGap) * splitPhotoShare
         let header = !full(width) ? markSide + 4 + max(splitPhoto, lines(nameText(name, width: width), heading, width - photoGap - splitPhoto) * slack)
             : max(photo, lines(nameText(name, width: width), heading,
                                       width - photoGap - photo - iconRoom) * slack)
-        let pad = full(width) ? 44 : 2 * splitPad
-        var left = half - (pad + header + gap)
+        let pad = full(width) && photoSide == nil ? 44 : 2 * splitPad
+        var left = room - (pad + header + gap)
         var out: [String] = []
         // Rigid: a bullet is at most two lines, cut with "…" by a character count that assumes
         // Meta's wider face, and its height is budgeted as if it wrapped wide. So no card can run
@@ -841,7 +873,7 @@ enum LensFit {
     static func fit(_ shot: inout LensShot, bottom: LensCards.Bottom) -> CGFloat {
         // The newest card always stays: it is the answer they're waiting for. Older ones lose their
         // detail, then go; last of all the newest gives up its echo of the question.
-        while content(shot, bottom: bottom) > room(bottom) {
+        while content(shot, bottom: bottom) > room(bottom, band: shot.band) {
             let last = shot.cards.count - 1
             if last < 0 {
                 // Jarvis alone and still too tall: the question echo goes, then all but the
@@ -874,7 +906,7 @@ enum LensFit {
     }
 
     static func gap(_ shot: LensShot, bottom: LensCards.Bottom) -> CGFloat {
-        let aid = bottom == .person ? available - personRoom(shot) : room(bottom)
+        let aid = bottom == .person ? available - personRoom(shot) : room(bottom, band: shot.band)
         return max(0, (aid - content(shot, bottom: bottom)).rounded(.down))
     }
 

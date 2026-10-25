@@ -66,6 +66,13 @@ enum Tools {
         return text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
+    /// "Jarvis" opening a sentence that is still being said, with or without words after it. Only
+    /// for the listening row, which should not wait for the sentence to close.
+    static func opensWithJarvis(_ text: String) -> Bool {
+        let pattern = #"^\s*(?:(?:hey|ok|okay|um|uh|so|yo)[\s,]+)*"# + jarvis + #"\b"#
+        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
     /// Addressed by name, so it's the wearer talking to their glasses whoever the diarizer says
     /// spoke: nobody says "Jarvis" to the person in front of them.
     static func byName(_ text: String) -> Bool {

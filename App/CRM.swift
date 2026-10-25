@@ -362,6 +362,8 @@ struct Reminder: Codable, Identifiable, Equatable {
                 facts.append(Fact(id: UUID(), person: id, text: text, learned: .now))
             }
             if let label = glance.label { liveLabels[id] = label }
+            // Work, school, home: filled into the card now, not only when the conversation ends.
+            if glance.details != Recap.Details() { onDetails?(id, glance.details) }
             if !glance.key.isEmpty { revise(id, with: Profile(key: glance.key)) }
             save()
             onGlance?(id, glance)
@@ -1225,6 +1227,8 @@ struct Glance: Equatable {
     var facts: [String] = []
     /// Their most important facts so far, from "Known" and these, most important first.
     var key: [String] = []
+    /// Where they work, went to school, and are from, when they said so.
+    var details = Recap.Details()
 
     static let prompt = """
     You keep live notes on a contact card for the wearer of AR glasses while they talk to someone. You get the conversation so far, from live speech recognition (expect misheard words). \
@@ -1239,6 +1243,8 @@ struct Glance: Equatable {
     "facts": up to 3 durable things THEM said about themselves (job, school, project, where \
     they're from, plans, interests), at most 8 words each, most useful first, never anything in \
     "Known", never about the wearer. Often [].
+    "details": THEM's work (employer and role), school, and where they're from, only when they \
+    said it clearly: {"work": "...", "school": "...", "from": "..."}. {} if not.
     "key": the 3 most important things to know about THEM overall, copied exactly from "Known" \
     and your "facts", most important first: what they do and what they're building over a \
     passing detail. [] if there are none.
@@ -1258,8 +1264,13 @@ struct Glance: Equatable {
                   s.lowercased() != "null" else { return nil }
             return s
         }
+        var details = Recap.Details()
+        if let object = json["details"] as? [String: Any] {
+            details = Recap.Details.clean(object.compactMapValues { clean($0) })
+        }
         return Glance(name: clean(json["name"]), label: clean(json["label"]),
                       facts: ((json["facts"] as? [Any]) ?? []).compactMap(clean).prefix(3).map { $0 },
-                      key: ((json["key"] as? [Any]) ?? []).compactMap(clean).prefix(3).map { $0 })
+                      key: ((json["key"] as? [Any]) ?? []).compactMap(clean).prefix(3).map { $0 },
+                      details: details)
     }
 }
