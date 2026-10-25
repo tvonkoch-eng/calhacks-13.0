@@ -1035,7 +1035,7 @@ struct LensMirror: View {
                     header(id: member.id, name: member.fullName.isEmpty ? member.name : member.fullName,
                            width: LensFit.memberWidth(member), bright: member.speaking, focused: member.focused)
                     ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: m.meta)).fixedSize(horizontal: false, vertical: true)
+                        Text(line).font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
@@ -1048,7 +1048,39 @@ struct LensMirror: View {
     }
 
     /// Mirror of `LensCards.header`: photo left, full name over what they do on the right.
-    private func header(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool) -> some View {
+    @ViewBuilder private func header(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool) -> some View {
+        if LensFit.full(width) {
+            wideHeader(id: id, name: name, width: width, bright: bright, focused: focused)
+        } else {
+            // Mirror of the lens's 50/50 header: photo and icon on a row, the bold name under them.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    photoBox(id: id, size: m.icon)
+                    Spacer(minLength: 0)
+                    Image(systemName: "eyeglasses").font(.system(size: m.glyph))
+                        .foregroundStyle(.white).opacity(focused ? 1 : 0)
+                }
+                Text(LensFit.nameText(name, width: width))
+                    .font(.system(size: m.heading, weight: .semibold)).lineLimit(2)
+                    .foregroundStyle(bright ? Color.white : secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private func photoBox(id: String, size: CGFloat) -> some View {
+        if let photo = avatar(id), !(shot.photoPending && id == shot.photo) {
+            Image(uiImage: photo)
+                .resizable().aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                .fill(Color(white: 0.28)).frame(width: size, height: size)
+        }
+    }
+
+    private func wideHeader(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool) -> some View {
         let size = (width - LensFit.photoGap) * LensFit.photoShare(width)
         return HStack(alignment: .center, spacing: LensFit.photoGap) {
             // Grey until the photo's write lands, as on the lens.

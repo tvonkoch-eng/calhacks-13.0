@@ -177,7 +177,7 @@ enum LensCards {
                     header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
                            width: LensFit.memberWidth(member), bright: member.speaking, focused: member.focused)
                     for line in member.lines {
-                        Text(line, style: .meta).flexShrink(1)
+                        Text(line, style: .body).flexShrink(1)
                     }
                     FlexBox(direction: .column) {}.padding(.top, LensFit.member(member, lines: member.lines).left)
                 }
@@ -193,6 +193,19 @@ enum LensCards {
     /// is bullets below. The lens has only icon-sized or filling images, so the photo fills a
     /// share of the row.
     private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool, focused: Bool) -> FlexBox {
+        // 50/50: the photo and the icon on one row, the name under them in the bold heading, full
+        // width, as big as on the single card.
+        if !LensFit.full(width) {
+            return FlexBox(direction: .column, spacing: 6) {
+                FlexBox(direction: .row, crossAlignment: .center) {
+                    if let photo = photo ?? placeholder { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                    FlexBox(direction: .column) {}.flexGrow(1)
+                    if focused { Icon(name: .smartGlasses, style: .outline).flexShrink(0) }
+                }
+                Text(LensFit.nameText(name, width: width), style: .heading,
+                     color: bright ? .primary : .secondary).flexShrink(1)
+            }
+        }
         let share = Float(LensFit.photoShare(width))
         return FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
             // The photo's box is always there, a grey square until the photo lands, so the name and
@@ -208,7 +221,7 @@ enum LensCards {
             }
             .flexGrow(1 - share).flexShrink(1)
             // In focus: the glasses' own icon, beside the name. Vector, so nothing heavy to send.
-            if focused { Icon(name: .smartGlasses, style: .outline) }
+            if focused { Icon(name: .smartGlasses, style: .outline).flexShrink(0) }
         }
     }
 
@@ -620,7 +633,7 @@ enum LensFit {
     /// The same for one of two side-by-side cards.
     static func member(_ member: Member, lines pool: [String]) -> (lines: [String], left: CGFloat) {
         take(pool, name: member.fullName.isEmpty ? member.name : member.fullName,
-             width: memberWidth(member), font: meta, gap: 8)
+             width: memberWidth(member), font: body, gap: 8)
     }
 
     /// Inner widths of the one-person card and of each of two side-by-side cards.
@@ -643,7 +656,7 @@ enum LensFit {
     /// First name over last, each line clipped to what that layout holds ("Alexandria" fits; a
     /// longer word ends in "…"), so a name never wraps mid-word or changes size.
     static func nameText(_ name: String, width: CGFloat) -> String {
-        let most = full(width) ? 18 : 10
+        let most = full(width) ? 18 : 11
         return LensCards.twoLines(name).split(separator: "\n").map { line in
             line.count > most ? line.prefix(most - 1) + "\u{2026}" : String(line)
         }.joined(separator: "\n")
@@ -665,7 +678,8 @@ enum LensFit {
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
         // Padding, then the header: the photo, or the name beside it if taller.
         let photo = (width - photoGap) * photoShare(width)
-        let header = max(photo, lines(nameText(name, width: width), full(width) ? heading : body,
+        let header = !full(width) ? 56 + 6 + lines(nameText(name, width: width), heading, width) * slack
+            : max(photo, lines(nameText(name, width: width), heading,
                                       width - photoGap - photo - iconRoom) * slack)
         var left = half - (44 + header + gap)
         var out: [String] = []
