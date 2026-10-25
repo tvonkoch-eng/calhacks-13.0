@@ -993,7 +993,7 @@ struct LensMirror: View {
     private var groupCards: some View {
         HStack(alignment: .top, spacing: 12) {
             ForEach(shot.group.prefix(2), id: \.id) { member in
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
                         if let photo = avatar(member.id) {
                             Image(uiImage: photo)
@@ -1004,9 +1004,9 @@ struct LensMirror: View {
                         if member.speaking { Image(systemName: "bubble.left").font(.system(size: m.glyph)) }
                     }
                     Text(member.name).font(.system(size: m.heading, weight: .semibold))
-                    Text(LensCards.short(member.headline)).font(.system(size: m.meta)).foregroundStyle(secondary)
+                    Text(LensCards.short(member.headline, max: 28)).font(.system(size: m.body)).foregroundStyle(secondary)
                 }
-                .padding(16)
+                .padding(22)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .modifier(LensCardBackground(radius: m.radius))
             }
@@ -1104,6 +1104,8 @@ struct LensMirror: View {
                 if shot.group.count >= 2 {
                     groupCards
                 } else if let id = shot.photo {
+                    // Same content and order as LensCards.split: photo, name, headline, the tie and
+                    // highlights (or one context line).
                     HStack(alignment: .top, spacing: 16) {
                         // A third of the row, as on the lens; grey until the photo's write lands.
                         if shot.photoPending {
@@ -1116,15 +1118,18 @@ struct LensMirror: View {
                                 .frame(width: m.icon * 2, height: m.icon * 2)
                                 .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.3, style: .continuous))
                         }
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(shot.name ?? "").font(.system(size: m.heading, weight: .semibold))
                             Text(shot.headline ?? "").font(.system(size: m.body))
-                            if let context = shot.context {
+                            ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
+                                Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
+                            }
+                            if let context = shot.context, shot.primary.isEmpty {
                                 Text(context).font(.system(size: m.meta)).foregroundStyle(secondary)
                             }
                         }
                     }
-                    .padding(m.pad)
+                    .padding(22)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .modifier(LensCardBackground(radius: m.radius))
                 }

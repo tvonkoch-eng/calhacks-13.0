@@ -60,10 +60,19 @@ enum Identification {
         let held = group.filter { member in
             member.speaking || sighted[member.id].map { clockNow.timeIntervalSince($0) < groupHolds } ?? false
         }
-        return held.sorted { a, b in
-            if a.speaking != b.speaking { return a.speaking }
-            return (sighted[a.id] ?? .distantPast) > (sighted[b.id] ?? .distantPast)
+        // Two or fewer: everyone, in the order they joined, which never changes under you.
+        guard held.count > 2 else { return held }
+        // More than two: the two already on the lens stay while they're held, so the cards don't
+        // swap every time someone starts or stops talking. An open slot goes to whoever is talking,
+        // then to the next in join order.
+        var picked = visibleGroup.compactMap { id in held.first { $0.id == id } }.prefix(2).map { $0 }
+        if picked.count < 2, let talker = held.first(where: \.speaking), !picked.contains(where: { $0.id == talker.id }) {
+            picked.append(talker)
         }
+        for member in held where picked.count < 2 && !picked.contains(where: { $0.id == member.id }) {
+            picked.append(member)
+        }
+        return picked
     }
 
     /// Rewrites the lens when who is in frame changes the group row (two in view, or back to one).
