@@ -253,7 +253,7 @@ struct Match {
         // Kept from the start (asked for, Oct 24): they persist, their looks build up, and they
         // wait in People to be named. Remove them there to forget them.
         if !saved.contains(where: { $0.id == person.id }) { saved.append(person) }
-        if let photo { addShot(person.id, embedding: face, image: photo) }
+        if let photo { addShot(person.id, embedding: face, image: photo, score: 0) }
     }
 
     // MARK: Face photos
@@ -263,6 +263,9 @@ struct Match {
         let id: UUID
         let embedding: [Float]?
         let image: UIImage
+        /// How sharp and well-posed the look was; the weakest go first when the gallery is full.
+        /// Photos taken or picked by hand are never pushed out.
+        var score: Float = 0
     }
 
     private(set) var shots: [String: [Shot]] = [:]
@@ -279,16 +282,33 @@ struct Match {
     }
     private func shotsDir(_ person: String) -> URL { docs.appendingPathComponent("shots/\(person)", isDirectory: true) }
 
-    /// A face photo for someone's gallery, and its sample for matching. The newest 30 are kept.
-    func addShot(_ person: String, embedding: [Float]?, image: UIImage) {
-        let shot = Shot(id: UUID(), embedding: embedding, image: image)
+    static var shotCap: Int { Int(Tuning.float("shotCap", 30)) }
+
+    /// Should a look the glasses just got go into someone's gallery? Anything usable at first; then
+    /// the bar climbs with the log of how many they have (a few sharp photos matter, the fortieth
+    /// doesn't), and once full only a look clearly sharper than the weakest one gets in.
+    func wantsShot(_ person: String, score: Float) -> Bool {
+        let scores = (shots[person] ?? []).map(\.score).sorted()
+        guard scores.count >= 4 else { return true }
+        let median = scores[scores.count / 2]
+        if scores.count >= Self.shotCap { return score > max(scores[0] * 1.15, median) }
+        return score >= median * (1 + 0.15 * Float(log(Double(scores.count))))
+    }
+
+    /// A face photo for someone's gallery, and its sample for matching. At the cap the weakest goes.
+    func addShot(_ person: String, embedding: [Float]?, image: UIImage, score: Float = .greatestFiniteMagnitude) {
+        let shot = Shot(id: UUID(), embedding: embedding, image: image, score: score)
         shots[person, default: []].append(shot)
         if let embedding { gallery[person, default: []].append(embedding) }
         let dir = shotsDir(person)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? image.jpegData(compressionQuality: 0.8)?.write(to: dir.appendingPathComponent("\(shot.id).jpg"))
         if let embedding { try? JSONEncoder().encode(embedding).write(to: dir.appendingPathComponent("\(shot.id).json")) }
-        while (shots[person]?.count ?? 0) > 30, let oldest = shots[person]?.first { deleteShot(person, oldest.id) }
+        try? String(score).write(to: dir.appendingPathComponent("\(shot.id).score"), atomically: true, encoding: .utf8)
+        while (shots[person]?.count ?? 0) > Self.shotCap,
+              let weakest = shots[person]?.filter({ $0.score < .greatestFiniteMagnitude }).min(by: { $0.score < $1.score }) {
+            deleteShot(person, weakest.id)
+        }
         save()
     }
 
@@ -299,6 +319,7 @@ struct Match {
         let dir = shotsDir(person)
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(id).jpg"))
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(id).json"))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(id).score"))
         save()
     }
 
@@ -313,7 +334,9 @@ struct Match {
                 let embedding = (try? Data(contentsOf: url.deletingPathExtension().appendingPathExtension("json")))
                     .flatMap { try? JSONDecoder().decode([Float].self, from: $0) }
                 let date = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-                return (date, Shot(id: id, embedding: embedding, image: image))
+                let score = (try? String(contentsOf: url.deletingPathExtension().appendingPathExtension("score"), encoding: .utf8))
+                    .flatMap(Float.init) ?? 0
+                return (date, Shot(id: id, embedding: embedding, image: image, score: score))
             }
             shots[person] = dated.sorted { $0.0 < $1.0 }.map(\.1)
         }

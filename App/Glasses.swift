@@ -1967,13 +1967,17 @@ enum Identification {
             guard let id = known, let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
             // Every couple of seconds in view, everyone (named or not, roster or not): another look
             // into their gallery, photo and sample, so they're recognised better each time.
-            if !hit.embedding.isEmpty, clockNow.timeIntervalSince(lastLook[id] ?? .distantPast) >= 2 {
+            // Only a look sharp enough for how many photos they already have, and less often as that
+            // grows: 2 s apart at first, slowing with the log of the count.
+            let have = Double(store.shots[id]?.count ?? 0)
+            let score = lookScore(hit.box, hit)
+            if !hit.embedding.isEmpty, clockNow.timeIntervalSince(lastLook[id] ?? .distantPast) >= 2 * (1 + log(1 + have)),
+               store.wantsShot(id, score: score) {
                 lastLook[id] = clockNow
-                store.addShot(id, embedding: hit.embedding, image: UIImage(cgImage: hit.crop))
+                store.addShot(id, embedding: hit.embedding, image: UIImage(cgImage: hit.crop), score: score)
             }
             // The profile photo only upgrades itself for people met here; the roster keeps theirs.
             guard store.isMet(id) else { continue }
-            let score = lookScore(hit.box, hit)
             let last = photoLook[id] ?? (0, .distantPast)
             guard score > last.score * 1.25, Date().timeIntervalSince(last.at) > 3,
                   let photo = headshot(image, box: hit.box) else { continue }
