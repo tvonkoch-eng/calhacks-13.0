@@ -47,6 +47,12 @@ struct CalHacksApp: App {
                         let unnamed = crm.contacts.filter { $0.name == CRM.newName }.sorted { $0.created > $1.created }
                         for contact in unnamed.dropFirst() { crm.forgetPerson(contact.id) }
                     }
+                    // Every launch: people with no picture at all who were never named go, with
+                    // everything filed under them (asked for, Oct 25).
+                    for contact in crm.contacts where [CRM.unnamed, CRM.newName].contains(contact.name)
+                        && store.avatars[contact.id] == nil && (store.shots[contact.id] ?? []).isEmpty {
+                        crm.forgetPerson(contact.id)
+                    }
                     crm.onDetails = { id, details in
                         guard let base = store.contacts.first(where: { $0.id == id })
                                 ?? crm.contacts.first(where: { $0.id == id }).map(crm.person) else { return }

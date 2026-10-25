@@ -56,6 +56,7 @@ check(Recap.message(Recap.Input(wearer: "Toby", when: t0, with: nil, name: "Priy
     UserDefaults.standard.removeObject(forKey: "checkInDays")
     UserDefaults.standard.removeObject(forKey: "pendingDays")
     let crm = CRM(url: url, now: now)
+    crm.filesStrangers = true
     crm.wearer = "Toby"
     crm.roster = { ["avi": CRM.Known(name: "Avi Shah", about: "LSE"), "joaquin": CRM.Known(name: "Joaquin Del Pego", about: "UCSB")][$0] }
     crm.retag = { $0 == "A" ? "ME" : $0 == nil ? "?" : "THEM" }
