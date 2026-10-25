@@ -181,7 +181,7 @@ enum LensCards {
                     }
                     FlexBox(direction: .column) {}.padding(.top, LensFit.member(member, lines: member.lines).left)
                 }
-                .padding(22)
+                .padding(LensFit.splitPad)
                 .background(.card)
                 .flexGrow(Float(member.share))
                 .flexShrink(1)
@@ -209,7 +209,7 @@ enum LensCards {
                     .flexGrow(Float(LensFit.markShare))
                 }
                 FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
-                    FlexBox(direction: .column) { Image(image: photo ?? placeholder ?? UIImage(), sizePreset: .fill, cornerRadius: .medium) }
+                    FlexBox(direction: .column) { Image(image: photo ?? placeholder ?? UIImage(), sizePreset: .fill, cornerRadius: .none) }
                         .flexGrow(Float(LensFit.splitPhotoShare)).flexShrink(0)
                     Text(LensFit.nameText(name, width: width), style: .heading,
                          color: bright ? .primary : .secondary).flexGrow(Float(1 - LensFit.splitPhotoShare)).flexShrink(1)
@@ -221,7 +221,7 @@ enum LensCards {
             // The photo's box is always there, a grey square until the photo lands, so the name and
             // bullets never move when it arrives.
             if let photo = photo ?? placeholder {
-                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
+                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .none) }
                     .flexGrow(share).flexShrink(0)
             }
             FlexBox(direction: .column) {
@@ -664,7 +664,9 @@ enum LensFit {
 
     /// Inner widths of the one-person card and of each of two side-by-side cards.
     static let personWidth: CGFloat = panel - 44
-    static func memberWidth(_ member: Member) -> CGFloat { (panel - 12) * member.share - 44 }
+    /// Two-up cards pad tighter than a full card's 22, so a bold name fits beside the photo.
+    static let splitPad: CGFloat = 12
+    static func memberWidth(_ member: Member) -> CGFloat { (panel - 12) * member.share - 2 * splitPad }
     static let photoGap: CGFloat = 14
 
     /// The width beside the photo, where the name goes.
@@ -699,8 +701,8 @@ enum LensFit {
     /// 50/50 header: the mark's share of the top row and its side, and the photo's share of the row
     /// under it (about two heading lines tall).
     static let markShare: CGFloat = 0.12
-    static var markSide: CGFloat { ((panel - 12) / 2 - 44) * markShare }
-    static let splitPhotoShare: CGFloat = 0.3
+    static var markSide: CGFloat { ((panel - 12) / 2 - 2 * splitPad) * markShare }
+    static let splitPhotoShare: CGFloat = 0.28
 
     static func photoShare(_ width: CGFloat) -> CGFloat {
         width > 400 ? 0.2 : width > 260 ? 0.38 : min(0.38, 64 / (width - photoGap))

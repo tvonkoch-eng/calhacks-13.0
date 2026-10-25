@@ -1039,7 +1039,7 @@ struct LensMirror: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(m.pad)
+                .padding(LensFit.splitPad)
                 .frame(maxHeight: .infinity, alignment: .topLeading)
                 .frame(width: memberWidth(member))
                 .modifier(LensCardBackground(radius: m.radius))
@@ -1082,9 +1082,9 @@ struct LensMirror: View {
             Image(uiImage: photo)
                 .resizable().aspectRatio(contentMode: .fill)
                 .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 0))
         } else {
-            RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+            RoundedRectangle(cornerRadius: 0)
                 .fill(Color(white: 0.28)).frame(width: size, height: size)
         }
     }
@@ -1094,17 +1094,17 @@ struct LensMirror: View {
         return HStack(alignment: .center, spacing: LensFit.photoGap) {
             // Grey until the photo's write lands, as on the lens.
             if shot.photoPending && id == shot.photo {
-                RoundedRectangle(cornerRadius: size * 0.16, style: .continuous)
+                RoundedRectangle(cornerRadius: 0)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
             } else if let photo = avatar(id) {
                 Image(uiImage: photo)
                     .resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: size * 0.16, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 0))
             } else {
                 // No photo yet: its box holds the place, as on the lens.
-                RoundedRectangle(cornerRadius: size * 0.16, style: .continuous)
+                RoundedRectangle(cornerRadius: 0)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
             }
