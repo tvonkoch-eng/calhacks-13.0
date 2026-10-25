@@ -411,7 +411,11 @@ struct Reminder: Codable, Identifiable, Equatable {
     private func look(_ input: Recap.Input) async -> Glance? {
         if let glancer { return try? await glancer(input) }
         for model in glanceModels {
-            if let glance = try? await Glance.ask(input, model: model) { return glance }
+            let start = Date()
+            let glance = try? await Glance.ask(input, model: model)
+            SpeedLog.record(["event": "glance", "model": model.model, "ok": glance != nil,
+                             "ms": Int(Date().timeIntervalSince(start) * 1000)])
+            if let glance { return glance }
         }
         return nil
     }
@@ -1305,9 +1309,9 @@ struct Glance: Equatable {
     """
 
     static func ask(_ input: Recap.Input, model: Aid.Model) async throws -> Glance {
-        // A glance answers in ~1 s; one that hangs (24 s on Oct 25, holding the name back) is dropped
+        // A glance answers in ~1 s; one that hangs (24 s and 12 s on Oct 25, holding the name back) is dropped
         // and the next fallback model asked.
-        let text = try await Recap.complete(system: prompt, Recap.message(input), model: model, timeout: 4)
+        let text = try await Recap.complete(system: prompt, Recap.message(input), model: model, timeout: 2.5)
         guard let glance = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
         return glance
     }
