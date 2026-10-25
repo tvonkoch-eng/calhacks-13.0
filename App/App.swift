@@ -1360,6 +1360,8 @@ enum LensSnapshot {
 /// redraws the same `LensShot` the card was sent from. Never a stale or invented card: when
 /// nothing has been written to a lens, only its outline shows.
 struct LensPanel: View {
+    /// The lens's 600 x 600 boundary, dashed. Off by default: only the cards show.
+    @AppStorage("lensBoundary") private var boundary = false
     let lens: UIView?
     let pov: UIImage?
     let mocking: Bool
@@ -1486,9 +1488,17 @@ struct LensPanel: View {
                 .opacity(Double(Tuning.float("lensOpacity", 0.95)))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.white.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+                        .strokeBorder(Color.white.opacity(boundary ? 0.4 : 0), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
                 )
                 .position(x: geo.size.width / 2, y: geo.size.height - margin - box.height / 2)
+
+                Button { boundary.toggle() } label: {
+                    Image(systemName: boundary ? "square.dashed.inset.filled" : "square.dashed")
+                        .font(.footnote).foregroundStyle(.white)
+                        .padding(7).background(.black.opacity(0.35), in: Circle())
+                }
+                .accessibilityLabel(boundary ? "Hide lens boundary" : "Show lens boundary")
+                .position(x: geo.size.width - 22, y: 22)
             }
         }
         .aspectRatio(window.width / window.height, contentMode: .fit)
