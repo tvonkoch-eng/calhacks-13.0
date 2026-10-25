@@ -209,19 +209,7 @@ struct HomeView: View {
                     .padding(.top, 8)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("People")
-                            .font(.system(size: 34, weight: .semibold, design: .serif))
-                            .padding(.horizontal, 20)
-                            .padding(.top, 10)
-                        Text(summary)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 20)
-                            .padding(.top, 2)
-                            .padding(.bottom, 14)
-                        SearchField(text: $query)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 14)
+                        Color.clear.frame(height: 10)
                         // Every slot from here to the person card is a fixed size, present or not, so
                         // the chat and the card never jump when a line appears, wraps or goes away.
                         notice
@@ -234,28 +222,6 @@ struct HomeView: View {
                             .clipped()
                             .padding(.horizontal, 20)
                             .padding(.bottom, 10)
-                        TimelineView(.periodic(from: .now, by: 30)) { context in
-                            VStack(spacing: 0) {
-                                if query.isEmpty { FollowUps(now: context.date) }
-                                ForEach(items(now: context.date)) { item in
-                                    switch item {
-                                    case .section(let title):
-                                        SectionLabel(title)
-                                            .padding(.horizontal, 20)
-                                            .padding(.top, 18)
-                                            .padding(.bottom, 2)
-                                    case .current(let person):
-                                        CurrentCard(person: person)
-                                            .padding(.horizontal, 16)
-                                            .padding(.bottom, 4)
-                                            .transition(.scale(scale: 0.96).combined(with: .opacity))
-                                    case .row(let person):
-                                        ContactRow(person: person, seen: store.lastSeen[person.id], now: context.date)
-                                    }
-                                }
-                            }
-                        }
-                        .animation(.spring(response: 0.55, dampingFraction: 0.82), value: store.recents.map(\.id))
                     }
                     .padding(.bottom, 24)
                 }
