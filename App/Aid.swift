@@ -790,8 +790,14 @@ enum Talk {
         let parts = (title + " \u{00B7} " + detail).components(separatedBy: "\u{00B7}")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
-        let fresh = parts.filter { !question.contains($0.lowercased()) }
-        return (fresh.isEmpty ? parts : fresh).joined(separator: " \u{00B7} ")
+        // A part is old news when most of its words are already in the question ("Great Wall,
+        // Mutianyu" for "how far is the Great Wall"). Two parts at most: the fact and its context.
+        let asked = Set(question.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        let fresh = parts.filter { part in
+            let words = part.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+            return words.isEmpty || words.filter(asked.contains).count * 2 < words.count
+        }
+        return (fresh.isEmpty ? parts : fresh).prefix(2).joined(separator: " \u{00B7} ")
     }
 
     /// The question exactly as asked: small and grey, it wraps rather than being cut.
