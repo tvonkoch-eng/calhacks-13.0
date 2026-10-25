@@ -26,6 +26,8 @@ struct LensShot: Equatable {
         var icon: String?
         /// An answer: `detail` is the question, written small and grey above the answer.
         var asked = false
+        /// A definition: `title` is what the term is, in body text under the term.
+        var definition = false
     }
 
     /// The aid's cards, newest first. `answer`/`echo`/`cardIcon` repeat the newest one.
@@ -141,10 +143,10 @@ enum LensCards {
             if let icon = card.icon.flatMap(IconName.init(rawValue:)) {
                 FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
                     Icon(name: icon, style: .outline)
-                    Text(card.title, style: newest ? .heading : .body).flexShrink(1)
+                    Text(card.title, style: newest && !card.definition ? .heading : .body).flexShrink(1)
                 }
             } else {
-                Text(card.title, style: newest ? .heading : .body).flexShrink(1)
+                Text(card.title, style: newest && !card.definition ? .heading : .body).flexShrink(1)
             }
             if !card.asked, let detail = card.detail {
                 Text(detail, style: newest ? .body : .meta, color: .secondary).flexShrink(1)
@@ -469,7 +471,7 @@ enum LensCards {
         shot.cards = view.cards.map { card in
             // A definition reads like an answer: the term small and grey on top, what it is below.
             if card.kind == .definition, !card.detail.isEmpty {
-                return LensShot.CardText(title: card.detail, detail: card.title, icon: card.icon, asked: true)
+                return LensShot.CardText(title: card.detail, detail: card.title, icon: card.icon, asked: true, definition: true)
             }
             return LensShot.CardText(title: card.title, detail: card.detail.isEmpty ? nil : card.detail, icon: card.icon,
                                      asked: card.kind == .answer)
@@ -873,7 +875,7 @@ enum LensFit {
         var pieces: [CGFloat] = shot.cards.enumerated().map { index, card in
             let newest = index == 0
             let titleWidth = card.icon == nil ? width : width - 38
-            var h = 40 + lines(card.title, newest ? heading : body, titleWidth)
+            var h = 40 + lines(card.title, newest && !card.definition ? heading : body, titleWidth)
             if let detail = card.detail { h += 4 + lines(detail, newest && !card.asked ? body : meta, width) }
             return h
         }
