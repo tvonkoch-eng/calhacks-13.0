@@ -1816,6 +1816,8 @@ enum Identification {
         // Sustained: the same face, unbroken, for meetSeconds, and still there this frame.
         let now = Date()
         guard now.timeIntervalSince(track.firstSeen) >= meetSeconds, now.timeIntervalSince(track.updated) < 0.5 else { return }
+        // Face to face, not the room: near the centre of the frame, with nobody in front of them.
+        guard centred(track.box), !behindSomeone(track, in: inView, store: store) else { return }
         let best = store.ranked(track.probe).first?.score ?? 0
         guard best < strangerBelow else { return }
         let photo = headshot(image, box: track.box)
@@ -1825,6 +1827,32 @@ enum Identification {
         lastMet = Date()
         SpeedLog.record(["event": "metNew", "person": id, "track": track.id, "looks": track.looks,
                          "facePx": Int(facePx(track)), "closest": (Double(best) * 1000).rounded() / 1000])
+    }
+
+    /// Within `meetCentre` of the frame's middle (a fraction of the frame): the person you are
+    /// facing, not whoever is off to the side.
+    @ObservationIgnored private var meetCentre: CGFloat { CGFloat(Tuning.float("meetCentre", 0.22)) }
+
+    private func centred(_ box: CGRect) -> Bool {
+        let dx = box.midX - 0.5, dy = box.midY - 0.5
+        return (dx * dx + dy * dy).squareRoot() <= meetCentre
+    }
+
+    /// Someone is in front of this face, or it sits behind a face already known: a bigger face
+    /// overlapping it, or a recognised face that covers it. Those are the people in the room with
+    /// you; this one is in the background.
+    @ObservationIgnored private var meetCloser: Float { Tuning.float("meetCloser", 0.85) }
+
+    private func behindSomeone(_ track: FaceTracker.Track, in inView: [FaceTracker.Track], store: Store) -> Bool {
+        let size = facePx(track)
+        for other in inView where other.id != track.id {
+            let overlap = track.box.intersection(other.box)
+            guard !overlap.isNull, overlap.width * overlap.height > 0.3 * min(track.box.width * track.box.height,
+                                                                              other.box.width * other.box.height) else { continue }
+            if Float(facePx(other)) >= Float(size) * meetCloser { return true }
+            if (store.ranked(other.probe).first?.score ?? 0) >= store.minScore { return true }
+        }
+        return false
     }
 
     /// The first photo of someone met is whatever frame they were met on. A clearly sharper,
