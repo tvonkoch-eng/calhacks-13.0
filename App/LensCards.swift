@@ -881,7 +881,7 @@ enum LensFit {
         }
         if shot.working.isEmpty && shot.followup == nil && shot.jarvis == nil {
             // The blank box only holds its line open when there is nothing else up top.
-            pieces.append(40 + (shot.cards.isEmpty ? blank : 0))
+            if shot.cards.isEmpty { pieces.append(40 + blank) }
         } else {
             var h: CGFloat = 40
             if let jarvis = shot.jarvis {

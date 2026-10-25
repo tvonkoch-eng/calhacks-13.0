@@ -95,8 +95,8 @@ enum Coach {
       Every proper noun in the newest line, from either speaker, up to three: a company, product, \
     place, organization, event, named method or model (Black-Scholes, transformers, CRISPR), a \
     work, a historical event or movement, a named field. Defined by what is stable about it: \
-    "meaning" is what it is in plain words, then one concrete example or striking fact, one or two \
-    sentences, at most 35 words ("Bauhaus": "1920s German art school; form follows function"). \
+    "meaning" is what it is in plain words, then one concrete example or striking fact, one short \
+    sentence, at most 12 words ("Bauhaus": "1920s German art school; form follows function"). \
     Never its latest news or numbers that change. Never a private person: a name is defined only \
     when the person is famous, and a name someone just introduced is never defined. Never plain \
     everyday or generic business words (startup, meeting, team, money, app, AI, coding, hackathon). \
