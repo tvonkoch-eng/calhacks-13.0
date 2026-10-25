@@ -577,6 +577,7 @@ import Observation
             store?.forget(id)
             newcomers.removeAll { $0 == id }
             store?.rosterHidden = false
+            dropCrewCopies()
             glasses?.demoClear()
             return
         }
@@ -617,6 +618,7 @@ import Observation
         crm.dropLive()
         for id in demoContacts { crm.forgetPerson(id); store.forget(id) }
         demoContacts = []
+        dropCrewCopies()
         store.rosterHidden = true
         aid.reset(trigger: "demoReset")
         newcomers = []
@@ -627,6 +629,18 @@ import Observation
         // The demo starts by looking at someone: recognition has to be on (Oct 25 it was left off
         // from the menu, and the lens just said "No face in view").
         glasses?.watching = true
+    }
+
+    /// Any contact that isn't on the roster but carries a crew member's name (an old stand-in from a
+    /// demo run: Oct 25 a leftover "Avi Shah" held Avi's face, so the real Avi never came up).
+    private func dropCrewCopies() {
+        guard let crm, let store else { return }
+        let crew = Set(store.people.map { $0.name.lowercased() })
+        for person in store.contacts where !store.isRoster(person.id) && crew.contains(person.name.lowercased()) {
+            crm.forgetPerson(person.id)
+            store.forget(person.id)
+            SpeedLog.record(["event": "crewCopyDropped", "person": person.id, "name": person.name])
+        }
     }
 
     /// Contacts made while demo mode is on, which Reset takes back out.
