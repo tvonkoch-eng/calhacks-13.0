@@ -629,12 +629,14 @@ enum LensFit {
     static let spacing: CGFloat = 14
     /// Slack for the estimate: wrapping in Meta's typeface vs the system font.
     static let slack: CGFloat = 1.1
-    static let margin: CGFloat = 16
+    static let margin: CGFloat = 0
 
     /// The aid's cards take the top third of the lens when there are people to show, and the people
     /// the bottom two-thirds, so their cards carry the most. `half` is what the bottom takes.
     /// The people's share, fixed: every people card starts at the same height and never grows past it.
-    static var half: CGFloat { available * 0.64 }
+    static var half: CGFloat { available - answersBand }
+    /// The answers' and definitions' band at the top, fixed.
+    static let answersBand: CGFloat = 132
     /// Padding, photo, name and one headline line: what a person card takes before its fill.
     static let cardBase: CGFloat = 190
 
@@ -730,7 +732,7 @@ enum LensFit {
         for raw in pool {
             let line = raw.count > perLine * 2 ? String(raw.prefix(perLine * 2 - 1)) + "\u{2026}" : raw
             let rows = min(2, (line.count + perLine - 1) / max(1, perLine))
-            let h = CGFloat(rows) * font.lineHeight * 1.3 + gap
+            let h = CGFloat(rows) * font.lineHeight * 1.15 + gap
             // Too tall here, but a shorter one further down may still fit.
             if h > left { continue }
             left -= h

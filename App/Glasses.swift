@@ -124,7 +124,9 @@ enum Identification {
         case (nil, nil):
             // A pair forming: the newcomer takes the side of the lens they came in from, and the
             // one already there (full width until now) moves to the other. Kept from then on.
-            let enteredLeft = (faceX[b] ?? 0.5) < 0.5
+            // In view together: the newcomer goes on whichever side of the other person they stand.
+            // The other one gone: the half of the frame they came in on.
+            let enteredLeft = inView(a) ? (faceX[b] ?? 0.5) < (faceX[a] ?? 0.5) : (faceX[b] ?? 0.5) < 0.5
             lensSide[b] = enteredLeft ? 0 : 1
             lensSide[a] = enteredLeft ? 1 : 0
         default: break
