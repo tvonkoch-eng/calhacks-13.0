@@ -39,16 +39,41 @@ enum Tools {
         case call(name: String, arguments: String)
     }
 
-    /// "Lens, how far is the nearest Target?" → "how far is the nearest Target?". Only at the very
-    /// start of what the wearer says, so ordinary talk about lenses never counts.
+    /// "Jarvis, who did I meet today?" / "Lens, how far is the nearest Target?" → the request.
+    /// The name opens the sentence (after an "um" or "hey"), or closes it: "what's the weather,
+    /// Jarvis?". Only "Jarvis" may close one; plenty of ordinary sentences end in "lens".
     static func command(in text: String) -> String? {
-        let pattern = #"^\s*(?:hey |ok |okay )?(?:lens|lenz|lense)\b[\s,.:!-]*(.+)$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range(at: 1), in: text) else { return nil }
-        let rest = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
-        return rest.contains(where: \.isLetter) ? rest : nil
+        let wake = #"(?:lens|lenz|lense|"# + jarvis + ")"
+        let opening = #"^\s*(?:(?:hey|ok|okay|um|uh|so|yo)[\s,]+)*"# + wake + #"\b[\s,.:!-]*(.+)$"#
+        let closing = #"^\s*(.+?)[\s,]+(?:hey )?"# + jarvis + #"\b[\s?.!]*$"#
+        for (pattern, closes) in [(opening, false), (closing, true)] {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(match.range(at: 1), in: text) else { continue }
+            var rest = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
+            // "what's the weather, Jarvis?" asked a question: keep the mark the name took with it.
+            if closes, text.trimmingCharacters(in: .whitespaces).hasSuffix("?"), !rest.hasSuffix("?") {
+                rest = rest.trimmingCharacters(in: CharacterSet(charactersIn: ",.!")) + "?"
+            }
+            if rest.contains(where: \.isLetter) { return rest }
+        }
+        return nil
     }
+
+    /// "Jarvis." on its own: the request comes in the next sentence.
+    static func wakeOnly(_ text: String) -> Bool {
+        let pattern = #"^\s*(?:(?:hey|ok|okay)[\s,]+)?"# + jarvis + #"\s*[?.!,]*\s*$"#
+        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// Addressed by name, so it's the wearer talking to their glasses whoever the diarizer says
+    /// spoke: nobody says "Jarvis" to the person in front of them.
+    static func byName(_ text: String) -> Bool {
+        text.range(of: #"\b"# + jarvis + #"\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// The assistant's name, as speech recognition spells it.
+    private static let jarvis = "(?:jarvis|jarvas|jervis|javis)"
 
     /// Could this need a tool? Generous on purpose: a false yes costs one tool-enabled call that
     /// answers in plain text anyway; a false no sends "how far is the Target" to a model with no
@@ -77,9 +102,19 @@ enum Tools {
     /// Where the answer lives decides who answers. The web knows public things, not these two
     /// people: "what's the latest on the GENIUS Act" is research; "what did she say her company
     /// does" is the conversation; "how's her fundraise going" is nobody's to look up.
-    private static func prompt(research: Bool) -> String {
-        var sources = """
-        - the conversation, or what's known about the person they're talking to: answer from that;
+    /// Where answers live, as a list for a system prompt.
+    static func sources(research: Bool, personal: Bool = false) -> String {
+        var sources = "- the conversation, or what's known about the person they're talking to: answer from that;"
+        if personal {
+            sources += "\n" + """
+            - their own life: the people they've met and what was said, what they promised and are \
+            owed, who's on their list and what those people do (the record below): answer from \
+            that, by name, speaking to them as "you". "Who here works at Google?" means the people \
+            on that record. If the record doesn't have it, say so in a few words rather than guess;
+            - something they ask you to remember, follow up on, or save someone: call that tool;
+            """
+        }
+        sources += "\n" + """
         - where they are, the weather, their reminders or their calendar: call that tool;
         - stable general knowledge: answer it yourself;
         """
@@ -92,6 +127,11 @@ enum Tools {
             their work in progress, their history together): answer that from what's known, or SKIP.
             """
         }
+        return sources
+    }
+
+    private static func prompt(research: Bool, personal: Bool = false) -> String {
+        let sources = sources(research: research, personal: personal)
         return """
         You act for someone wearing smart glasses, usually mid-conversation. Answer from wherever \
         the answer lives:
@@ -132,6 +172,123 @@ enum Tools {
         if let call = reply.calls.first { return .call(name: call.name, arguments: call.arguments) }
         let text = (reply.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty || text.uppercased().hasPrefix("SKIP") || Answerer.refuses(text) ? .skip : .answer(text)
+    }
+
+    /// A tool call's arguments, parsed; empty when they aren't a JSON object.
+    static func arguments(_ json: String) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]) ?? [:]
+    }
+
+    // MARK: - Jarvis: a few rounds of thinking with the tools
+
+    /// Jarvis's brief. Self-contained: it says what Jarvis knows, how to work, how to answer.
+    static func jarvisPrompt(wearer: String, now: String, place: String) -> String {
+        """
+        You are Jarvis, the assistant in \(wearer)'s smart glasses. They asked you out loud, by \
+        name, often in the middle of a conversation, and they're waiting.
+
+        What you have:
+        - Their own record (in the message): everyone they've met, what was said, what they \
+        promised and are owed, who is on their list and what those people do. Anything about \
+        their life or the people around them is answered from it, by name.
+        - The conversation so far, if there is one.
+        - Tools: their device (where they are, weather, places nearby, reminders, calendar), \
+        research (the web, for anything public that is recent or specific), and their record \
+        (remember a fact, set a follow-up, save a contact).
+
+        How to work: use a tool for anything you would otherwise guess, and another if the \
+        first result raises the next question. Never research a person by name: what is known \
+        about people is their record. Asked to remember, remind or save, do it with the tool.
+
+        How to answer: it is shown on their lens and spoken in their ear. At most two short \
+        sentences (40 words): the answer first, then the one detail that makes it useful. Speak \
+        to them as "you". US units. No preamble; never mention tools, searches, notes or the \
+        record. If you can't find it, say so in a few words.
+
+        It is \(now).\(place)
+        """
+    }
+
+    /// "Jarvis, …": the model works the request over up to `rounds` turns, calling tools (a
+    /// round's calls run together) and reading their results, then answers. The last turn has
+    /// no tools, so it always ends in an answer. `step` gets each round's work, for the lens.
+    static func think(_ request: String, context: String, personal: String, wearer: String,
+                      toolbox: any Toolbox, model: Aid.Model, rounds: Int = 4,
+                      step: @escaping @Sendable (String) async -> Void) async throws -> String {
+        let now = Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
+            + ", " + TimeZone.current.identifier
+        let place = await toolbox.whereabouts().map { " They are \($0)." } ?? ""
+        let user = (personal.isEmpty ? "" : "Their record:\n\(personal)\n\n")
+            + (context.isEmpty ? "" : "The conversation so far:\n\(context)\n\n") + "They asked you: \(request)"
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": jarvisPrompt(wearer: wearer, now: now, place: place)],
+            ["role": "user", "content": user],
+        ]
+        let tools = try? JSONSerialization.jsonObject(with: Data(toolbox.definitions.utf8))
+        for round in 0..<rounds {
+            let last = round == rounds - 1
+            var body: [String: Any] = ["model": model.model, "messages": messages]
+            if !last, let tools {
+                body["tools"] = tools
+                body["tool_choice"] = "auto"
+            }
+            body.merge(params(model, budget: 700, effort: "low", tools: body["tools"] != nil)) { _, new in new }
+            let reply = try await LLM.chat(model.provider.endpoint, key: model.key, body: body, timeout: 25)
+            if reply.calls.isEmpty || last {
+                let text = (reply.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty || text.uppercased().hasPrefix("SKIP") ? "I'm not sure." : text
+            }
+            // Its own turn goes back as it was, then one result per call, matched by id.
+            let calls = reply.calls.prefix(3).enumerated().map { i, call in
+                (id: i < reply.ids.count && !reply.ids[i].isEmpty ? reply.ids[i] : "call_\(round)_\(i)",
+                 name: call.name, arguments: call.arguments)
+            }
+            messages.append(["role": "assistant", "content": reply.content ?? NSNull(),
+                             "tool_calls": calls.map { ["id": $0.id, "type": "function",
+                                                        "function": ["name": $0.name, "arguments": $0.arguments]] }])
+            await step(calls.map { toolbox.working($0.name, arguments: $0.arguments) }.joined(separator: " \u{00B7} "))
+            let results = await withTaskGroup(of: (Int, String).self) { group in
+                for (i, call) in calls.enumerated() {
+                    group.addTask {
+                        do {
+                            let result = try await toolbox.run(call.name, arguments: call.arguments)
+                            let found = [result.title, result.detail].filter { !$0.isEmpty }.joined(separator: ". ")
+                            return (i, found.isEmpty ? "Nothing found." : found)
+                        } catch {
+                            return (i, "Failed: \(error.localizedDescription)")
+                        }
+                    }
+                }
+                var out = [String](repeating: "", count: calls.count)
+                for await (i, text) in group { out[i] = text }
+                return out
+            }
+            for (call, result) in zip(calls, results) {
+                messages.append(["role": "tool", "tool_call_id": call.id, "content": result])
+            }
+        }
+        return "I'm not sure."
+    }
+
+    /// Request fields for a model's family: reasoning models take their budget and effort
+    /// differently, and OpenAI's reject `max_tokens` and `temperature`.
+    static func params(_ model: Aid.Model, budget: Int, effort: String, tools: Bool = false) -> [String: Any] {
+        let name = model.model
+        if model.provider == .openai, name.hasPrefix("gpt-5") || name.hasPrefix("o") {
+            // gpt-5.5's chat endpoint refuses tools with reasoning (2026-10-24): "none" then.
+            return ["max_completion_tokens": budget * 4, "reasoning_effort": tools ? "none" : effort]
+        }
+        if model.provider == .openrouter, name.hasPrefix("anthropic/") || name.hasPrefix("openai/") {
+            return ["max_tokens": budget * 3, "reasoning_effort": effort]
+        }
+        if name.contains("gpt-oss") { return ["max_tokens": budget, "reasoning_effort": effort, "temperature": 0] }
+        if model.provider == .cerebras || model.provider == .openrouter, name.contains("qwen") {
+            return ["max_tokens": budget, "reasoning_effort": "none", "temperature": 0]
+        }
+        if model.provider == .anthropic { return ["max_tokens": budget, "reasoning_effort": effort] }
+        // Muse Spark always reasons; give it room, or the answer comes back empty.
+        if model.provider == .muse { return ["max_tokens": budget * 3, "reasoning_effort": effort] }
+        return ["max_tokens": budget, "temperature": 0]
     }
 
     // MARK: - Formatting, shared and testable
@@ -253,7 +410,7 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
 
     let definitions: String
 
-    private static let research = """
+    static let research = """
       {"type": "function", "function": {"name": "research",
         "description": "Public facts from the web: news and anything recent, prices, scores, opening hours, a company's or product's public details, places matching conditions (open late, quiet, vegetarian). Never a person, and nothing only the people talking would know. Takes several seconds.",
         "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "The full task, self-contained: 'her company' or 'that bill' resolved from the conversation, 'near here' replaced by where they are, and no names of the people talking"}}, "required": ["task"]}}}
@@ -583,4 +740,49 @@ actor Locator {
         manager.requestWhenInUseAuthorization()
         Self.manager = manager
     }
+}
+
+/// One more tool for the model, run by the host: the CRM's "remember" and "follow_up".
+struct ExtraTool: Sendable {
+    var name: String
+    /// The OpenAI-style function definition, as JSON text.
+    var definition: String
+    /// What the lens says while it runs.
+    var working: String
+    /// Runs with the model's arguments (JSON text).
+    var run: @Sendable (String) async throws -> ToolResult
+}
+
+/// A toolbox plus the host's own tools. Jarvis gets these; an overheard question never does, so
+/// only something the wearer asked for by name writes to their record.
+final class ExtraTools: Toolbox, @unchecked Sendable {
+    let base: any Toolbox
+    let extras: [ExtraTool]
+
+    init(base: any Toolbox, extras: [ExtraTool]) {
+        self.base = base
+        self.extras = extras
+    }
+
+    var definitions: String {
+        // An extra replaces a base tool of the same name (Jarvis's research reads raw findings).
+        let names = Set(extras.map(\.name))
+        var all = ((try? JSONSerialization.jsonObject(with: Data(base.definitions.utf8)) as? [[String: Any]]) ?? [])
+            .filter { !names.contains((($0["function"] as? [String: Any])?["name"] as? String) ?? "") } as [Any]
+        all += extras.compactMap { try? JSONSerialization.jsonObject(with: Data($0.definition.utf8)) }
+        guard let data = try? JSONSerialization.data(withJSONObject: all) else { return base.definitions }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func working(_ name: String, arguments: String) -> String {
+        extras.first { $0.name == name }?.working ?? base.working(name, arguments: arguments)
+    }
+
+    func run(_ name: String, arguments: String) async throws -> ToolResult {
+        if let extra = extras.first(where: { $0.name == name }) { return try await extra.run(arguments) }
+        return try await base.run(name, arguments: arguments)
+    }
+
+    func prefetch(_ request: String) { base.prefetch(request) }
+    func whereabouts() async -> String? { await base.whereabouts() }
 }

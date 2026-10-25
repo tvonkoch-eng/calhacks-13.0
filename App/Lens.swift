@@ -15,11 +15,46 @@ struct LensView: Equatable {
     /// still pulling the harder one.
     var working: [Work] = []
 
+    /// Jarvis, asked by name: its own panel in the top of the lens (where a suggestion goes), the
+    /// request, each step as it happens, then the answer.
+    var jarvis: JarvisPanel?
+
     /// The newest card.
     var card: Card? { cards.first }
 
     /// The name alone isn't worth a glance; it only shows with a card, a suggestion or work.
-    var isEmpty: Bool { cards.isEmpty && followup == nil && working.isEmpty }
+    var isEmpty: Bool { cards.isEmpty && followup == nil && working.isEmpty && jarvis == nil }
+}
+
+/// What Jarvis is doing for the wearer, out in the open: slower and smarter than the passing
+/// cards, so it shows its work ("Reading your notes", "Searching: Cal Hacks attendance") while
+/// it thinks, the way a person would say "let me check".
+struct JarvisPanel: Equatable {
+    struct Step: Equatable {
+        var label: String
+        var done = false
+    }
+
+    var request: String
+    var steps: [Step] = []
+    var answer: String?
+    var started: Date
+    var answeredAt: Date?
+
+    var thinking: Bool { answer == nil }
+
+    /// "Jarvis · 4s" while it works, counting up: there's no honest estimate for a think.
+    func header(at now: Date) -> String {
+        thinking ? "Jarvis \u{00B7} \(max(1, Int(now.timeIntervalSince(started).rounded())))s" : "Jarvis"
+    }
+
+    /// A step as one lens line: done ones ticked, the current one trailing off.
+    static func line(_ step: Step) -> String { step.done ? "\u{2713} \(step.label)" : "\(step.label)\u{2026}" }
+
+    /// How long an answer stays: long enough to read twice, a little more for a longer one.
+    static func life(of answer: String) -> TimeInterval {
+        max(12, 6 + 0.45 * Double(answer.split(separator: " ").count))
+    }
 }
 
 /// Something the aid is still getting: "Researching the GENIUS Act", started, about how long.
@@ -153,6 +188,27 @@ struct Compositor {
         view.working.removeAll { $0.id == id }
     }
 
+    /// Jarvis took a request: its panel replaces whatever it was showing.
+    mutating func startJarvis(_ request: String, at now: Date) {
+        view.jarvis = JarvisPanel(request: request, started: now)
+    }
+
+    /// The next step: the one before it is done.
+    mutating func jarvisStep(_ label: String, at now: Date) {
+        guard view.jarvis?.thinking == true else { return }
+        for i in view.jarvis!.steps.indices { view.jarvis!.steps[i].done = true }
+        view.jarvis!.steps.append(JarvisPanel.Step(label: label))
+    }
+
+    mutating func jarvisAnswer(_ answer: String, at now: Date) {
+        guard view.jarvis != nil else { return }
+        for i in view.jarvis!.steps.indices { view.jarvis!.steps[i].done = true }
+        view.jarvis!.answer = answer
+        view.jarvis!.answeredAt = now
+    }
+
+    mutating func clearJarvis() { view.jarvis = nil }
+
     /// `nil` or empty clears the suggestion.
     mutating func pin(_ followup: String?, at now: Date) {
         let text = followup?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -191,6 +247,7 @@ struct Compositor {
         if view.followup != nil, now.timeIntervalSince(pinnedAt) >= Self.followupLife {
             view.followup = nil
         }
+        if let end = jarvisEnds, now >= end { view.jarvis = nil }
         promote(at: now)
     }
 
@@ -202,6 +259,7 @@ struct Compositor {
     var nextDeadline: Date? {
         var dates = slots.compactMap(\.expiresAt)
         if view.followup != nil { dates.append(pinnedAt.addingTimeInterval(Self.followupLife)) }
+        if let end = jarvisEnds { dates.append(end) }
         if !holding, let first = waiting.first {
             dates.append(first.since.addingTimeInterval(Self.maxWait[first.card.kind] ?? 5))
             if slots.count < Self.maxCards {
@@ -211,6 +269,14 @@ struct Compositor {
             }
         }
         return dates.min()
+    }
+
+    /// When Jarvis's panel goes: its answer's life after it landed, or two minutes of thinking
+    /// (a lane that never answered doesn't get to sit there).
+    private var jarvisEnds: Date? {
+        guard let jarvis = view.jarvis else { return nil }
+        if let answer = jarvis.answer, let at = jarvis.answeredAt { return at.addingTimeInterval(JarvisPanel.life(of: answer)) }
+        return jarvis.started.addingTimeInterval(120)
     }
 
     // MARK: -

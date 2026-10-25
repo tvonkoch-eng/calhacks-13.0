@@ -8,7 +8,7 @@ import FoundationNetworking
 /// ~100-250 ms, which is the whole ballgame on a wearable. Muse is Meta's Muse Spark: always
 /// reasons first, so ~1.2 s to first token (see Tests/muse-latency.py).
 enum Provider: String {
-    case groq, cerebras, openai, muse, anthropic, openrouter
+    case groq, cerebras, openai, muse, anthropic, openrouter, asi1
 
     var endpoint: URL {
         switch self {
@@ -16,6 +16,8 @@ enum Provider: String {
         case .cerebras: URL(string: "https://api.cerebras.ai/v1/chat/completions")!
         case .openai: URL(string: "https://api.openai.com/v1/chat/completions")!
         case .muse: URL(string: "https://api.meta.ai/v1/chat/completions")!
+        // Fetch.ai's ASI:One, OpenAI-compatible chat with function tools (2026-10-24: 0.8 s to a call).
+        case .asi1: URL(string: "https://api.asi1.ai/v1/chat/completions")!
         // Not OpenAI-compatible: requests are translated (`Claude.body`).
         case .anthropic: Claude.endpoint
         // Pay-as-you-go access to the same hosts (Cerebras first) when their own free tiers run
@@ -40,6 +42,7 @@ enum Provider: String {
         // 1.1 over 1.3: both 20/20 on answer-vs-SKIP, 1.1 median first token 1.17 s vs 1.87 s
         // (2026-10-23, Tests/muse-latency.py). Override with ANSWER_MODEL.
         case .muse: "muse-spark-1.1"
+        case .asi1: "asi1"
         // Haiku with thinking off: the quickest Claude, if a lane is pointed at it.
         case .anthropic: "claude-haiku-5-5"
         case .openrouter: "qwen/qwen3.8-27b"

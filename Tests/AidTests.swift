@@ -181,6 +181,38 @@ do {
     check(s4.closed == ["How large is the moon?"], "a trailing question mark closes")
 }
 
+// Jarvis's loop on Claude: its own tool calls and their results translate to Claude blocks.
+do {
+    let call = Claude.message(["role": "assistant", "content": NSNull(), "tool_calls": [["id": "toolu_1", "type": "function",
+                               "function": ["name": "weather", "arguments": "{\"when\": \"tonight\"}"]]]])
+    let blocks = call["content"] as? [[String: Any]] ?? []
+    check(blocks.count == 1 && blocks[0]["type"] as? String == "tool_use" && blocks[0]["id"] as? String == "toolu_1"
+          && (blocks[0]["input"] as? [String: Any])?["when"] as? String == "tonight", "a tool call becomes tool_use")
+    let result = Claude.message(["role": "tool", "tool_call_id": "toolu_1", "content": "57°F, clear"])
+    let block = (result["content"] as? [[String: Any]])?.first
+    check(result["role"] as? String == "user" && block?["type"] as? String == "tool_result"
+          && block?["tool_use_id"] as? String == "toolu_1", "a tool result becomes tool_result")
+}
+
+// Jarvis's panel: steps tick off, the answer replaces them, then it goes on its own clock.
+do {
+    let t = Date(timeIntervalSince1970: 1_000_000)
+    var c = Compositor()
+    c.startJarvis("who should I follow up with?", at: t)
+    c.jarvisStep("Reading your notes", at: t)
+    c.jarvisStep("Searching: Priya Raman", at: t.addingTimeInterval(1))
+    check(c.view.jarvis?.steps.map(JarvisPanel.line) == ["\u{2713} Reading your notes", "Searching: Priya Raman\u{2026}"], "steps tick off")
+    check(c.view.jarvis?.header(at: t.addingTimeInterval(4)) == "Jarvis \u{00B7} 4s", "it counts up while it thinks")
+    c.jarvisAnswer("Priya: you owe her the deck by tomorrow.", at: t.addingTimeInterval(5))
+    check(c.view.jarvis?.thinking == false && c.view.jarvis?.header(at: t) == "Jarvis", "answered")
+    check(c.nextDeadline == t.addingTimeInterval(5 + 12), "an answer stays 12 s: \(String(describing: c.nextDeadline))")
+    c.tick(at: t.addingTimeInterval(17.1))
+    check(c.view.jarvis == nil, "then it goes")
+    c.startJarvis("x", at: t)
+    c.tick(at: t.addingTimeInterval(121))
+    check(c.view.jarvis == nil, "a think that never ends is dropped after two minutes")
+}
+
 // Tools: the wake word, what counts as a tool question, and how results read.
 do {
     check(Tools.command(in: "Lens, how far is the nearest Target?") == "how far is the nearest Target?", "wake word")
@@ -188,6 +220,14 @@ do {
     check(Tools.command(in: "The lens on these is great") == nil, "talking about lenses is not a command")
     check(Tools.command(in: "Lens.") == nil, "the wake word alone asks nothing")
     check(Tools.command(in: "Lens, weather?") == "weather?", "a one-word command")
+    check(Tools.command(in: "Jarvis, who did I meet today?") == "who did I meet today?", "Jarvis opens")
+    check(Tools.command(in: "Um, hey Jarvis what did I promise Avi") == "what did I promise Avi", "filler before the name")
+    check(Tools.command(in: "What's the weather, Jarvis?") == "What's the weather?", "Jarvis closes a question")
+    check(Tools.command(in: "who here works at Google jarvis") == "who here works at Google", "closing, unpunctuated")
+    check(Tools.command(in: "I just bought a new lens") == nil, "only Jarvis may close a command")
+    check(Tools.command(in: "Jarvis.") == nil && Tools.wakeOnly("Jarvis.") && Tools.wakeOnly("hey Jarvis"), "the name alone wakes it")
+    check(!Tools.wakeOnly("Jarvis, weather?"), "a request isn't a bare wake")
+    check(Tools.byName("Jervis, who's next?") && !Tools.byName("Lens, weather?"), "by name, as misheard")
     check(Tools.wants("how far is the nearest Target"), "places")
     check(Tools.wants("is it going to rain later"), "weather")
     check(Tools.wants("remind me to email Maya at six"), "reminders")

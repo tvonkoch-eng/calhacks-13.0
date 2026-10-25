@@ -156,13 +156,25 @@ import Observation
         onLog?(["event": "micStart", "input": input, "rate": Int(node.outputFormat(forBus: 0).sampleRate)])
     }
 
+    /// Jarvis talks (Voice): route playback to the glasses. Set before the mic starts.
+    nonisolated(unsafe) static var speakToGlasses = false
+
+    /// Sends silence instead of the mic until `date`, so Jarvis's own voice isn't transcribed.
+    /// Silence rather than nothing: Muse drops a stream that arrives slower than real time.
+    func mute(until date: Date?) { uplink.mute(until: date) }
+
     #if os(iOS)
     /// Returns the name of the input in use.
     nonisolated private static func configureSession(_ mic: Mic) throws -> String {
+        let speakToGlasses = Listener.speakToGlasses
         let session = AVAudioSession.sharedInstance()
         // .mixWithOthers so the glasses' own audio never takes the mic away from us; no
         // .allowBluetooth, so iOS never moves the input to the glasses' hands-free route.
-        try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers, .defaultToSpeaker])
+        // .allowBluetoothA2DP (output only) when Jarvis has a voice: it plays in the glasses while
+        // the input stays the phone's mic.
+        var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .defaultToSpeaker]
+        if speakToGlasses { options.insert(.allowBluetoothA2DP) }
+        try session.setCategory(.playAndRecord, mode: .measurement, options: options)
         try session.setActive(true, options: .notifyOthersOnDeactivation)
         let headset = session.availableInputs?.first { $0.portType == .bluetoothHFP }
         let builtIn = session.availableInputs?.first { $0.portType == .builtInMic }
@@ -599,8 +611,14 @@ private final class Uplink: @unchecked Sendable {
         return Date().timeIntervalSince(lastInput)
     }
 
+    private var mutedUntil: Date?
+    func mute(until date: Date?) { lock.lock(); mutedUntil = date; lock.unlock() }
+
     func push(_ buffer: AVAudioPCMBuffer) {
-        lock.lock(); lastInput = Date(); lock.unlock()
+        lock.lock()
+        lastInput = Date()
+        let muted = mutedUntil.map { Date() < $0 } ?? false
+        lock.unlock()
         // The tap reuses its buffer once we return, so copy before crossing threads.
         guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else { return }
         copy.frameLength = buffer.frameLength
@@ -608,7 +626,9 @@ private final class Uplink: @unchecked Sendable {
         let src = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffer.audioBufferList))
         let dst = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
         for (s, d) in zip(src, dst) {
-            if let from = s.mData, let to = d.mData { memcpy(to, from, Int(min(s.mDataByteSize, d.mDataByteSize))) }
+            guard let to = d.mData else { continue }
+            if muted { memset(to, 0, Int(d.mDataByteSize)) }
+            else if let from = s.mData { memcpy(to, from, Int(min(s.mDataByteSize, d.mDataByteSize))) }
         }
         queue.async { self.send(copy) }
     }
