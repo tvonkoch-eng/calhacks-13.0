@@ -1,0 +1,7 @@
+.env
+raw/
+photos/
+out/
+models/
+people.csv
+overrides.json
