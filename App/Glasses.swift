@@ -66,7 +66,7 @@ enum Identification {
             ?? (inFrame[0] != inFrame[1] ? (inFrame[0] ? 0 : 1) : nil)
             ?? picked.firstIndex(where: \.speaking)
             ?? ((sighted[picked[0].id] ?? .distantPast) >= (sighted[picked[1].id] ?? .distantPast) ? 0 : 1)
-        for index in picked.indices { picked[index].share = index == dominant ? 0.6 : 0.4 }
+        for index in picked.indices { picked[index].share = index == dominant ? 0.55 : 0.45 }
         return picked.sorted { (faceX[$0.id] ?? 0.5) < (faceX[$1.id] ?? 0.5) }
     }
 
@@ -2281,6 +2281,15 @@ enum Identification {
     }
 
     /// The person on the card, if the face side has one.
+    /// Who the card was on, and who it was on before them.
+    @ObservationIgnored private var cardPerson: Person?
+    @ObservationIgnored private var priorPerson: Person?
+
+    private func member(_ person: Person, share: CGFloat) -> Member {
+        Member(id: person.id, name: String(person.name.split(separator: " ").first ?? ""), headline: person.headline,
+               lines: LensCards.info(person), fullName: person.name, share: share)
+    }
+
     private var knownPerson: Person? {
         if case .known(let match, _) = result { return match.person }
         return nil
@@ -2303,7 +2312,15 @@ enum Identification {
         case .split:
             // Two or more people in the conversation: a card each. Otherwise the person on the card.
             let inView = groupInView
-            let members = inView.count >= 2 ? inView : []
+            var members = inView.count >= 2 ? inView : []
+            // A new face while the last one is still about: both go up at once, rather than the new
+            // one alone until the conversation's group catches up a second later.
+            if person?.id != cardPerson?.id { priorPerson = cardPerson; cardPerson = person }
+            if members.isEmpty, let person, let prior = priorPerson, prior.id != person.id,
+               let seen = sighted[prior.id], clockNow.timeIntervalSince(seen) < groupHolds {
+                members = [member(person, share: 0.55), member(prior, share: 0.45)]
+                    .sorted { (faceX[$0.id] ?? 0.5) < (faceX[$1.id] ?? 0.5) }
+            }
             let partner = members.isEmpty ? person : nil
             lensShot = LensCards.shot(split: aidLens, person: partner, group: members, meSpeaking: meSpeaking)
             lensShot?.photoPending = photoPending && partner != nil

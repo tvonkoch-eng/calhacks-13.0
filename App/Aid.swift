@@ -901,7 +901,9 @@ enum Talk {
                         return
                     }
                     // The question line is only ever the question: the tool's own detail joins the answer.
-                    let answer = Self.tidy(result.title, result.detail, asked: request)
+                    // Research gives a fact plus a paragraph: the paragraph only for a how or why.
+                    let answer = name == "research" && !Self.explains(request) ? result.title
+                        : Self.tidy(result.title, result.detail, asked: request)
                     self.put(Card(kind: .answer, title: answer, detail: echo, id: card, icon: result.icon))
                     self.log(.answer, result.title, detail: "\(request) · \(name) · \(self.ms(since: started)) ms · \(used.model)")
                 }
@@ -1071,7 +1073,10 @@ enum Talk {
         // around" was rebuilt into a question and answered with a made-up number), and unless
         // that same question was answered or is in flight.
         let newest = (lines.last { !$0.command }?.text ?? "") + " " + partial
-        if let ask = advice.ask, Talk.asks(newest), lookupTask == nil, turns.first?.live != true, turns.first?.lookup != true,
+        // The fast lane already has a question from the last 10 s: it answers that one; the coach's
+        // rewrite ("how far" → "how long") would only put up a second, different answer.
+        let fastLaneBusy = turns.first.map { now.timeIntervalSince($0.firedAt) < 10 } ?? false
+        if let ask = advice.ask, Talk.asks(newest), lookupTask == nil, turns.first?.live != true, !fastLaneBusy,
            !alreadyAnswered(ask, at: now), !asked.contains(where: { Talk.same($0, ask) }) {
             asked.append(ask)
             answeredAt = now
