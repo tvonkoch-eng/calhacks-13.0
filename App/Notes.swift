@@ -252,14 +252,8 @@ struct SavedConversation: Codable, Identifiable, Equatable {
             letters[key] = letter
             return letter
         }
-        // Me is the loudest voice once that's known, so earlier lines relabel as evidence comes in.
-        let meVoice = assistant.meVoice
-        func isMe(_ line: Line) -> Bool {
-            if let meVoice, let voice = assistant.voices[line.id] { return voice == meVoice }
-            return line.speaker == Assistant.me
-        }
         var out = assistant.aid.lines.filter { !$0.command }.map { line in
-            isMe(line)
+            line.speaker == Assistant.me
                 ? SavedLine(id: "\(line.id)", who: "Me", text: line.text, me: true)
                 : SavedLine(id: "\(line.id)", who: person(assistant.voices[line.id] ?? line.speaker), text: line.text, me: false)
         }
@@ -268,6 +262,15 @@ struct SavedConversation: Codable, Identifiable, Equatable {
             let mine = assistant.meSpeaking
             let other = assistant.aid.lines.last { $0.speaker != Assistant.me && !$0.command }.flatMap { assistant.voices[$0.id] ?? $0.speaker }
             out.append(SavedLine(id: "live", who: mine ? "Me" : person(other), text: partial, me: mine, speaking: true))
+        }
+        // The iPhone mic can't tell the wearer by volume: everyone is Person A, B, …, and the
+        // bubbles just switch sides whenever the speaker does.
+        if assistant.mic == .phone {
+            var right = false
+            for index in out.indices {
+                if index > 0, out[index - 1].who != out[index].who { right.toggle() }
+                out[index].me = right
+            }
         }
         return out
     }

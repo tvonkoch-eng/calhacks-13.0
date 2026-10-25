@@ -162,11 +162,11 @@ import Observation
             .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 } ?? "Toby"
         aid = Self.makeAid(wearer: wearer)
         speakers = Speakers(wearer: wearer)
-        // New key on purpose: the glasses default of the last build shouldn't carry over.
-        // Always the iPhone mic at launch: streaming the glasses' mic through the camera stream
-        // kills both video and audio (DAT 1.0.1). The menu can still pick Glasses for one session.
-        listener.mic = .phone
-        UserDefaults.standard.set(Listener.Mic.phone.rawValue, forKey: "mic")
+        // The glasses' mic at launch (Oct 24, asked for): only it tells the wearer apart by volume.
+        // Watch for DAT 1.0.1's old failure, where streaming it with the camera killed both; the
+        // menu still switches to the iPhone mic.
+        listener.mic = .glasses
+        UserDefaults.standard.set(Listener.Mic.glasses.rawValue, forKey: "mic")
         listener.onLog = { SpeedLog.record($0) }
         listener.onPartial = { [weak self] text in
             guard let self else { return }
@@ -343,18 +343,15 @@ import Observation
         if let level {
             lineLevels.append(level)
             if lineLevels.count > 30 { lineLevels.removeFirst() }
-            // Per voice, not per line: on the iPhone mic a friend across the table ran -35 dB and
-            // the wearer -32 (Oct 24), so no single cutoff splits them. The voice Muse has heard
-            // loudest on average is the wearer's, and only that one.
             if let muse { voiceLevels[muse, default: []].append(level) }
-            if let me = meVoice, let muse {
-                verdict = muse == me
-                    ? Speakers.Verdict(who: .me, sure: true, why: "loudest voice")
-                    : (verdict.who == .me ? Speakers.Verdict(who: .someone, sure: false, why: "not the loudest voice") : verdict)
-            } else if voiceLevels.count <= 1, level >= Tuning.float("meLoudDb", -38) {
-                // One voice so far, and close to the mic: the wearer talking.
-                verdict = Speakers.Verdict(who: .me, sure: false, why: String(format: "loud: %.0f dB", level))
-            }
+        }
+        // Glasses mic: the wearer is far louder at the glasses than at the phone. Everyone else ran
+        // 7-12 dB louder there on Oct 24; at `meGapDb` and over, it's the wearer. On the phone
+        // mic there's no telling by volume, so no line is called the wearer's here.
+        if let gap {
+            let mine = gap >= Tuning.float("meGapDb", 14)
+            if mine { verdict = Speakers.Verdict(who: .me, sure: true, why: String(format: "%.0f dB louder at the glasses", gap)) }
+            else if verdict.who == .me { verdict = Speakers.Verdict(who: .someone, sure: true, why: String(format: "only %.0f dB louder at the glasses", gap)) }
         }
         let label: String?
         switch verdict.who {

@@ -360,10 +360,7 @@ struct Reminder: Codable, Identifiable, Equatable {
         live = nil
         // Someone met by face who never spoke in this conversation was in the background, not in
         // it: nothing is filed under them, and the pending contact goes.
-        if let id = newcomer, !newcomerSpoke {
-            conversation.faces.removeAll { $0 == id }
-            forgetPerson(id)
-        }
+        // A new face is kept even if they never spoke (asked for, Oct 24): named later in People.
         newcomer = nil
         newcomerSpoke = false
         watch?.cancel()
