@@ -23,12 +23,23 @@ struct CalHacksApp: App {
                 .environment(glasses)
                 .environment(assistant)
                 .environment(crm)
-                .onOpenURL { glasses.handle($0) }
+                .onOpenURL { url in
+                    #if DEBUG
+                    if url.host == "demo" { assistant.demoDrive(url); return }
+                    #endif
+                    glasses.handle(url)
+                }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { Task { await assistant.ensureListening() } }
                 }
                 .task {
                     glasses.store = store
+                    glasses.demo.changed = { glasses.demoChanged() }
+                    #if DEBUG
+                    glasses.onDemoEvent = { event in
+                        if let url = URL(string: "calhacks13://demo/" + event) { assistant.demoDrive(url) }
+                    }
+                    #endif
                     assistant.glasses = glasses
                     assistant.store = store
                     assistant.crm = crm
@@ -239,6 +250,9 @@ struct HomeView: View {
                 HomeHeader()
                 // Live frame size and rate off the glasses, plus recording.
                 StreamControls()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                DemoControls()
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                 ScrollView {
@@ -1002,9 +1016,29 @@ struct LensMirror: View {
             VStack(spacing: 0) {
                 // The split lens fills the panel: the aid's cards at the very top, the person on
                 // the floor. Every other card sits on the floor and hugs its content.
+                if let prompt = shot.demoPrompt {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bubble.left")
+                        Text(prompt).font(.system(size: m.body * 0.8)).lineLimit(1)
+                    }
+                    .padding(.horizontal, m.pad).padding(.top, 14).padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .modifier(GlassText())
+                }
+                if shot.detecting {
+                    Spacer(minLength: 0)
+                    HStack(spacing: 16) {
+                        RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.25)).frame(width: 72, height: 72)
+                        Text("Detecting face").font(.system(size: m.body * 1.3))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(m.pad)
+                    .modifier(LensCardBackground(radius: m.radius))
+                } else {
                 if shot.kind != .split { Spacer(minLength: 0) }
                 // The split fills the panel: the aid on top, the people in the bottom half.
                 card.frame(maxHeight: shot.kind == .split ? .infinity : nil, alignment: .top)
+                }
                 Color.clear.frame(height: m.bottom)
             }
             .frame(width: LensMetrics.canvas, height: LensMetrics.canvas, alignment: shot.kind == .split ? .top : .bottom)
@@ -1696,6 +1730,16 @@ struct HomeHeader: View {
                 } label: {
                     Label("Name from introductions", systemImage: assistant.namesFromIntroductions ? "checkmark" : "person.crop.circle.badge.questionmark")
                 }
+                Section("Demo") {
+                    Button {
+                        assistant.glasses?.demo.on.toggle()
+                    } label: {
+                        Label("Demo mode", systemImage: glasses.demo.on ? "checkmark" : "play.rectangle")
+                    }
+                    Button("Reset demo", systemImage: "arrow.counterclockwise", role: .destructive) {
+                        assistant.resetDemo()
+                    }
+                }
                 Section("Microphone") {
                     Button {
                         assistant.mic = .glasses
@@ -1787,3 +1831,29 @@ struct LiveLensPanel: View {
     }
 }
 #endif
+
+/// Dev tab: demo mode on or off, and a reset that clears everyone met and starts the prompt over.
+struct DemoControls: View {
+    @Environment(Glasses.self) private var glasses
+    @Environment(Assistant.self) private var assistant
+
+    var body: some View {
+        @Bindable var demo = glasses.demo
+        HStack(spacing: 12) {
+            Toggle(isOn: $demo.on) {
+                Text(demo.on ? (demo.prompt ?? "Demo done") : "Demo mode")
+                    .lineLimit(2)
+            }
+            if demo.on {
+                Button("Next step") { glasses.demoNext() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(demo.prompt == nil)
+            }
+            Button("Reset", role: .destructive) {
+                assistant.resetDemo()
+            }
+            .buttonStyle(.bordered)
+        }
+        .font(.subheadline)
+    }
+}

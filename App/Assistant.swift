@@ -529,8 +529,9 @@ import Observation
         // No photo, no person: a contact is never made without one (Oct 25).
         guard let crm, let store, let photo else { return nil }
         let id = crm.meet()
-        store.meet(Person(id: id, name: CRM.newName, role: "Just met", source: "Met just now"), face: face, photo: photo)
+        store.meet(Person(id: id, name: CRM.newName, role: "", source: "Met just now"), face: face, photo: photo)
         newcomers.append(id)
+        glasses?.demo.met(id)
         // A name already heard in this conversation, before the face was in focus, is theirs.
         if crm.live != nil, let name = aid.them.name, !aid.them.recognised { introduced(name) }
         return id
@@ -555,6 +556,7 @@ import Observation
         store?.updateMet(person)
         glasses?.refresh(person)
         SpeedLog.record(["event": "metNamed", "person": id])
+        glasses?.demo.named(id)
     }
 
     /// A glance at the conversation so far: who they are and what they've said, onto the card.
@@ -570,6 +572,67 @@ import Observation
         glasses?.refresh(person)
         SpeedLog.record(["event": "metLearned", "person": id, "facts": facts.count])
     }
+
+    /// Reset demo: every contact met goes (the roster stays), and the prompt starts over.
+    func resetDemo() {
+        guard let crm, let store else { return }
+        for contact in crm.contacts { crm.forgetPerson(contact.id); store.forget(contact.id) }
+        newcomers = []
+        joined = [:]
+        met = nil
+        glasses?.demoClear()
+        glasses?.demo.reset()
+    }
+
+    #if DEBUG
+    /// Simulator driver for demo mode, through the same paths a real conversation takes:
+    /// calhacks13://demo/meet?photo=avi, /name?n=Avi, /fact?t=…, /jarvis, /answer, /next, /reset.
+    func demoDrive(_ url: URL) {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let arg = { (name: String) in items.first { $0.name == name }?.value ?? "" }
+        switch url.lastPathComponent {
+        case "on": glasses?.demo.on = true
+        case "next": glasses?.demoNext()
+        case "meet":
+            // The face shows as "Detecting face" first, then becomes the contact.
+            glasses?.demoDetecting(true)
+            let photo = ["png", "jpg", "jpeg"].lazy.compactMap { Bundle.main.path(forResource: arg("photo"), ofType: $0) }
+                .first.flatMap(UIImage.init(contentsOfFile:))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1.5))
+                guard let self else { return }
+                self.glasses?.demoDetecting(false)
+                let face = (0..<512).map { _ in Float.random(in: -1...1) }
+                guard let id = self.meet(face: face, photo: photo) else { return }
+                if let photo { self.store?.setAvatar(id, photo) }
+                if let person = self.person(id) { self.glasses?.demoShow(person) }
+            }
+        case "name":
+            if let id = newcomers.last { rename(id, arg("n")) }
+        case "fact":
+            guard let id = newcomers.last, var person = person(id) else { return }
+            if person.tie?.isEmpty ?? true { person.tie = arg("t") } else { person.highlights = (person.highlights ?? []) + [arg("t")] }
+            store?.updateMet(person)
+            glasses?.refresh(person)
+        case "jarvis":
+            // What the aid hands the lens as Jarvis works, then answers.
+            var panel = JarvisPanel(request: "Where can I get pizza nearby?", started: Date())
+            panel.steps = [.init(label: "Searching: pizza near Cal Hacks", done: true)]
+            glasses?.showAid(LensView(jarvis: panel))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                panel.answer = "Sliver Pizzeria on Shattuck, a 6 minute walk. Open till 11."
+                panel.answeredAt = Date()
+                self?.glasses?.showAid(LensView(jarvis: panel))
+            }
+        case "answer":
+            glasses?.showAid(LensView(cards: [Card(kind: .answer, title: "About 1,000 hackers this year",
+                                                   detail: "How many people are at Cal Hacks?", id: 7)]))
+        case "reset": resetDemo()
+        default: break
+        }
+    }
+    #endif
 
     /// The roster and the contacts kept from conversations.
     private func person(_ id: String) -> Person? { store?.contacts.first { $0.id == id } }

@@ -99,6 +99,8 @@ enum Identification {
     /// Who's on the lens. A new face joins; a third replaces whoever was seen longest ago; anyone
     /// unseen for `groupHolds` times out.
     @ObservationIgnored private var lensPeople: [String] = []
+    /// Demo mode's prompt line over the lens (App/Demo.swift).
+    let demo = Demo()
     /// Someone is on the lens right now (seen within `groupHolds`): a conversation may start.
     var someoneHere: Bool { !lensPeople.isEmpty }
 
@@ -1134,6 +1136,12 @@ enum Identification {
     /// The aid's lens changed. It goes up now unless a fresh identification holds the lens (then
     /// it shows once that has been read, if it is still current).
     func showAid(_ view: LensView) {
+        var view = view
+        // Demo mode holds Jarvis and the auto answers back until their tasks.
+        if !demo.allowsJarvis { view.jarvis = nil }
+        if !demo.allowsAnswers { view.cards = []; view.followup = nil; view.working = [] }
+        if view.jarvis?.answer != nil { demo.jarvisAnswered() }
+        if view.cards.contains(where: { $0.kind == .answer && !$0.live }) { demo.answered() }
         guard view != aidLens else { return }
         aidLens = view
         renderLens()
@@ -1865,6 +1873,7 @@ enum Identification {
         // Who the wearer is facing, for the aid: the clearest match in view right now.
         let looking = seenNow.max { $0.score < $1.score }?.id
         if looking != facing { facing = looking }
+        detecting = seenNow.isEmpty && inView.contains { facePx($0) >= minAnnouncePx }
         if seenNow.isEmpty { noticeStranger(inView, image: image, store: store) }
         betterLooks(inView, hits: scan.hits, image: image, store: store)
         guard let chosen, allowed else {
@@ -2057,6 +2066,9 @@ enum Identification {
 
     /// Someone on the card was learned more about (a name, who they are): redraw with it.
     func refresh(_ person: Person) {
+        if ![person.tie, person.highlights?.first, person.work, person.school].compactMap({ $0 }).allSatisfy(\.isEmpty) {
+            demo.learned(person.id)
+        }
         guard case .known(let match, let hit) = result, match.person.id == person.id, match.person != person else { return }
         result = .known(Match(person: person, score: match.score), hit)
         renderLens()
@@ -2220,7 +2232,13 @@ enum Identification {
     /// the bench has it, or the card is the one already sent.
     @discardableResult
     private func renderLens() -> Bool {
-        guard displayReady, !benching else { return false }
+        guard displayReady, !benching else {
+            #if targetEnvironment(simulator)
+            // No display in the simulator: keep the phone's mirror current anyway.
+            _ = lensView()
+            #endif
+            return false
+        }
         let view = lensView()
         guard lensShot == nil || lensShot != sentShot else { return false }
         sentShot = lensShot
@@ -2442,6 +2460,75 @@ enum Identification {
     }
 
     private func lensView() -> FlexBox {
+        // Demo mode's task line takes the top; everything under it is laid out a line shorter.
+        let prompt = demo.prompt
+        LensFit.topLine = prompt == nil ? 0 : LensFit.taskLine
+        var body = lensBody()
+        // A face in view that isn't anyone yet: a blank card until it's found.
+        if detecting, lensPeople.isEmpty, !identifying {
+            lensShot?.detecting = true
+            body = FlexBox(direction: .column, spacing: 0) {
+                FlexBox(direction: .column) {}.flexGrow(1)
+                LensCards.detectingCard()
+            }
+            .flexGrow(1)
+        }
+        guard let prompt else { return body }
+        lensShot?.demoPrompt = prompt
+        return FlexBox(direction: .column, spacing: 0) {
+            FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                Icon(name: .speechBubble, style: .outline)
+                Text(prompt, style: .meta).flexShrink(1)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            body.flexGrow(1)
+        }
+        .flexGrow(1)
+    }
+
+    /// A face is in view that nobody has been matched to yet.
+    @ObservationIgnored private var detecting = false {
+        didSet { if detecting != oldValue { renderLens() } }
+    }
+
+    func demoChanged() { renderLens() }
+
+    #if DEBUG
+    func demoDetecting(_ on: Bool) { detecting = on }
+
+    /// Demo driver: someone just met is on the lens and in view, as a live sighting would put them.
+    func demoShow(_ person: Person) {
+        result = .known(Match(person: person, score: 1), nil)
+        resultAt = Date()
+        sighted[person.id] = Date()
+        updateLensPeople(seen: [person.id])
+        renderLens()
+    }
+    #endif
+
+    /// The phone's Next step. In the simulator, which has no camera or mic, it also stands in for
+    /// whatever the task waits for, through the same paths a real conversation takes.
+    func demoNext() {
+        #if targetEnvironment(simulator)
+        if let event = Demo.simulated[demo.step] { onDemoEvent?(event); return }
+        #endif
+        demo.skip()
+    }
+    @ObservationIgnored var onDemoEvent: ((String) -> Void)?
+
+    /// Reset demo: nobody on the lens.
+    func demoClear() {
+        result = .ready
+        lensPeople = []
+        sighted = [:]
+        metTracks = [:]
+        aidLens = LensView()
+        detecting = false
+        renderLens()
+    }
+
+    private func lensBody() -> FlexBox {
         let person = knownPerson
         var mode = currentMode()
         // Anyone on the lens gets the people layout (50/50, the glasses icon on whoever's in view),
