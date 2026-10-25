@@ -92,8 +92,9 @@ struct Answerer {
     jargon: read "the sharp on a market making book" as the Sharpe ratio, and so on, when the \
     conversation makes the meaning clear.
 
-    Answer in ONE line of at most 12 words. No preamble, no restating the question, no punctuation \
-    at the end. If the answer is a number or a name, lead with it. Plain facts only. If the \
+    Answer in at most 5 words: just the fact, glanceable on glasses ("21,196 km", "Frank Herbert", \
+    "June 1944"). No sentence, no preamble, no restating the question, no punctuation at the end. \
+    A number keeps its unit. Plain facts only. If the \
     conversation or what's known about them answers it, answer from that.
 
     Reply with exactly WEB, and nothing else, if it is a public fact you can't give reliably from \
