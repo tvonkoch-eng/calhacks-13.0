@@ -356,14 +356,17 @@ struct Reminder: Codable, Identifiable, Equatable {
         lastGlance = now
         glancedLines[id] = theirs
         let known = name(id)
-        let input = Recap.Input(wearer: wearer, when: conversation.started,
+        // Demo mode is often one person playing both sides: nobody is known to be the wearer, so
+        // "my name is Joaquin" is a name like any other and every line may be theirs.
+        let selfTest = UserDefaults.standard.object(forKey: "DemoMode") as? Bool ?? true
+        let input = Recap.Input(wearer: selfTest ? "unknown" : wearer, when: conversation.started,
                                 with: nil, name: known == Self.newName || known == "Someone" ? nil : known,
                                 picture: picture(id), known: facts(about: id).map(\.text), owed: [],
                                 // Someone just met: only what was said since they joined, so a name or fact
                                 // from whoever was there before is never filed under them (Oct 25: Avi
                                 // got "Toby Von Koch").
                                 transcript: conversation.lines.dropFirst(id == newcomer ? metAtLine : 0)
-                                    .map { "\(label(retag($0.speaker))): \($0.text)" })
+                                    .map { "\(selfTest ? "SPEAKER" : label(retag($0.speaker))): \($0.text)" })
         Task {
             defer { glancing = false }
             guard let glance = await look(input), roster(id) != nil || contacts.contains(where: { $0.id == id }) else { return }
