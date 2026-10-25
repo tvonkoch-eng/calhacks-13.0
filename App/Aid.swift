@@ -778,9 +778,9 @@ enum Talk {
     }
 
     /// The lens is small: echo just enough of the question to make the answer legible.
+    /// The question exactly as asked: small and grey, it wraps rather than being cut.
     private static func echo(_ question: String) -> String {
-        let words = question.split(separator: " ")
-        return words.count > 7 ? words.prefix(7).joined(separator: " ") + "\u{2026}" : question
+        question.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func words(_ s: String) -> Int { s.split(separator: " ").count }
@@ -869,7 +869,9 @@ enum Talk {
                         self.log(.lookup, request, detail: "no answer found")
                         return
                     }
-                    self.put(Card(kind: .answer, title: result.title, detail: result.detail, id: card, icon: result.icon))
+                    // The question line is only ever the question: the tool's own detail joins the answer.
+                    let answer = result.detail.isEmpty ? result.title : result.title + " \u{00B7} " + result.detail
+                    self.put(Card(kind: .answer, title: answer, detail: echo, id: card, icon: result.icon))
                     self.log(.answer, result.title, detail: "\(request) · \(name) · \(self.ms(since: started)) ms · \(used.model)")
                 }
                 self.timings["tool", default: []].append(self.ms(since: started))
