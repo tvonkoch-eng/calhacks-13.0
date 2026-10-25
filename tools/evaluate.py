@@ -43,8 +43,9 @@ def stamp(t):
 
 
 def lens_items(trace, end):
-    """What was on the lens and when: one item per distinct card or interjection."""
-    items, card, followup = [], None, None
+    """What was on the lens and when: one item per distinct card or interjection. Cards stack, so
+    every card in `cards` counts, not just the newest: an older one is still up under a new one."""
+    items, open_cards, followup = [], {}, None
 
     def close(item, t):
         if item:
@@ -52,22 +53,23 @@ def lens_items(trace, end):
             items.append(item)
 
     for e in (e for e in trace if e["kind"] == "lens"):
-        c, f, t = e.get("card"), e.get("followup"), e["t"]
+        cards = e.get("cards") or ([e["card"]] if e.get("card") else [])
+        f, t = e.get("followup"), e["t"]
         # A streaming answer is one item: same card id, growing title.
-        key = c and (c["kind"], c.get("id", c["title"]))
-        if card and (not c or key != card["key"]):
-            close(card, t); card = None
-        if c and not card:
-            card = {"key": key, "kind": c["kind"], "start": t}
-        if card and c:
+        shown = {(c["kind"], c.get("id", c["title"])): c for c in cards}
+        for key in [k for k in open_cards if k not in shown]:
+            close(open_cards.pop(key), t)
+        for key, c in shown.items():
+            card = open_cards.setdefault(key, {"kind": c["kind"], "start": t})
             card["content"] = f'{c["title"]}' + (f' — {c["detail"]}' if c["detail"] else "")
         if followup and f != followup["content"]:
             close(followup, t); followup = None
         if f and not followup:
             followup = {"kind": "interjection", "content": f, "start": t}
-    close(card, end); close(followup, end)
+    for card in open_cards.values():
+        close(card, end)
+    close(followup, end)
     for item in items:
-        item.pop("key", None)
         item["duration"] = round(item["end"] - item["start"], 1)
     return sorted(items, key=lambda i: i["start"])
 
@@ -150,8 +152,13 @@ def judge(truth, trace, items, background):
     body = {"model": JUDGE_MODEL, "reasoning_effort": "medium", "max_completion_tokens": 6000,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": JUDGE}, {"role": "user", "content": user}]}
-    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=json.dumps(body).encode(),
-                                 headers={"Authorization": f"Bearer {secret('OPENAI_API_KEY')}",
+    # JUDGE_VIA=openrouter: the same judge through OpenRouter, when the OpenAI key is out of credit.
+    via_openrouter = os.environ.get("JUDGE_VIA") == "openrouter"
+    if via_openrouter:
+        body["model"] = "openai/" + JUDGE_MODEL
+    url = "https://openrouter.ai/api/v1/chat/completions" if via_openrouter else "https://api.openai.com/v1/chat/completions"
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Authorization": f"Bearer {secret('OPENROUTER_API_KEY' if via_openrouter else 'OPENAI_API_KEY')}",
                                           "Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=180) as r:
         return json.loads(json.load(r)["choices"][0]["message"]["content"])

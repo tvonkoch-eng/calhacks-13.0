@@ -817,7 +817,6 @@ enum Talk {
             answeredText = question + " " + answer
             if turn.state == .done, finalAnswer[turn.card] == nil {
                 finalAnswer[turn.card] = answer
-                directAnswerAt = now
                 settled = (turn.card, question, now)
             }
             compositor.show(Card(kind: .answer, title: answer,
@@ -1285,7 +1284,11 @@ enum Talk {
         let quiet = asking || (mine && !config.defineMine)
         // Questions asked in the last 20 s: an insight on their subject repeats the answer.
         let questions = turns.prefix(4).filter { now.timeIntervalSince($0.firedAt) < 20 }.map { Talk.normalized($0.question) }
-        for term in advice.define where !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + term.meaning)) })
+        // A term the wearer used is one they know: "GARCH" was defined right after "Some GARCH, some
+        // realized vol" (the judge: 2/8, during the recruiting moment).
+        let theirOwn = Talk.normalized(lines.suffix(10).filter { roles.isWearer($0.speaker) }.map(\.text).joined(separator: " ")
+            + (predictedWearer() ? " " + partial : ""))
+        for term in advice.define where !Talk.mentioned(term.term, in: theirOwn) && !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + term.meaning)) })
             && term.term.count >= 3 && Talk.mentioned(term.term, in: recent) && !Talk.mentioned(term.term, in: answered)
             && !unsure.contains(where: term.meaning.lowercased().contains) && !quiet {
             defined.append(term.term)
@@ -1297,7 +1300,7 @@ enum Talk {
         // per topic, one every `insightGap`, not one a definition or an answer just covered, not on
         // a question. Only about what was just said: a garbled line ("you never sink holy") got an
         // insight on Calvisius from 40 s before.
-        if config.insights, let insight = advice.insight, !quiet,
+        if config.insights, let insight = advice.insight, !quiet, !Talk.mentioned(insight.topic, in: theirOwn),
            !questions.contains(where: { Talk.mentioned(insight.topic, in: $0) }),
            Talk.mentioned(insight.topic, in: recent) || Talk.mentioned(insight.query, in: recent),
            now.timeIntervalSince(lastInsight) >= Self.insightGap,
@@ -1560,11 +1563,14 @@ enum Talk {
                 self.compositor.endWork(id: card)
                 guard !result.title.isEmpty else {
                     self.log(.lookup, question, detail: "no answer found")
+                    self.dropPlaceholder(card)
                     self.publish()
                     self.lookupTask = nil
                     return
                 }
-                if Date().timeIntervalSince(self.directAnswerAt) < 15 {
+                // This question's own direct answer stays: it would change under the wearer's eyes.
+                // Another question's answer is no reason to drop this one.
+                if self.finalAnswer[card] != nil {
                     self.log(.lookup, question, detail: "kept the direct answer over \(result.title)")
                     self.publish()
                     self.lookupTask = nil
@@ -1578,6 +1584,7 @@ enum Talk {
                 self.log(.research, result.title, detail: "\(result.detail) · \(question) · \(ms) ms")
             } catch {
                 self?.log(.status, "Lookup failed: \(error.localizedDescription)")
+                self?.dropPlaceholder(card)
             }
             self?.compositor.endWork(id: card)
             self?.publish()
@@ -1585,12 +1592,14 @@ enum Talk {
         }
     }
 
+    /// A lookup that ends with nothing to show takes its "Looking it up…" card down with it.
+    private func dropPlaceholder(_ card: Int) {
+        if finalAnswer[card] == nil { compositor.remove(id: card, kind: .answer, at: Date()) }
+    }
+
     // MARK: - Lens
 
     @ObservationIgnored private var compositor = Compositor()
-    /// When a direct answer last finished. A slower web lookup for the same question doesn't
-    /// replace it: the answer would change under the wearer's eyes.
-    @ObservationIgnored private var directAnswerAt = Date.distantPast
     /// Per card: the question as first shown, and the answer once finished. Neither changes after.
     @ObservationIgnored private var shownQuestion: [Int: String] = [:]
     @ObservationIgnored private var finalAnswer: [Int: String] = [:]
