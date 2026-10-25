@@ -30,6 +30,22 @@ check(Recap.parse("{\"skip\": true}")?.skip == true, "skip needs no summary")
 check(Recap.parse("{\"skip\": false, \"topics\": []}") == nil, "no summary and no skip is unusable")
 check(Recap.parse("sorry") == nil, "no JSON")
 
+// Details: spoken contact info cleaned, mishearings dropped, unknown keys ignored.
+let detailed = Recap.parse("""
+{"skip": false, "summary": "Talked evals.", "details": {"work": "ML engineer at Stripe", "phone": "+1 (415) 555-0134",
+ "email": "Priya@Gmail.com", "linkedin": "https://www.linkedin.com/in/priya-shah/", "instagram": "@priya.s",
+ "website": "https://priya.dev/", "school": null, "shoe": "9"}, "outdated": ["Works at Ramp"]}
+""")
+let d = detailed?.details
+check(d?.work == "ML engineer at Stripe" && d?.school == nil, "work kept, null school dropped")
+check(d?.phone == "+14155550134" && d?.email == "priya@gmail.com", "phone digits, email lowercased")
+check(d?.linkedin == "priya-shah" && d?.instagram == "priya.s" && d?.website == "priya.dev", "handles from URLs")
+check(detailed?.outdated == ["Works at Ramp"], "outdated facts")
+check(Recap.Details.phone("five five five") == nil && Recap.Details.phone("555 12") == nil, "a misheard number is dropped")
+check(Recap.Details.email("priya at gmail") == nil, "not an address")
+check(Recap.Details.handle("priya shah", after: "/in/") == nil && Recap.Details.handle("priya-shah", after: "/in/") == "priya-shah", "bare handle")
+check(Recap.parse("{\"skip\": false, \"summary\": \"Hi.\"}")?.details.isEmpty == true, "no details by default")
+
 check(CRM.due(0, from: t0) == at(7200), "due today = two hours later")
 check(CRM.due(1, from: t0) == tomorrow9, "due tomorrow = 9 am")
 check(Recap.message(Recap.Input(wearer: "Toby", when: t0, with: nil, name: "Priya", known: [], owed: [], transcript: []))
@@ -72,11 +88,50 @@ await MainActor.run {
     check(crm.lastContext("avi") == "Avi · lse econ student · waiting on: avi intros you to Priya", "then what they owe")
     crm.complete(open.first { $0.kind == .waiting }!.id)
     check(crm.lastContext("avi") == "Avi · lse econ student · applying to jane street", "then the hook")
+    crm.rosterIDs = ["avi", "joaquin"]
+    let digest = crm.digest(now: at(700))
+    check(digest.hasPrefix("People:\n- Avi Shah (LSE). last talked"), "digest leads with who you talked to: \(digest.prefix(60))")
+    check(digest.contains("Compared LoRA costs.") && digest.contains("Plays cricket"), "digest: summary and facts")
+    check(digest.contains("Check in by") && !digest.contains("They promised"), "digest: open reminders only")
+    check(digest.contains("- Joaquin Del Pego (UCSB). haven't talked yet"), "digest: the roster, even before a conversation")
+    check(makeCRM(nil).digest().isEmpty, "nothing on record, no digest")
     let record = crm.record("avi")
     check(record.label == "lse econ student" && record.facts.contains("Plays cricket")
           && record.briefing.contains { $0.hasPrefix("Last talked") }, "the full record briefs the aid")
     crm.save(Encounter(summary: "Again.", at: at(3600), match: "avi"))
     check(crm.reminders.filter { $0.kind == .checkIn && $0.person == "avi" }.count == 1, "talking again moves the catch-up")
+}
+
+struct StubTools: Toolbox {
+    let definitions = #"[{"type": "function", "function": {"name": "weather"}}]"#
+    func working(_ name: String, arguments: String) -> String { "" }
+    func run(_ name: String, arguments: String) async throws -> ToolResult { ToolResult(title: "", detail: "", icon: "") }
+}
+
+// Jarvis writes: find by name or pronoun, remember, follow up, save.
+do {
+    let crm = await MainActor.run { () -> CRM in
+        let crm = makeCRM(nil)
+        crm.rosterIDs = ["avi", "joaquin"]
+        return crm
+    }
+    let tools = await MainActor.run { crm.jarvisTools(current: { "joaquin" }) }
+    func tool(_ name: String) -> ExtraTool { tools.first { $0.name == name }! }
+    await MainActor.run {
+        check(crm.find("Avi", current: nil) == "avi" && crm.find("avi shah", current: nil) == "avi", "find by first or full name")
+        check(crm.find("her", current: "joaquin") == "joaquin" && crm.find(nil, current: "joaquin") == "joaquin", "a pronoun is who you're talking to")
+        check(crm.find("Priya", current: nil) == nil, "nobody by that name")
+    }
+    let saved = try? await tool("remember").run(#"{"person": "Avi", "fact": "Applying to Jane Street"}"#)
+    let followed = try? await tool("follow_up").run(#"{"task": "Send Joaquin the deck", "days": 1}"#)
+    let kept = try? await tool("save_contact").run(#"{"name": "Priya Raman"}"#)
+    await MainActor.run {
+        check(saved?.title == "Saved for Avi" && crm.facts(about: "avi").first?.text == "Applying to Jane Street", "remember writes a fact")
+        check(followed?.title == "Send Joaquin the deck, tomorrow" && crm.open(for: "joaquin").contains { $0.kind == .todo }, "follow_up on whoever you're facing")
+        check(kept?.title == "Priya Raman saved" && crm.saved.contains { $0.name == "Priya Raman" }, "save_contact adds them")
+        let box = ExtraTools(base: StubTools(), extras: tools)
+        check(box.definitions.contains("\"remember\"") && box.definitions.contains("\"weather\""), "the extras join the device tools")
+    }
 }
 
 // 2. Consent: a stranger becomes a pending contact; a match on a pending id doesn't count.
@@ -110,7 +165,8 @@ await MainActor.run {
     crm.keep(kept)
     crm.save(Encounter(summary: "Demo.", at: t0, match: "avi"))
     let later = makeCRM(nil, url: file, now: at(8 * 86400))
-    check(later.consent(stranger) == nil && later.conversations(with: stranger).isEmpty, "unsaved people are gone after 7 days")
+    // Kept from the start (Oct 24): people met are contacts until removed in People, never expired.
+    check(later.consent(stranger) == .saved, "people met are kept past 7 days")
     check(later.consent(kept) == .saved && later.conversations(with: "avi").count == 1, "kept people and the roster stay")
     let disk = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
     check(!disk.contains("\"lines\"") && !disk.contains("transcript"), "no transcript on disk")
@@ -183,7 +239,7 @@ let meeting = await MainActor.run { () -> CRM in
         return Glance(name: "Priya", label: "evals startup founder", facts: ["Building an evals startup"])
     }
     let id = crm.meet(at: at(0))
-    check(crm.consent(id) == .pending && crm.name(id) == CRM.newName, "met: pending, unnamed")
+    check(crm.consent(id) == .saved && crm.name(id) == CRM.newName, "met: kept, unnamed")
     crm.facing(id)
     crm.heard("Hi, I'm Toby.", speaker: "A", at: at(1))
     // The aid resolves a face-identified speaker to "p:<id>" before the CRM hears the line.
@@ -212,7 +268,28 @@ await MainActor.run {
     UserDefaults.standard.removeObject(forKey: "glanceEvery")
 }
 
-// Someone met by face who never speaks was in the background: nothing is filed, the contact goes.
+// A conversation that changes what's true: the old fact goes, details go to the contact card.
+await MainActor.run {
+    var result = Recap.Result(summary: "Caught up.", facts: ["Works at Stripe now"])
+    result.details = Recap.Details(work: "ML engineer at Stripe", email: "avi@x.com")
+    result.outdated = ["works at ramp"]
+    let crm = makeCRM(result)
+    crm.learn("avi", "Works at Ramp", at: t0)
+    crm.learn("avi", "Plays cricket", at: t0)
+    var got: [(String, Recap.Details)] = []
+    crm.onDetails = { got.append(($0, $1)) }
+    var encounter = Encounter(at: at(60), match: "avi")
+    encounter.apply(result)
+    crm.save(encounter)
+    let texts = crm.facts(about: "avi").map(\.text)
+    check(!texts.contains("Works at Ramp") && texts.contains("Plays cricket") && texts.contains("Works at Stripe now"), "outdated fact retired, others kept")
+    check(got.count == 1 && got.first?.0 == "avi" && got.first?.1.email == "avi@x.com", "details handed to the contact card")
+    crm.save(Encounter(summary: "Again.", at: at(3600), match: "avi"))
+    check(got.count == 1, "no details, no hand-off")
+}
+
+// Someone met by face who never speaks: nothing is filed. They stay as a contact (kept from the
+// start, Oct 24) until removed in People.
 do {
     let crm = CRM(url: nil)
     crm.glancer = { _ in Glance() }
@@ -220,7 +297,6 @@ do {
     crm.heard("Long day, huh.", speaker: "A", at: at(1))
     crm.heard("It really was.", speaker: "A", at: at(2))
     crm.tick(now: at(3), force: true)
-    check(crm.contacts.first { $0.id == id } == nil, "a background face is not kept")
     check(crm.conversations.isEmpty, "no conversation filed under a background face")
 }
 

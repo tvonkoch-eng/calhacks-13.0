@@ -47,6 +47,11 @@ struct CalHacksApp: App {
                         let unnamed = crm.contacts.filter { $0.name == CRM.newName }.sorted { $0.created > $1.created }
                         for contact in unnamed.dropFirst() { crm.forgetPerson(contact.id) }
                     }
+                    crm.onDetails = { id, details in
+                        guard let base = store.contacts.first(where: { $0.id == id })
+                                ?? crm.contacts.first(where: { $0.id == id }).map(crm.person) else { return }
+                        store.fill(base, with: details)
+                    }
                     // Listening is on from launch; the mic pill turns it off.
                     Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
@@ -60,7 +65,7 @@ struct CalHacksApp: App {
                     }
                     // First names spelled right in the transcript, e.g. "Joaquin" not "Wakeen".
                     // Plus anyone met today or kept (the CRM); refreshed on every arm.
-                    assistant.listener.keywords = crm.keywords(roster: store.people.map(\.name))
+                    assistant.listener.keywords = ["Jarvis"] + crm.keywords(roster: store.people.map(\.name))
                     #if DEBUG
                     let env = ProcessInfo.processInfo.environment
                     if Glasses.prefersMock {
@@ -97,7 +102,9 @@ struct CalHacksApp: App {
                             summary: "Calibrating LLM judges is her hardest problem; hiring two eval engineers.",
                             hook: "asked about hiring", topics: ["LLM judges", "hiring", "UCSB"],
                             at: .now.addingTimeInterval(-3 * 3600), ended: .now.addingTimeInterval(-3 * 3600 + 540),
-                            place: "near Sproul Plaza, Berkeley"))
+                            place: "near Sproul Plaza, Berkeley",
+                            details: Recap.Details(work: "Founder at Judgeable", from: "Taipei", phone: "4155550134",
+                                                   email: "maya@judgeable.ai", linkedin: "mayachen")))
                         let dana = crm.save(Encounter(
                             name: "Dana Ruiz", label: "ICU nurse at UCSF",
                             facts: ["Back from her sister's wedding in Lisbon"],
@@ -119,12 +126,21 @@ struct CalHacksApp: App {
                             // PREVIEW_WORK="Researching the GENIUS Act": a thinking row with its countdown.
                             let work = env["PREVIEW_WORK"].map { [Work(id: 99, label: $0, started: Date())] } ?? []
                             // PREVIEW_CARDS="title|detail;;title|detail": the card stack, newest first.
-                            var cards = [Card(kind: .answer, title: parts[0], detail: parts.count > 1 ? parts[1] : "", id: 1)]
+                            var cards = parts[0].isEmpty ? [] : [Card(kind: .answer, title: parts[0], detail: parts.count > 1 ? parts[1] : "", id: 1)]
                             for (i, extra) in (env["PREVIEW_CARDS"] ?? "").components(separatedBy: ";;").enumerated() where !extra.isEmpty {
                                 let p = extra.components(separatedBy: "|")
                                 cards.append(Card(kind: .definition, title: p[0], detail: p.count > 1 ? p[1] : "", id: 2 + i))
                             }
-                            let view = LensView(cards: cards, followup: parts.count > 2 ? parts[2] : nil, working: work)
+                            var view = LensView(cards: cards, followup: parts.count > 2 && !parts[2].isEmpty ? parts[2] : nil, working: work)
+                            // PREVIEW_JARVIS="request|step;step|answer": Jarvis's panel; no answer = still thinking.
+                            if let spec = env["PREVIEW_JARVIS"] {
+                                let p = spec.components(separatedBy: "|")
+                                var panel = JarvisPanel(request: p[0], started: Date().addingTimeInterval(-4))
+                                let steps = p.count > 1 ? p[1].components(separatedBy: ";").filter { !$0.isEmpty } : []
+                                panel.steps = steps.enumerated().map { JarvisPanel.Step(label: $1, done: $0 < steps.count - 1) }
+                                if p.count > 2, !p[2].isEmpty { panel.answer = p[2]; panel.answeredAt = Date() }
+                                view.jarvis = panel
+                            }
                             glasses.showAid(view)
                             // The simulator has no mic, so listening fails and disarms the aid; put it back.
                             Task {
@@ -1148,6 +1164,24 @@ struct LensMirror: View {
     /// Mirror of `LensCards.extrasBox`: work in flight, the line to say next.
     @ViewBuilder private var extrasBody: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let jarvis = shot.jarvis {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        Image(systemName: jarvis.answer == nil ? "sparkles" : "sparkles.rectangle.stack.fill").font(.system(size: m.glyph))
+                        Text(jarvis.header).font(.system(size: m.meta)).foregroundStyle(secondary)
+                    }
+                    if !jarvis.asked.isEmpty {
+                        Text(jarvis.asked).font(.system(size: m.meta)).foregroundStyle(secondary)
+                    }
+                    ForEach(Array(jarvis.steps.enumerated()), id: \.offset) { _, step in
+                        Text(step).font(.system(size: m.meta))
+                    }
+                    if let answer = jarvis.answer {
+                        Text(answer).font(.system(size: m.body))
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(Array(shot.working.enumerated()), id: \.offset) { _, line in
                 HStack(spacing: 10) {
                     Image(systemName: "sparkles").font(.system(size: m.glyph))

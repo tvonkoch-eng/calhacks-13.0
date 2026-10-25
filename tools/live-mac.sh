@@ -4,7 +4,9 @@
 #   sh tools/live-mac.sh                       talk to it (Mac mic)
 #   sh tools/live-mac.sh --file convo.wav      replay a recording at real time; never played aloud
 #   sh tools/live-mac.sh --trace run.jsonl     also write a timed trace for tools/evaluate.py
-#   sh tools/live-mac.sh --type                no audio: type what's said, e.g. "Lens, nearest Target?"
+#   sh tools/live-mac.sh --type                no audio: type what's said, e.g. "Jarvis, nearest Target?"
+#   sh tools/live-mac.sh --record people.txt   Jarvis answers from this record (CRM.digest's format)
+#   sh tools/live-mac.sh --crm crm.json        a real CRM file: Jarvis reads and writes it
 #   sh tools/live-mac.sh 300                   stop after 300 s
 # First run: allow microphone access for your terminal app.
 set -e
@@ -33,6 +35,7 @@ if [ ! -x "$out/live" ] || [ -n "$(find App tools Secrets.xcconfig -newer "$out/
     echo '<key>NSRemindersFullAccessUsageDescription</key><string>Sets reminders when you ask.</string>'
     echo '<key>NSCalendarsFullAccessUsageDescription</key><string>Tells you what is next on your calendar.</string>'
     for pair in MuseAPIKey:MUSE_API_KEY AnswerProvider:ANSWER_PROVIDER AnswerAPIKey:ANSWER_API_KEY AnswerModel:ANSWER_MODEL \
+                JarvisProvider:JARVIS_PROVIDER JarvisAPIKey:JARVIS_API_KEY JarvisModel:JARVIS_MODEL \
                 CoachProvider:COACH_PROVIDER CoachAPIKey:COACH_API_KEY CoachModel:COACH_MODEL \
                 SuggestProvider:SUGGEST_PROVIDER SuggestAPIKey:SUGGEST_API_KEY SuggestModel:SUGGEST_MODEL \
                 BackupProvider:BACKUP_PROVIDER BackupAPIKey:BACKUP_API_KEY BackupModel:BACKUP_MODEL \
@@ -45,7 +48,7 @@ if [ ! -x "$out/live" ] || [ -n "$(find App tools Secrets.xcconfig -newer "$out/
   } > "$out/Info.plist"
   echo "Building (~30 s)…"
   cp tools/live-mac.swift "$out/main.swift"   # top-level code must live in main.swift
-  swiftc -O "$out/main.swift" App/Listen.swift App/Aid.swift App/Lens.swift App/Coach.swift App/Answer.swift App/Question.swift App/Tools.swift \
+  swiftc -O "$out/main.swift" App/Listen.swift App/Aid.swift App/Lens.swift App/Coach.swift App/Answer.swift App/Question.swift App/Tools.swift App/CRM.swift \
     -o "$out/live" -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$out/Info.plist" 2>&1 | grep -E "error" && exit 1
 fi
 "$out/live" "$@"
