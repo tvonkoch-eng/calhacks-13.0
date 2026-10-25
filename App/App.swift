@@ -1032,7 +1032,10 @@ struct LensMirror: View {
                     Spacer(minLength: 0)
                     Text(member.name).font(.system(size: m.heading, weight: .semibold))
                         .foregroundStyle(member.speaking ? Color.white : secondary)
-                    Text(LensCards.short(member.headline, max: 40)).font(.system(size: m.body)).foregroundStyle(secondary)
+                    Text(member.headline).font(.system(size: m.body)).foregroundStyle(secondary)
+                    ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
+                    }
                 }
                 .padding(m.pad)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1126,9 +1129,9 @@ struct LensMirror: View {
                     .padding(m.pad)
                     .modifier(LensCardBackground(radius: m.radius))
                 if shot.group.count >= 2 {
-                    groupCards.frame(height: LensFit.half)
+                    groupCards.frame(height: LensFit.half).clipped()
                 } else if let id = shot.photo {
-                    personCard(id: id).frame(height: LensFit.personRoom(shot))
+                    personCard(id: id).frame(height: LensFit.half).clipped()
                 }
             }
 

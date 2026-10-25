@@ -27,4 +27,6 @@ struct Member: Equatable {
     var name: String
     var headline: String
     var speaking = false
+    /// What else is known about them, most telling first; the split lens shows what fits.
+    var lines: [String] = []
 }

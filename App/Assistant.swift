@@ -408,7 +408,7 @@ import Observation
         let next = joined.filter(\.value.member).sorted { $0.value.since < $1.value.since }.compactMap { id, _ -> Member? in
             guard let person = person(id) else { return nil }
             return Member(id: id, name: firstName(person.name), headline: person.headline,
-                          speaking: !meSpeaking && speaking == id)
+                          speaking: !meSpeaking && speaking == id, lines: LensCards.info(person))
         }
         if next != members { members = next }
         glasses?.setGroup(next, meSpeaking: meSpeaking && next.count >= 2)
