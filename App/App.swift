@@ -973,7 +973,7 @@ struct LensMetrics {
     let radius = tune("mirrorRadius", 27)
     /// The gap the real renderer leaves under the card. Measured off a captured lens frame:
     /// 30 px of a 531 px panel, which is 34 of the lens's own 600.
-    let bottom = tune("mirrorBottom", 34)
+    let bottom = tune("mirrorBottom", 34) + LensFit.buffer
 
     private static func tune(_ key: String, _ fallback: CGFloat) -> CGFloat {
         CGFloat(Tuning.float(key, Float(fallback)))

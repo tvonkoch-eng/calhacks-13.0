@@ -114,10 +114,11 @@ enum Identification {
         case (let side?, nil): lensSide[b] = 1 - side
         case (nil, let side?): lensSide[a] = 1 - side
         case (nil, nil):
-            // A pair forming from scratch: sides from where they stand right now, then kept.
-            let aLeft = (faceX[a] ?? 0.5) <= (faceX[b] ?? 0.5)
-            lensSide[a] = aLeft ? 0 : 1
-            lensSide[b] = aLeft ? 1 : 0
+            // A pair forming: the newcomer takes the side of the lens they came in from, and the
+            // one already there (full width until now) moves to the other. Kept from then on.
+            let enteredLeft = (faceX[b] ?? 0.5) < 0.5
+            lensSide[b] = enteredLeft ? 0 : 1
+            lensSide[a] = enteredLeft ? 1 : 0
         default: break
         }
     }
