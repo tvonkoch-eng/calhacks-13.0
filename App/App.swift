@@ -1015,7 +1015,7 @@ struct LensMirror: View {
     /// Mirror of `LensCards.personCard`: photo at the top, name and what they do at the foot.
     private func personCard(id: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            header(id: id, name: shot.name ?? "", width: LensFit.personWidth, bright: true)
+            header(id: id, name: shot.name ?? "", width: LensFit.personWidth, bright: true, focused: shot.focused)
             ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
                 Text(line).font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
             }
@@ -1023,7 +1023,7 @@ struct LensMirror: View {
         }
         .padding(m.pad)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .modifier(LensCardBackground(radius: m.radius, glow: shot.focused))
+        .modifier(LensCardBackground(radius: m.radius))
     }
 
     /// Mirror of `LensCards.groupCards`: a quarter of the lens each, photo at the top, name and
@@ -1033,7 +1033,7 @@ struct LensMirror: View {
             ForEach(shot.group.prefix(2), id: \.id) { member in
                 VStack(alignment: .leading, spacing: 8) {
                     header(id: member.id, name: member.fullName.isEmpty ? member.name : member.fullName,
-                           width: LensFit.memberWidth(member), bright: member.speaking)
+                           width: LensFit.memberWidth(member), bright: member.speaking, focused: member.focused)
                     ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
                         Text(line).font(.system(size: m.meta)).fixedSize(horizontal: false, vertical: true)
                     }
@@ -1042,13 +1042,13 @@ struct LensMirror: View {
                 .padding(m.pad)
                 .frame(maxHeight: .infinity, alignment: .topLeading)
                 .frame(width: memberWidth(member))
-                .modifier(LensCardBackground(radius: m.radius, glow: member.focused))
+                .modifier(LensCardBackground(radius: m.radius))
             }
         }
     }
 
     /// Mirror of `LensCards.header`: photo left, full name over what they do on the right.
-    private func header(id: String, name: String, width: CGFloat, bright: Bool) -> some View {
+    private func header(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool) -> some View {
         let size = (width - LensFit.photoGap) * LensFit.photoShare(width)
         return HStack(alignment: .center, spacing: LensFit.photoGap) {
             // Grey until the photo's write lands, as on the lens.
@@ -1056,6 +1056,9 @@ struct LensMirror: View {
                 RoundedRectangle(cornerRadius: size * 0.16, style: .continuous)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
+            } else if focused, let photo = avatar(id), let lit = LensCards.glowing(photo) {
+                // The same glowing image the lens is sent.
+                Image(uiImage: lit).resizable().frame(width: size, height: size)
             } else if let photo = avatar(id) {
                 Image(uiImage: photo)
                     .resizable().aspectRatio(contentMode: .fill)

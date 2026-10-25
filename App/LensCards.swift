@@ -100,8 +100,7 @@ enum LensCards {
     /// with the space between filled so the card reads as tall as the half it sits in.
     static func personCard(_ person: Person, shot: LensShot, avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .column, spacing: 10) {
-            if shot.focused, let glow = glowBar { Image(image: glow, sizePreset: .fill, cornerRadius: .none) }
-            header(photo: avatar(person.id), name: person.name, width: LensFit.personWidth, bright: true)
+            header(photo: avatar(person.id), name: person.name, width: LensFit.personWidth, bright: true, focused: shot.focused)
             // Why they matter, straight under the header: every bullet that fits.
             for line in shot.primary {
                 Text(line, style: .body).flexShrink(1)
@@ -175,9 +174,8 @@ enum LensCards {
         FlexBox(direction: .row, spacing: 12) {
             for member in group.prefix(2) {
                 FlexBox(direction: .column, spacing: 8) {
-                    if member.focused, let glow = glowBar { Image(image: glow, sizePreset: .fill, cornerRadius: .none) }
                     header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
-                           width: LensFit.memberWidth(member), bright: member.speaking)
+                           width: LensFit.memberWidth(member), bright: member.speaking, focused: member.focused)
                     for line in member.lines {
                         Text(line, style: .meta).flexShrink(1)
                     }
@@ -194,11 +192,15 @@ enum LensCards {
     /// The photo on the left, sized to stand as tall as the full name beside it; everything else
     /// is bullets below. The lens has only icon-sized or filling images, so the photo fills a
     /// share of the row.
-    private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool) -> FlexBox {
+    private static func header(photo: UIImage?, name: String, width: CGFloat, bright: Bool, focused: Bool) -> FlexBox {
         let share = Float(LensFit.photoShare(width))
         return FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
             if let photo {
-                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
+                // In focus: the photo glows (baked into the image, so the glass and the phone match).
+                FlexBox(direction: .column) {
+                    if focused, let lit = glowing(photo) { Image(image: lit, sizePreset: .fill, cornerRadius: .none) }
+                    else { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
+                }
                     .flexGrow(share).flexShrink(0)
             }
             FlexBox(direction: .column) {
@@ -512,15 +514,32 @@ enum LensCards {
         }
     }
 
-    /// The in-focus mark: the lens draws no borders or glows, so a thin bright bar across the top
-    /// of the card, drawn as an image, stands in for one.
-    /// Greenish yellow, bright in the middle and fading out at the ends, like edge light.
-    static let glowBar: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 600, height: 12)).image { context in
-        let glow = UIColor(red: 0.80, green: 0.95, blue: 0.25, alpha: 1)
-        let colors = [glow.withAlphaComponent(0).cgColor, glow.cgColor, glow.cgColor, glow.withAlphaComponent(0).cgColor] as CFArray
-        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.2, 0.8, 1]) else { return }
-        UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: 600, height: 12), cornerRadius: 6).addClip()
-        context.cgContext.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 600, y: 0), options: [])
+    /// The in-focus mark: the photo inside a soft greenish-yellow glow. The lens draws no borders
+    /// or effects, so the glow is part of the image; the phone draws this same image.
+    static let glowColor = UIColor(red: 0.80, green: 0.95, blue: 0.25, alpha: 1)
+
+    static func glowing(_ photo: UIImage) -> UIImage? {
+        let side: CGFloat = 288, inset = side * 0.11, radius = side * 0.16
+        let box = CGRect(x: 0, y: 0, width: side, height: side).insetBy(dx: inset, dy: inset)
+        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { context in
+            let cg = context.cgContext
+            let shape = UIBezierPath(roundedRect: box, cornerRadius: radius)
+            // Two passes of bloom, wide then close, so the light falls off rather than stops.
+            for (blur, alpha) in [(inset * 1.6, 0.9), (inset * 0.7, 1.0)] as [(CGFloat, CGFloat)] {
+                cg.saveGState()
+                cg.setShadow(offset: .zero, blur: blur, color: glowColor.withAlphaComponent(alpha).cgColor)
+                glowColor.withAlphaComponent(0.6).setFill()
+                shape.fill()
+                cg.restoreGState()
+            }
+            // The photo on top, aspect-filled into the box.
+            cg.saveGState()
+            shape.addClip()
+            let scale = max(box.width / photo.size.width, box.height / photo.size.height)
+            let size = CGSize(width: photo.size.width * scale, height: photo.size.height * scale)
+            photo.draw(in: CGRect(x: box.midX - size.width / 2, y: box.midY - size.height / 2, width: size.width, height: size.height))
+            cg.restoreGState()
+        }
     }
 
     /// A small green tag with the count in it. The lens text has no colors, so the tag is drawn.
