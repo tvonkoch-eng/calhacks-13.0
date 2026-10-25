@@ -518,7 +518,17 @@ enum LensCards {
     /// or effects, so the glow is part of the image; the phone draws this same image.
     static let glowColor = UIColor(red: 0.80, green: 0.95, blue: 0.25, alpha: 1)
 
+    /// Made once per photo: the same bytes each time, and no redraw on every lens write.
+    nonisolated(unsafe) private static var lit = NSMapTable<UIImage, UIImage>.weakToStrongObjects()
+
     static func glowing(_ photo: UIImage) -> UIImage? {
+        if let made = lit.object(forKey: photo) { return made }
+        let made = drawGlow(photo)
+        if let made { lit.setObject(made, forKey: photo) }
+        return made
+    }
+
+    private static func drawGlow(_ photo: UIImage) -> UIImage? {
         let side: CGFloat = 288, inset = side * 0.11, radius = side * 0.16
         let box = CGRect(x: 0, y: 0, width: side, height: side).insetBy(dx: inset, dy: inset)
         return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { context in
