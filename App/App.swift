@@ -971,6 +971,7 @@ struct LensMetrics {
     let glyph = tune("mirrorGlyph", 28)
     let pad = tune("mirrorPad", 22)
     let radius = tune("mirrorRadius", 27)
+    let photo = tune("mirrorPhotoRadius", 14)
     /// The gap the real renderer leaves under the card. Measured off a captured lens frame:
     /// 30 px of a 531 px panel, which is 34 of the lens's own 600.
     let bottom = tune("mirrorBottom", 34) + LensFit.buffer
@@ -1082,9 +1083,9 @@ struct LensMirror: View {
             Image(uiImage: photo)
                 .resizable().aspectRatio(contentMode: .fill)
                 .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: 0))
+                .clipShape(RoundedRectangle(cornerRadius: m.photo))
         } else {
-            RoundedRectangle(cornerRadius: 0)
+            RoundedRectangle(cornerRadius: m.photo)
                 .fill(Color(white: 0.28)).frame(width: size, height: size)
         }
     }
@@ -1094,17 +1095,17 @@ struct LensMirror: View {
         return HStack(alignment: .center, spacing: LensFit.photoGap) {
             // Grey until the photo's write lands, as on the lens.
             if shot.photoPending && id == shot.photo {
-                RoundedRectangle(cornerRadius: 0)
+                RoundedRectangle(cornerRadius: m.photo)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
             } else if let photo = avatar(id) {
                 Image(uiImage: photo)
                     .resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: 0))
+                    .clipShape(RoundedRectangle(cornerRadius: m.photo))
             } else {
                 // No photo yet: its box holds the place, as on the lens.
-                RoundedRectangle(cornerRadius: 0)
+                RoundedRectangle(cornerRadius: m.photo)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
             }

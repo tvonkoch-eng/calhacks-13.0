@@ -227,7 +227,7 @@ enum LensCards {
                     .flexGrow(Float(LensFit.markShare))
                 }
                 FlexBox(direction: .row, spacing: LensFit.photoGap, crossAlignment: .center) {
-                    FlexBox(direction: .column) { Image(image: photo ?? placeholder ?? UIImage(), sizePreset: .fill, cornerRadius: .none) }
+                    FlexBox(direction: .column) { Image(image: photo ?? placeholder ?? UIImage(), sizePreset: .fill, cornerRadius: .medium) }
                         .flexGrow(Float(LensFit.splitPhotoShare)).flexShrink(0)
                     Text(LensFit.nameText(name, width: width), style: .heading,
                          color: bright ? .primary : .secondary).flexGrow(Float(1 - LensFit.splitPhotoShare)).flexShrink(1)
@@ -239,7 +239,7 @@ enum LensCards {
             // The photo's box is always there, a grey square until the photo lands, so the name and
             // bullets never move when it arrives.
             if let photo = photo ?? placeholder {
-                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .none) }
+                FlexBox(direction: .column) { Image(image: photo, sizePreset: .fill, cornerRadius: .medium) }
                     .flexGrow(share).flexShrink(0)
             }
             FlexBox(direction: .column) {
