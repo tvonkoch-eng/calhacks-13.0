@@ -379,7 +379,7 @@ struct ContactView: View {
                     section("History") { history(person) }.id("history")
                     if crm.consent(id) != .pending {
                         section("Recognition") {
-                            NavigationLink { EnrollView(person: person) } label: {
+                            NavigationLink { FaceGallery(person: person) } label: {
                                 HStack {
                                     Text("Face photos").font(.subheadline)
                                     Spacer()
@@ -796,6 +796,53 @@ struct PhotoPick: View {
                 if let data = try? await picked?.loadTransferable(type: Data.self), let loaded = UIImage(data: data) {
                     image = loaded
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Face photos
+
+/// Everyone's face photos as a grid: tap one to delete it, + (top left) to take or pick another.
+/// Each photo is also a sample face ID matches against, so deleting a bad one helps.
+struct FaceGallery: View {
+    @Environment(Store.self) private var store
+    let person: Person
+    @State private var doomed: Store.Shot?
+    @State private var adding = false
+
+    var body: some View {
+        let shots = store.shots[person.id] ?? []
+        ScrollView {
+            if shots.isEmpty {
+                Text("No photos yet. Tap + to take one.")
+                    .font(.subheadline).foregroundStyle(.secondary).padding(.top, 40)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 6)], spacing: 6) {
+                ForEach(shots.reversed()) { shot in
+                    Button { doomed = shot } label: {
+                        Image(uiImage: shot.image).resizable().scaledToFill()
+                            .frame(minWidth: 0, maxWidth: .infinity).aspectRatio(1, contentMode: .fit)
+                            .clipped()
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(6)
+        }
+        .navigationTitle("Face photos · \(store.samples(person.id))")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { adding = true } label: { Image(systemName: "plus") }
+            }
+        }
+        .navigationDestination(isPresented: $adding) { EnrollView(person: person) }
+        .confirmationDialog("Delete this photo?", isPresented: Binding(get: { doomed != nil }, set: { if !$0 { doomed = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let doomed { store.deleteShot(person.id, doomed.id) }
+                doomed = nil
             }
         }
     }

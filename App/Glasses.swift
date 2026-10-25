@@ -1804,11 +1804,6 @@ enum Identification {
             if track.updated == frameTime {
                 seenNow.append((match.person.id, match.score))
                 faceX[match.person.id] = track.box.midX
-                // Someone met (not the roster): every couple of seconds of being seen adds a look.
-                if clockNow.timeIntervalSince(lastLook[match.person.id] ?? .distantPast) >= 2 {
-                    lastLook[match.person.id] = clockNow
-                    store.addLook(match.person.id, track.probe)
-                }
             }
             // Toby's floor: a stream match on a face this small once named someone who wasn't there.
             guard facePx(track) >= minAnnouncePx else { continue }
@@ -1968,6 +1963,11 @@ enum Identification {
             // Someone met here, on the track they were met on or recognised again on a later one.
             let known = metTracks[track.id] ?? store.confidentMatch(track.probe).map(\.person.id)
             guard let id = known, store.isMet(id), let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
+            // Every couple of seconds in view: another look into their gallery (photo and sample).
+            if !hit.embedding.isEmpty, clockNow.timeIntervalSince(lastLook[id] ?? .distantPast) >= 2 {
+                lastLook[id] = clockNow
+                store.addShot(id, embedding: hit.embedding, image: UIImage(cgImage: hit.crop))
+            }
             let score = lookScore(hit.box, hit)
             let last = photoLook[id] ?? (0, .distantPast)
             guard score > last.score * 1.25, Date().timeIntervalSince(last.at) > 3,

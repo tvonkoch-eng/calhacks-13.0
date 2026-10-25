@@ -95,6 +95,7 @@ struct Match {
         if let data = try? Data(contentsOf: notesURL) {
             notes = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
         }
+        loadShots()
         // Installs from before the encounter log: their last sighting is their first encounter.
         for (id, date) in lastSeen where encounters[id] == nil { encounters[id] = [date] }
         hydrate()
@@ -249,6 +250,62 @@ struct Match {
         met[person.id] = person
         gallery[person.id] = [face]
         if let photo { setAvatar(person.id, photo) }
+        // Kept from the start (asked for, Oct 24): they persist, their looks build up, and they
+        // wait in People to be named. Remove them there to forget them.
+        if !saved.contains(where: { $0.id == person.id }) { saved.append(person) }
+        if let photo { addShot(person.id, embedding: nil, image: photo) }
+    }
+
+    // MARK: Face photos
+
+    /// One kept look at someone: the photo, and the face sample it gave (nil for an avatar-only shot).
+    struct Shot: Identifiable {
+        let id: UUID
+        let embedding: [Float]?
+        let image: UIImage
+    }
+
+    private(set) var shots: [String: [Shot]] = [:]
+    private func shotsDir(_ person: String) -> URL { docs.appendingPathComponent("shots/\(person)", isDirectory: true) }
+
+    /// A face photo for someone's gallery, and its sample for matching. The newest 30 are kept.
+    func addShot(_ person: String, embedding: [Float]?, image: UIImage) {
+        let shot = Shot(id: UUID(), embedding: embedding, image: image)
+        shots[person, default: []].append(shot)
+        if let embedding { gallery[person, default: []].append(embedding) }
+        let dir = shotsDir(person)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? image.jpegData(compressionQuality: 0.8)?.write(to: dir.appendingPathComponent("\(shot.id).jpg"))
+        if let embedding { try? JSONEncoder().encode(embedding).write(to: dir.appendingPathComponent("\(shot.id).json")) }
+        while (shots[person]?.count ?? 0) > 30, let oldest = shots[person]?.first { deleteShot(person, oldest.id) }
+        save()
+    }
+
+    func deleteShot(_ person: String, _ id: UUID) {
+        guard let shot = shots[person]?.first(where: { $0.id == id }) else { return }
+        shots[person]?.removeAll { $0.id == id }
+        if let embedding = shot.embedding, let i = gallery[person]?.firstIndex(of: embedding) { gallery[person]?.remove(at: i) }
+        let dir = shotsDir(person)
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(id).jpg"))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(id).json"))
+        save()
+    }
+
+    private func loadShots() {
+        let root = docs.appendingPathComponent("shots", isDirectory: true)
+        for person in (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [] {
+            let dir = shotsDir(person)
+            let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasSuffix(".jpg") }
+            let dated = files.compactMap { name -> (Date, Shot)? in
+                let url = dir.appendingPathComponent(name)
+                guard let id = UUID(uuidString: String(name.dropLast(4))), let image = UIImage(contentsOfFile: url.path) else { return nil }
+                let embedding = (try? Data(contentsOf: url.deletingPathExtension().appendingPathExtension("json")))
+                    .flatMap { try? JSONDecoder().decode([Float].self, from: $0) }
+                let date = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                return (date, Shot(id: id, embedding: embedding, image: image))
+            }
+            shots[person] = dated.sorted { $0.0 < $1.0 }.map(\.1)
+        }
     }
 
     /// Met here (not on the roster): their photo and face samples keep improving as they're seen.
@@ -358,7 +415,8 @@ struct Match {
     }
 
     func enroll(_ id: String, _ face: FaceHit) {
-        gallery[id, default: []].append(face.embedding)
+        // A photo taken or picked for them: into their gallery, where it can be seen and deleted.
+        addShot(id, embedding: face.embedding, image: UIImage(cgImage: face.crop))
         if avatars[id] == nil {
             let image = UIImage(cgImage: face.crop)
             avatars[id] = image
