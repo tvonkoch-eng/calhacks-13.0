@@ -69,7 +69,7 @@ enum LensCards {
             if hasAid { aidBox(shot) }
             FlexBox(direction: .column) {}.flexGrow(1)
             if group.count >= 2 {
-                groupRow(group, meSpeaking: meSpeaking, avatar: avatar).padding(20).background(.card)
+                groupCards(group, avatar: avatar)
             } else if let person {
                 FlexBox(direction: .row, spacing: 14, crossAlignment: .center) {
                     if let photo = avatar(person.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
@@ -123,6 +123,36 @@ enum LensCards {
     /// Everyone you're talking to, in one row: a photo and a first name each, the speech bubble in
     /// place of the photo for whoever is talking, names dimmed for the rest. Past three, "+N".
     /// "You" leads the row while the wearer talks, so the row always says who has the floor.
+    /// A conversation of several: a small card each, side by side, two at most (the caller orders
+    /// them, talking first). Photo, first name, one short line; the one talking gets the speech
+    /// bubble beside their photo.
+    static func groupCards(_ group: [Member], avatar: (String) -> UIImage?) -> FlexBox {
+        FlexBox(direction: .row, spacing: 12) {
+            for member in group.prefix(2) {
+                FlexBox(direction: .column, spacing: 6) {
+                    FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
+                        if let photo = avatar(member.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+                        if member.speaking { Icon(name: .speechBubble, style: .outline) }
+                    }
+                    Text(member.name, style: .heading)
+                    Text(short(member.headline), style: .meta, color: .secondary).flexShrink(1)
+                }
+                .padding(16)
+                .background(.card)
+                .flexGrow(1)
+                .flexShrink(1)
+            }
+        }
+    }
+
+    /// A headline cut to fit half the lens: "Founder, Rillet (YC W24)" → "Founder, Rillet…".
+    static func short(_ text: String, max: Int = 22) -> String {
+        guard text.count > max else { return text }
+        let cut = text.prefix(max)
+        let word = cut.lastIndex(of: " ").map { String(cut[..<$0]) } ?? String(cut)
+        return word.trimmingCharacters(in: CharacterSet(charactersIn: " ,·-")) + "\u{2026}"
+    }
+
     static func groupRow(_ group: [Member], meSpeaking: Bool, avatar: (String) -> UIImage?) -> FlexBox {
         let shown = Array(group.prefix(3))
         return FlexBox(direction: .row, spacing: 18, crossAlignment: .center) {
