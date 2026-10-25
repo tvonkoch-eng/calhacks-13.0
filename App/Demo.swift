@@ -7,7 +7,7 @@ import Observation
 @MainActor @Observable
 final class Demo {
     enum Step: Int, CaseIterable {
-        case look = 1, name, jarvis, talk, done
+        case look = 1, name, done
     }
 
     var on: Bool = (UserDefaults.standard.object(forKey: "DemoMode") as? Bool) ?? true {
@@ -25,16 +25,13 @@ final class Demo {
         switch step {
         case .look: return "Task 1: Look at someone to create a new contact!"
         case .name: return "Task 2: Ask someone their name to get their information!"
-        case .jarvis: return "Tip: Ask Jarvis any question!"
-        case .talk: return "Tip: Talk to people to see how it works in convo!"
         case .done: return nil
         }
     }
 
-    /// Jarvis is held back until its tip.
-    var allowsJarvis: Bool { !on || step.rawValue >= Step.jarvis.rawValue }
-    /// Auto answers, definitions and suggestions are held back until the last tip.
-    var allowsAnswers: Bool { !on || step.rawValue >= Step.talk.rawValue }
+    /// Jarvis and the auto answers wait until both tasks are done.
+    var allowsJarvis: Bool { !on || step == .done }
+    var allowsAnswers: Bool { !on || step == .done }
 
     func reset() {
         step = .look
@@ -58,19 +55,19 @@ final class Demo {
     /// A name was filled in from the conversation, for whoever is in view.
     func named(_ id: String) {
         guard on, step == .name else { return }
-        go(.jarvis)
+        go(.done)
     }
 
     /// Their profile got a bullet: no tip waits on it now.
     func learned(_ id: String) {}
 
-    func jarvisAnswered() { if on, step == .jarvis { go(.talk) } }
-    func answered() { if on, step == .talk { go(.done) } }
+    func jarvisAnswered() {}
+    func answered() {}
 
     #if targetEnvironment(simulator)
     /// What Next step stands in for in the simulator, per tip (`Assistant.demoDrive`).
     static let simulated: [Step: String] = [
-        .look: "meet?photo=toby_01", .name: "name?n=Toby", .jarvis: "jarvis", .talk: "answer",
+        .look: "meet?photo=toby_01", .name: "name?n=Toby",
     ]
     #endif
 
