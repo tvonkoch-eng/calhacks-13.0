@@ -169,44 +169,60 @@ enum Tools {
         return text.isEmpty || text.uppercased().hasPrefix("SKIP") || Answerer.refuses(text) ? .skip : .answer(text)
     }
 
+    /// A tool call's arguments, parsed; empty when they aren't a JSON object.
+    static func arguments(_ json: String) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]) ?? [:]
+    }
+
     // MARK: - Jarvis: a few rounds of thinking with the tools
 
-    /// "Jarvis, …": slower and smarter than `decide`. The model may use the tools over several
-    /// rounds (look something up, then use what it found), and answers in up to two sentences.
-    /// Each tool call is reported through `step` first, for the lens. Results go back as notes in
-    /// the next round's message, so any provider works, tool-call ids or not.
-    static func think(_ request: String, context: String, personal: String, toolbox: any Toolbox,
-                      model: Aid.Model, rounds: Int = 4,
+    /// Jarvis's brief. Self-contained: it says what Jarvis knows, how to work, how to answer.
+    static func jarvisPrompt(wearer: String, now: String, place: String) -> String {
+        """
+        You are Jarvis, the assistant in \(wearer)'s smart glasses. They asked you out loud, by \
+        name, often in the middle of a conversation, and they're waiting.
+
+        What you have:
+        - Their own record (in the message): everyone they've met, what was said, what they \
+        promised and are owed, who is on their list and what those people do. Anything about \
+        their life or the people around them is answered from it, by name.
+        - The conversation so far, if there is one.
+        - Tools: their device (where they are, weather, places nearby, reminders, calendar), \
+        research (the web, for anything public that is recent or specific), and their record \
+        (remember a fact, set a follow-up, save a contact).
+
+        How to work: use a tool for anything you would otherwise guess, and another if the \
+        first result raises the next question. Never research a person by name: what is known \
+        about people is their record. Asked to remember, remind or save, do it with the tool.
+
+        How to answer: it is shown on their lens and spoken in their ear. At most two short \
+        sentences (40 words): the answer first, then the one detail that makes it useful. Speak \
+        to them as "you". US units. No preamble; never mention tools, searches, notes or the \
+        record. If you can't find it, say so in a few words.
+
+        It is \(now).\(place)
+        """
+    }
+
+    /// "Jarvis, …": the model works the request over up to `rounds` turns, calling tools (a
+    /// round's calls run together) and reading their results, then answers. The last turn has
+    /// no tools, so it always ends in an answer. `step` gets each round's work, for the lens.
+    static func think(_ request: String, context: String, personal: String, wearer: String,
+                      toolbox: any Toolbox, model: Aid.Model, rounds: Int = 4,
                       step: @escaping @Sendable (String) async -> Void) async throws -> String {
         let now = Date().formatted(.dateTime.weekday(.wide).month(.wide).day().year().hour().minute())
+            + ", " + TimeZone.current.identifier
         let place = await toolbox.whereabouts().map { " They are \($0)." } ?? ""
-        let research = toolbox.definitions.contains("\"research\"")
-        let system = """
-            You are Jarvis, the assistant in the wearer's smart glasses. They asked you by name, so \
-            take a moment and get it right: use the tools when they help, more than one if the \
-            first result raises the next question, then answer. Answer from wherever the answer lives:
-            \(sources(research: research, personal: !personal.isEmpty))
-
-            Your answer is shown on their lens and read aloud in their ear: at most two short \
-            sentences (40 words), the answer first, then the one thing that makes it useful. Speak \
-            to them as "you". US units. No preamble, no "based on", never mention notes, tools or \
-            the record. If nothing can answer it, say so in a few words.
-            It is \(now), \(TimeZone.current.identifier).\(place)
-            """
+        let user = (personal.isEmpty ? "" : "Their record:\n\(personal)\n\n")
+            + (context.isEmpty ? "" : "The conversation so far:\n\(context)\n\n") + "They asked you: \(request)"
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": jarvisPrompt(wearer: wearer, now: now, place: place)],
+            ["role": "user", "content": user],
+        ]
         let tools = try? JSONSerialization.jsonObject(with: Data(toolbox.definitions.utf8))
-        var notes: [String] = []
         for round in 0..<rounds {
             let last = round == rounds - 1
-            var user = (personal.isEmpty ? "" : "Their own record:\n\(personal)\n\n")
-                + (context.isEmpty ? "" : "Conversation so far:\n\(context)\n\n") + "Request: \(request)"
-            if !notes.isEmpty {
-                user += "\n\nWhat you've found so far:\n" + notes.map { "- \($0)" }.joined(separator: "\n")
-                    + (last ? "\n\nAnswer now." : "\n\nAnswer, or use another tool if you still need to.")
-            }
-            var body: [String: Any] = [
-                "model": model.model,
-                "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
-            ]
+            var body: [String: Any] = ["model": model.model, "messages": messages]
             if !last, let tools {
                 body["tools"] = tools
                 body["tool_choice"] = "auto"
@@ -217,17 +233,33 @@ enum Tools {
                 let text = (reply.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 return text.isEmpty || text.uppercased().hasPrefix("SKIP") ? "I'm not sure." : text
             }
-            // At most two calls a round; the same call twice is one.
-            var seen = Set<String>()
-            for call in reply.calls.prefix(2) where seen.insert(call.name + call.arguments).inserted {
-                await step(toolbox.working(call.name, arguments: call.arguments))
-                do {
-                    let result = try await toolbox.run(call.name, arguments: call.arguments)
-                    let found = [result.title, result.detail].filter { !$0.isEmpty }.joined(separator: ". ")
-                    notes.append("\(call.name) \(call.arguments) → \(found.isEmpty ? "nothing found" : found)")
-                } catch {
-                    notes.append("\(call.name) \(call.arguments) → failed: \(error.localizedDescription)")
+            // Its own turn goes back as it was, then one result per call, matched by id.
+            let calls = reply.calls.prefix(3).enumerated().map { i, call in
+                (id: i < reply.ids.count && !reply.ids[i].isEmpty ? reply.ids[i] : "call_\(round)_\(i)",
+                 name: call.name, arguments: call.arguments)
+            }
+            messages.append(["role": "assistant", "content": reply.content ?? NSNull(),
+                             "tool_calls": calls.map { ["id": $0.id, "type": "function",
+                                                        "function": ["name": $0.name, "arguments": $0.arguments]] }])
+            await step(calls.map { toolbox.working($0.name, arguments: $0.arguments) }.joined(separator: " \u{00B7} "))
+            let results = await withTaskGroup(of: (Int, String).self) { group in
+                for (i, call) in calls.enumerated() {
+                    group.addTask {
+                        do {
+                            let result = try await toolbox.run(call.name, arguments: call.arguments)
+                            let found = [result.title, result.detail].filter { !$0.isEmpty }.joined(separator: ". ")
+                            return (i, found.isEmpty ? "Nothing found." : found)
+                        } catch {
+                            return (i, "Failed: \(error.localizedDescription)")
+                        }
+                    }
                 }
+                var out = [String](repeating: "", count: calls.count)
+                for await (i, text) in group { out[i] = text }
+                return out
+            }
+            for (call, result) in zip(calls, results) {
+                messages.append(["role": "tool", "tool_call_id": call.id, "content": result])
             }
         }
         return "I'm not sure."
@@ -249,6 +281,8 @@ enum Tools {
             return ["max_tokens": budget, "reasoning_effort": "none", "temperature": 0]
         }
         if model.provider == .anthropic { return ["max_tokens": budget, "reasoning_effort": effort] }
+        // Muse Spark always reasons; give it room, or the answer comes back empty.
+        if model.provider == .muse { return ["max_tokens": budget * 3, "reasoning_effort": effort] }
         return ["max_tokens": budget, "temperature": 0]
     }
 
@@ -371,7 +405,7 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
 
     let definitions: String
 
-    private static let research = """
+    static let research = """
       {"type": "function", "function": {"name": "research",
         "description": "Public facts from the web: news and anything recent, prices, scores, opening hours, a company's or product's public details, places matching conditions (open late, quiet, vegetarian). Never a person, and nothing only the people talking would know. Takes several seconds.",
         "parameters": {"type": "object", "properties": {"task": {"type": "string", "description": "The full task, self-contained: 'her company' or 'that bill' resolved from the conversation, 'near here' replaced by where they are, and no names of the people talking"}}, "required": ["task"]}}}
@@ -718,7 +752,10 @@ final class ExtraTools: Toolbox, @unchecked Sendable {
     }
 
     var definitions: String {
-        var all = (try? JSONSerialization.jsonObject(with: Data(base.definitions.utf8)) as? [Any]) ?? []
+        // An extra replaces a base tool of the same name (Jarvis's research reads raw findings).
+        let names = Set(extras.map(\.name))
+        var all = ((try? JSONSerialization.jsonObject(with: Data(base.definitions.utf8)) as? [[String: Any]]) ?? [])
+            .filter { !names.contains((($0["function"] as? [String: Any])?["name"] as? String) ?? "") } as [Any]
         all += extras.compactMap { try? JSONSerialization.jsonObject(with: Data($0.definition.utf8)) }
         guard let data = try? JSONSerialization.data(withJSONObject: all) else { return base.definitions }
         return String(decoding: data, as: UTF8.self)

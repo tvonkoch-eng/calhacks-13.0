@@ -176,6 +176,19 @@ do {
     check(s4.closed == ["How large is the moon?"], "a trailing question mark closes")
 }
 
+// Jarvis's loop on Claude: its own tool calls and their results translate to Claude blocks.
+do {
+    let call = Claude.message(["role": "assistant", "content": NSNull(), "tool_calls": [["id": "toolu_1", "type": "function",
+                               "function": ["name": "weather", "arguments": "{\"when\": \"tonight\"}"]]]])
+    let blocks = call["content"] as? [[String: Any]] ?? []
+    check(blocks.count == 1 && blocks[0]["type"] as? String == "tool_use" && blocks[0]["id"] as? String == "toolu_1"
+          && (blocks[0]["input"] as? [String: Any])?["when"] as? String == "tonight", "a tool call becomes tool_use")
+    let result = Claude.message(["role": "tool", "tool_call_id": "toolu_1", "content": "57°F, clear"])
+    let block = (result["content"] as? [[String: Any]])?.first
+    check(result["role"] as? String == "user" && block?["type"] as? String == "tool_result"
+          && block?["tool_use_id"] as? String == "toolu_1", "a tool result becomes tool_result")
+}
+
 // Jarvis's panel: steps tick off, the answer replaces them, then it goes on its own clock.
 do {
     let t = Date(timeIntervalSince1970: 1_000_000)

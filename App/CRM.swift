@@ -749,7 +749,7 @@ struct Reminder: Codable, Identifiable, Equatable {
                    "fact": {"type": "string", "description": "The fact, short, in the third person: 'Hiring a founding engineer'"}},
                   "required": ["fact"]}}}
                 """, working: "Saving it") { @MainActor [weak self] json in
-                let a = CRM.toolArgs(json)
+                let a = Tools.arguments(json)
                 do {
                     guard let self else { throw CancellationError() }
                     let fact = (a["fact"] as? String ?? "").trimmingCharacters(in: .whitespaces)
@@ -770,7 +770,7 @@ struct Reminder: Codable, Identifiable, Equatable {
                    "days": {"type": "integer", "description": "Due in this many days: 0 today, 1 tomorrow (the default)"}},
                   "required": ["task"]}}}
                 """, working: "Setting a follow-up") { @MainActor [weak self] json in
-                let a = CRM.toolArgs(json)
+                let a = Tools.arguments(json)
                 do {
                     guard let self else { throw CancellationError() }
                     let task = (a["task"] as? String ?? "").trimmingCharacters(in: .whitespaces)
@@ -790,7 +790,7 @@ struct Reminder: Codable, Identifiable, Equatable {
                  "parameters": {"type": "object", "properties": {\(person),
                    "name": {"type": "string", "description": "Their name, if the wearer said it"}}}}}
                 """, working: "Saving the contact") { @MainActor [weak self] json in
-                let a = CRM.toolArgs(json)
+                let a = Tools.arguments(json)
                 do {
                     guard let self else { throw CancellationError() }
                     let name = (a["name"] as? String)?.trimmingCharacters(in: .whitespaces)
@@ -804,10 +804,6 @@ struct Reminder: Codable, Identifiable, Equatable {
                 }
             },
         ]
-    }
-
-    nonisolated static func toolArgs(_ json: String) -> [String: Any] {
-        (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]) ?? [:]
     }
 
     /// Names likely to come up at the event right now, for speech recognition keywords so they're

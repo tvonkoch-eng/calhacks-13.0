@@ -47,6 +47,9 @@ struct LensShot: Equatable {
         var answer: String?
     }
     var jarvis: JarvisText?
+    /// A Jarvis answer too long for the top third has the whole lens; the people come back when
+    /// its panel goes.
+    var peopleYield = false
     var name: String?
     var headline: String?
     /// One line of context under the person at the bottom of the split lens.
@@ -88,6 +91,7 @@ enum LensCards {
                       photoPending: Bool = false, focused: Bool = false, avatar: (String) -> UIImage?) -> FlexBox {
         var shot = Self.shot(split: view, person: person, group: group, meSpeaking: meSpeaking)
         shot.focused = focused
+        let person = shot.peopleYield ? nil : person, group = shot.peopleYield ? [] : group
         let gap = LensFit.gap(shot, bottom: bottom(person: person, group: group))
         return FlexBox(direction: .column, spacing: LensFit.spacing) {
             for (index, card) in shot.cards.enumerated() { cardBox(card, newest: index == 0) }
@@ -451,6 +455,21 @@ enum LensCards {
     static func shot(split view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false) -> LensShot {
         var shot = shot(aid: view, person: person, group: group, meSpeaking: meSpeaking)
         shot.kind = .split
+        var person = person, group = group
+        let wanted = bottom(person: person, group: group)
+        // Measured at its smallest (no cards, no question echo): the trimming in `fit` gets the
+        // panel that far before the people have to go.
+        var answerOnly = shot
+        answerOnly.cards = []
+        answerOnly.jarvis?.asked = ""
+        answerOnly.jarvis?.steps = []
+        if shot.jarvis?.answer != nil, wanted != .none, LensFit.content(answerOnly, bottom: wanted) > LensFit.room(wanted) {
+            shot.peopleYield = true
+            shot.group = []
+            shot.photo = nil
+            person = nil
+            group = []
+        }
         // What doesn't fit goes here, once, so the glass and the mirror drop the same thing.
         _ = LensFit.fit(&shot, bottom: bottom(person: person, group: group))
         if group.count >= 2 {

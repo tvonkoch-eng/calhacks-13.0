@@ -1027,7 +1027,19 @@ enum Talk {
     /// still thinking. Runs on `config.jarvis`, a bigger model than the passing answers.
     private func jarvisRound(_ request: String) {
         guard let base = config.toolbox, let model = config.jarvis ?? config.answers ?? config.backup else { return }
-        let toolbox: any Toolbox = jarvisTools.isEmpty ? base : ExtraTools(base: base, extras: jarvisTools)
+        var extras = jarvisTools
+        // Research hands Jarvis what was found, not a six-word card: the model reads it itself.
+        if let researcher = config.researcher {
+            extras.append(ExtraTool(name: "research", definition: DeviceTools.research,
+                                    working: researcher.name.contains("Fetch") ? "Asking Fetch.ai" : "Searching the web") { json in
+                let task = Tools.arguments(json)["task"] as? String ?? ""
+                guard !task.isEmpty else { return ToolResult(title: "No task given.", detail: "", icon: "") }
+                let finding = try await researcher.research(task, context: "")
+                return ToolResult(title: String(finding.prefix(4000)), detail: "", icon: "")
+            })
+        }
+        let toolbox: any Toolbox = extras.isEmpty ? base : ExtraTools(base: base, extras: extras)
+        let wearer = config.wearer
         let started = Date()
         jarvisTask?.cancel()
         compositor.startJarvis(Self.echo(request), at: started)
@@ -1050,12 +1062,12 @@ enum Talk {
             var answer: String
             do {
                 do {
-                    answer = try await Tools.think(request, context: context, personal: record, toolbox: toolbox, model: model, step: step)
+                    answer = try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: model, step: step)
                 } catch where fallback != nil && !Task.isCancelled {
                     // The big model is down or rate-limited: the fast one still answers.
                     await MainActor.run { self?.log(.status, "Jarvis on the fast model: \(error.localizedDescription)") }
                     used = fallback!
-                    answer = try await Tools.think(request, context: context, personal: record, toolbox: toolbox, model: used, step: step)
+                    answer = try await Tools.think(request, context: context, personal: record, wearer: wearer, toolbox: toolbox, model: used, step: step)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -1540,9 +1552,13 @@ extension Aid.Config {
         let backupProvider = Provider(rawValue: value("BackupProvider")?.lowercased() ?? "") ?? .openai
         let backup = value("BackupAPIKey").map { Aid.Model(provider: backupProvider, key: $0, model: value("BackupModel") ?? backupProvider.model) }
         let answers = answerKey.map { Aid.Model(provider: answerProvider, key: $0, model: value("AnswerModel") ?? answerProvider.model) }
-        let jarvisProvider = Provider(rawValue: value("JarvisProvider")?.lowercased() ?? "")
+        // JARVIS_* in the environment wins, for comparing models on the Mac without a rebuild.
+        let env = ProcessInfo.processInfo.environment
+        let jarvisProvider = Provider(rawValue: (env["JARVIS_PROVIDER"] ?? value("JarvisProvider"))?.lowercased() ?? "")
         let jarvis = jarvisProvider.flatMap { provider in
-            value("JarvisAPIKey").map { Aid.Model(provider: provider, key: $0, model: value("JarvisModel") ?? provider.model) }
+            (env["JARVIS_API_KEY"] ?? value("JarvisAPIKey")).map {
+                Aid.Model(provider: provider, key: $0, model: env["JARVIS_MODEL"] ?? value("JarvisModel") ?? provider.model)
+            }
         }
         // Cutting a finding down to a card wants the fastest model with calls to spare: the answer
         // model when it's uncapped (qwen on Cerebras: 450/min), else the backup.
