@@ -178,6 +178,38 @@ struct Answerer {
     /// answer needs the web.
     /// `context` is the last few lines of the conversation, so "when did it come out" can resolve
     /// "it". `provider`, `key` and `model` default to the app's configuration.
+    /// "How much did they raise?" → "How much did Legora raise in its latest round?": the question
+    /// rewritten to stand alone from the conversation, so the answer and any search are about the
+    /// right thing. "SKIP" when it is about the people talking or the conversation never says what
+    /// it refers to.
+    static func standalone(_ question: String, context: String, provider: Provider, key: String, model: String) async throws -> String? {
+        var body: [String: Any] = [
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                ["role": "system", "content": """
+                    Someone in a live conversation just asked a question that refers back to \
+                    something said earlier ("they", "it", "that bill", "the company"). Rewrite it as \
+                    one short question that stands alone, naming exactly what it refers to from the \
+                    conversation (the company, product, law, place, person in the news). The \
+                    transcript is live speech recognition, so names may be misheard: use the name \
+                    that was clearly meant. Reply with the question only. Reply exactly SKIP if it \
+                    is about the people talking themselves, or if the conversation never says what \
+                    it refers to. Never guess a referent.
+                    """],
+                ["role": "user", "content": "Conversation:\n\(context)\n\nQuestion: \(question)"],
+            ],
+        ]
+        if model.contains("gpt-oss") { body.merge(["max_tokens": 300, "reasoning_effort": "low"]) { _, new in new } }
+        else if model.contains("qwen") { body.merge(["max_tokens": 60, "reasoning_effort": "none"]) { _, new in new } }
+        else { body["max_tokens"] = 60 }
+        let text = try await LLM.complete(provider.endpoint, key: key, body: body, timeout: 4)
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"")))
+        if text.isEmpty { return nil }
+        if text.uppercased().hasPrefix("SKIP") { return "SKIP" }
+        return text.hasSuffix("?") ? text : text + "?"
+    }
+
     static func stream(_ question: String, context: String = "", provider: Provider = provider,
                        key: String? = key, model: String = model) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in

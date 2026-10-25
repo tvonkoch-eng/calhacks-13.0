@@ -178,6 +178,22 @@ enum Talk {
                 " you know how ", " is there ", " are there ", " can you ", " could you ", " tell me "].contains { t.contains($0) }
     }
 
+    /// "How much did they raise?", "when did that pass", "who runs the company": the question leans on
+    /// something said earlier, so on its own it can't be answered or searched. Phrases where the
+    /// word points at nothing ("is there", "what time is it") don't count.
+    static func needsContext(_ question: String) -> Bool {
+        var q = " " + normalized(question) + " "
+        for idiom in [" is there ", " are there ", " was there ", " were there ", " what time is it ", " what day is it ",
+                      " how far is it from ", " is it true ", " over there ", " out there "] {
+            q = q.replacingOccurrences(of: idiom, with: " ")
+        }
+        let pointers = [" it ", " its ", " they ", " them ", " their ", " that ", " this ", " those ", " these ",
+                        " he ", " him ", " his ", " she ", " her ", " there ", " the company ", " the startup ",
+                        " the guy ", " the bill ", " the thing ", " the one ", " the same ", " the other ", " the place ",
+                        " the book ", " the movie ", " the show ", " the paper ", " the law ", " the deal "]
+        return pointers.contains { q.contains($0) }
+    }
+
     /// "Who won the most recent Turing Award", "the latest on the GENIUS Act", "the current CEO": a
     /// question whose answer changes, so memory can't be trusted with it.
     static func wantsNow(_ question: String) -> Bool {
@@ -640,6 +656,12 @@ enum Talk {
             if endpointed { commit(nil) }
             return
         }
+        // "How much did they raise?": who "they" are was said earlier. Wait for the whole question,
+        // rewrite it to stand alone from the last few minutes, then answer that.
+        if !resolvedPass, Talk.needsContext(candidate.text), Answerer.local(candidate.text) == nil {
+            if endpointed { resolveThenAnswer(candidate.text, mine: mine) }
+            return
+        }
         if config.explicitOnly, endpointed, !text.trimmed.hasSuffix("?"), candidate.confidence != .strong {
             abandon()
             return
@@ -674,6 +696,39 @@ enum Talk {
         }
         guard candidate.confidence == .strong else { return }
         if firedText.isEmpty || shouldRefire(candidate.text) { fire(candidate.text) }
+    }
+
+    /// Set while a rewritten question goes back through `answerHeard`, so it isn't rewritten again.
+    @ObservationIgnored private var resolvedPass = false
+    @ObservationIgnored private var resolving: String?
+
+    private func resolveThenAnswer(_ question: String, mine: Bool) {
+        guard resolving != question, let using = model(config.answers, blockedUntil: answersBlockedUntil) ?? config.backup else { return }
+        resolving = question
+        // Far more of the conversation than a plain answer gets: the referent can be minutes back.
+        let context = self.context(last: 30)
+        let started = Date()
+        Task { [weak self] in
+            let standalone = try? await Answerer.standalone(question, context: context, provider: using.provider,
+                                                            key: using.key, model: using.model)
+            guard let self else { return }
+            self.resolving = nil
+            switch standalone {
+            case nil:
+                // The rewrite failed: the question as said, with the conversation as context, still
+                // beats nothing.
+                self.resolvedPass = true
+                self.answerHeard(question + "?", endpointed: true, mine: mine)
+                self.resolvedPass = false
+            case let text? where text == "SKIP":
+                self.log(.status, "Skipped \"\(question)\": personal, or the conversation doesn't say what it means")
+            case let text?:
+                self.log(.status, "Resolved \"\(question)\" → \(text) · \(self.ms(since: started)) ms")
+                self.resolvedPass = true
+                self.answerHeard(text, endpointed: true, mine: mine)
+                self.resolvedPass = false
+            }
+        }
     }
 
     private func shouldRefire(_ text: String) -> Bool {
