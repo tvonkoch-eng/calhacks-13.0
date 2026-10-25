@@ -1873,7 +1873,8 @@ enum Identification {
         // Who the wearer is facing, for the aid: the clearest match in view right now.
         let looking = seenNow.max { $0.score < $1.score }?.id
         if looking != facing { facing = looking }
-        detecting = seenNow.isEmpty && inView.contains { facePx($0) >= minAnnouncePx }
+        // Any face big enough to name that nobody matches yet, alongside known ones or not.
+        detecting = inView.contains { facePx($0) >= minAnnouncePx && store.confidentMatch($0.probe) == nil && metTracks[$0.id] == nil }
         if seenNow.isEmpty { noticeStranger(inView, image: image, store: store) }
         betterLooks(inView, hits: scan.hits, image: image, store: store)
         guard let chosen, allowed else {
@@ -2464,14 +2465,21 @@ enum Identification {
         let prompt = demo.prompt
         LensFit.topLine = prompt == nil ? 0 : LensFit.taskLine
         var body = lensBody()
-        // A face in view that isn't anyone yet: a blank card until it's found.
-        if detecting, lensPeople.isEmpty, !identifying {
-            lensShot?.detecting = true
-            body = FlexBox(direction: .column, spacing: 0) {
-                FlexBox(direction: .column) {}.flexGrow(1)
-                LensCards.detectingCard()
+        // A face in view that isn't anyone yet: a new person's own card, photo box grey and
+        // "Detecting face" for the name, until face ID or the stranger path names them. Beside
+        // whoever is already on the lens, as the second card of the split.
+        if detecting, !identifying, lensPeople.count < 2 {
+            let unknown = Person(id: "detecting", name: "Detecting face", role: "", source: "")
+            let avatar: (String) -> UIImage? = { [store] in $0 == unknown.id ? nil : store?.lensAvatar($0) }
+            if let shown = lensPeople.first.flatMap({ id in store?.contacts.first { $0.id == id } }) {
+                var members = [member(shown, share: 0.5), member(unknown, share: 0.5)]
+                members[0].focused = inView(shown.id)
+                lensShot = LensCards.shot(split: aidLens, person: nil, group: members, meSpeaking: meSpeaking)
+                body = LensCards.split(aidLens, person: nil, group: members, meSpeaking: meSpeaking, avatar: avatar)
+            } else {
+                lensShot = LensCards.shot(split: aidLens, person: unknown, meSpeaking: meSpeaking)
+                body = LensCards.split(aidLens, person: unknown, meSpeaking: meSpeaking, avatar: avatar)
             }
-            .flexGrow(1)
         }
         guard let prompt else { return body }
         lensShot?.demoPrompt = prompt

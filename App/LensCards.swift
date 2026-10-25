@@ -81,8 +81,6 @@ struct LensShot: Equatable {
     var focused = false
     /// Demo mode: the prompt line at the top, and the recognizing card's dots while it looks.
     var demoPrompt: String?
-    /// A face in view, not yet anyone: the blank "Detecting face" card.
-    var detecting = false
 }
 
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
@@ -116,18 +114,6 @@ enum LensCards {
             }
         }
         .flexGrow(1)
-    }
-
-    /// A face in view that isn't anyone yet: the person card's shape, the photo's box blank.
-    static func detectingCard() -> FlexBox {
-        FlexBox(direction: .row, spacing: 16, crossAlignment: .center) {
-            FlexBox(direction: .column) { Text(" ", style: .heading) }
-                .padding(28)
-                .background(.card)
-            Text("Detecting face", style: .heading)
-        }
-        .padding(22)
-        .background(.card)
     }
 
     /// The bottom half, one person: the photo at the top, the name and what they do at the foot,

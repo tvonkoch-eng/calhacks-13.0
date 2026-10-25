@@ -1025,20 +1025,9 @@ struct LensMirror: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .modifier(GlassText())
                 }
-                if shot.detecting {
-                    Spacer(minLength: 0)
-                    HStack(spacing: 16) {
-                        RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.25)).frame(width: 72, height: 72)
-                        Text("Detecting face").font(.system(size: m.body * 1.3))
-                        Spacer(minLength: 0)
-                    }
-                    .padding(m.pad)
-                    .modifier(LensCardBackground(radius: m.radius))
-                } else {
                 if shot.kind != .split { Spacer(minLength: 0) }
                 // The split fills the panel: the aid on top, the people in the bottom half.
                 card.frame(maxHeight: shot.kind == .split ? .infinity : nil, alignment: .top)
-                }
                 Color.clear.frame(height: m.bottom)
             }
             .frame(width: LensMetrics.canvas, height: LensMetrics.canvas, alignment: shot.kind == .split ? .top : .bottom)
