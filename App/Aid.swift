@@ -1056,14 +1056,18 @@ enum Talk {
         // Not a term an answer card just covered: "what's Cohen's kappa?" got an answer and then the
         // same thing again as a definition.
         let answered = now.timeIntervalSince(answeredAt) < 15 ? Talk.normalized(answeredText) : ""
-        for term in advice.define where !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + term.meaning)) })
+        for term in advice.define where !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + (term.meaning ?? ""))) })
             && term.term.count >= 3 && Talk.mentioned(term.term, in: recent) && !Talk.mentioned(term.term, in: answered)
-            && !unsure.contains(where: term.meaning.lowercased().contains)
             && !Talk.asks(lines.last?.text ?? "") {   // a question gets an answer, not a definition
             defined.append(term.term)
+            // No meaning, or one the coach isn't sure of: search for it instead of guessing.
+            guard let meaning = term.meaning, !unsure.contains(where: meaning.lowercased().contains) else {
+                lookUp("What is \(term.term)?")
+                continue
+            }
             nextCard += 1
-            compositor.show(Card(kind: .definition, title: term.term, detail: term.meaning, id: nextCard), at: now)
-            log(.define, term.term, detail: term.meaning)
+            compositor.show(Card(kind: .definition, title: term.term, detail: meaning, id: nextCard), at: now)
+            log(.define, term.term, detail: meaning)
         }
         // The recognizer garbled a request the gate or the answer model let go: the coach's clean
         // version goes to the tool model (answer, device tool or Fetch), unless something already
