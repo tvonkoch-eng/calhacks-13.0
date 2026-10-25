@@ -1896,9 +1896,9 @@ enum Identification {
     /// Below this best score against everyone known, a face is nobody we know. ArcFace puts
     /// strangers near 0 and the same person at 0.4+.
     @ObservationIgnored private var strangerBelow: Float { Tuning.float("strangerBelow", 0.22) }
-    /// Track id -> contact id for faces met this session, and how good their photo's look was.
+    /// Track id -> contact id for faces met this session, and when each last had a headshot tried.
     @ObservationIgnored private var metTracks: [Int: String] = [:]
-    @ObservationIgnored private var photoLook: [String: (score: Float, at: Date)] = [:]
+    @ObservationIgnored private var photoTried: [String: Date] = [:]
     @ObservationIgnored private var lastMet = Date.distantPast
     /// Contacts the stranger path made during a replay: taken back out when it finishes
     /// (`onReplayFinished`), so a test doesn't leave "New person" contacts behind.
@@ -1926,7 +1926,10 @@ enum Identification {
         let photo = headshot(image, box: track.box)
         guard let id = onStranger(track.probe, photo) else { return }
         metTracks[track.id] = id
-        photoLook[id] = (lookScore(track.box, track.best), Date())
+        // Whatever it scores, it's their only photo: kept, with the bar a later look has to clear.
+        let first = photo.map { photoScore(lookScore(track.box, track.best), $0) ?? 0 } ?? 0
+        if let photo { store.setAvatar(id, photo, score: first) }
+        photoTried[id] = Date()
         lastMet = clockNow
         if replaying { replayMet.append(id) }
         SpeedLog.record(["event": "metNew", "person": id, "track": track.id, "looks": track.looks,
@@ -1980,18 +1983,34 @@ enum Identification {
                 store.addShot(id, embedding: hit.embedding, image: UIImage(cgImage: hit.crop), score: score)
             }
             // The profile photo only upgrades itself for people met here; the roster keeps theirs.
+            // The bar is the saved photo's score, so it survives a relaunch: only ever upward.
             guard store.isMet(id) else { continue }
-            let last = photoLook[id] ?? (0, .distantPast)
-            guard score > last.score * 1.25, Date().timeIntervalSince(last.at) > 3,
+            let bar = store.avatarScore(id) * 1.25
+            // The look alone is an upper bound on the photo score (capture quality is at most 1),
+            // so a look that can't win skips the Vision pass; one that might is checked at most
+            // every 3 s, won or lost.
+            guard score > bar, Date().timeIntervalSince(photoTried[id] ?? .distantPast) > 3,
                   let photo = headshot(image, box: hit.box) else { continue }
-            store.setAvatar(id, photo)
-            photoLook[id] = (score, Date())
+            photoTried[id] = Date()
+            guard let full = photoScore(score, photo), full > bar else { continue }
+            store.setAvatar(id, photo, score: full)
+            SpeedLog.record(["event": "betterPhoto", "person": id,
+                             "from": (Double(bar / 1.25) * 1000).rounded() / 1000,
+                             "to": (Double(full) * 1000).rounded() / 1000])
             if onCard == id { renderLens() }
         }
     }
 
     private func lookScore(_ box: CGRect, _ hit: FaceHit) -> Float {
         Float(box.width) * hit.sharpness * hit.quality
+    }
+
+    /// How good a profile photo a headshot makes: the look (size, sharpness, facing you) times
+    /// Vision's capture quality, which also sees a hand or a cup over the face, a squint, bad
+    /// light. Nil when Vision can't find a face in it at all: covered or turned away.
+    private func photoScore(_ look: Float, _ photo: UIImage) -> Float? {
+        guard let cg = photo.cgImage, let capture = FaceEngine.captureQuality(cg) else { return nil }
+        return look * capture
     }
 
     /// Head and shoulders around a face box (normalised, y-up like the frame), square.
