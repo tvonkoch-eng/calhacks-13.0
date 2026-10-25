@@ -95,8 +95,8 @@ enum Identification {
     }
 
     /// Rewrites the lens when who is in frame changes the group row (two in view, or back to one).
-    /// Who's on the lens, oldest first. A new face joins; a third pushes the oldest off; anyone
-    /// unseen for `groupHolds` times out. First in, first out.
+    /// Who's on the lens. A new face joins; a third replaces whoever was seen longest ago; anyone
+    /// unseen for `groupHolds` times out.
     @ObservationIgnored private var lensPeople: [String] = []
 
     /// Each person's side once two share the lens (0 left, 1 right). Fixed until they leave it, so
@@ -105,7 +105,15 @@ enum Identification {
 
     private func updateLensPeople(seen: [String]) {
         for id in seen where !lensPeople.contains(id) { lensPeople.append(id) }
-        if lensPeople.count > 2 { lensPeople.removeFirst(lensPeople.count - 2) }
+        // A third face replaces whoever was seen longest ago (not whoever came first); the newcomer
+        // takes their side.
+        while lensPeople.count > 2 {
+            let staying = Set(seen)
+            let candidates = lensPeople.filter { !staying.contains($0) }
+            guard let stalest = (candidates.isEmpty ? lensPeople : candidates)
+                .min(by: { (sighted[$0] ?? .distantPast) < (sighted[$1] ?? .distantPast) }) else { break }
+            lensPeople.removeAll { $0 == stalest }
+        }
         lensPeople.removeAll { id in sighted[id].map { clockNow.timeIntervalSince($0) >= groupHolds } ?? true }
         lensSide = lensSide.filter { lensPeople.contains($0.key) }
         guard lensPeople.count == 2 else { return }
