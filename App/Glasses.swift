@@ -1793,8 +1793,11 @@ enum Identification {
     // say fill it in as the conversation goes (`refresh`).
 
     @ObservationIgnored private var meetNew: Bool { Tuning.bool("meetNew", true) }
-    /// Looks before a stranger is someone met (2 fps: ~2 s of looking at them).
-    @ObservationIgnored private var meetLooks: Int { Tuning.int("meetLooks", 4) }
+    /// Eye contact before a stranger is someone met: at least `meetLooks` analysed frames of the
+    /// same face, held for `meetSeconds` without a break. A glance or someone in the background
+    /// never gets there. Both are knobs.
+    @ObservationIgnored private var meetLooks: Int { Tuning.int("meetLooks", 8) }
+    @ObservationIgnored private var meetSeconds: TimeInterval { TimeInterval(Tuning.float("meetSeconds", 3)) }
     /// Below this best score against everyone known, a face is nobody we know. ArcFace puts
     /// strangers near 0 and the same person at 0.4+.
     @ObservationIgnored private var strangerBelow: Float { Tuning.float("strangerBelow", 0.22) }
@@ -1810,6 +1813,9 @@ enum Identification {
               let track = inView.max(by: { $0.best.attention < $1.best.attention }),
               metTracks[track.id] == nil, track.looks >= meetLooks, track.weight >= minEvidence,
               facePx(track) >= minAnnouncePx else { return }
+        // Sustained: the same face, unbroken, for meetSeconds, and still there this frame.
+        let now = Date()
+        guard now.timeIntervalSince(track.firstSeen) >= meetSeconds, now.timeIntervalSince(track.updated) < 0.5 else { return }
         let best = store.ranked(track.probe).first?.score ?? 0
         guard best < strangerBelow else { return }
         let photo = headshot(image, box: track.box)
