@@ -35,6 +35,8 @@ struct CalHacksApp: App {
                 .task {
                     glasses.store = store
                     glasses.demo.changed = { glasses.demoChanged() }
+                    // Demo mode opens on "look at someone": recognition on, whatever the menu last left it as.
+                    if glasses.demo.on { glasses.watching = true }
                     #if DEBUG
                     glasses.onDemoEvent = { event in
                         if let url = URL(string: "calhacks13://demo/" + event) { assistant.demoDrive(url) }
@@ -1847,6 +1849,7 @@ struct DemoControls: View {
         HStack(spacing: 12) {
             Toggle(isOn: Binding(get: { demo.on }, set: { on in
                 demo.on = on
+                if on { glasses.watching = true }
                 // Off: the roster is back in face ID and People.
                 if !on { assistant.store?.rosterHidden = false }
             })) {

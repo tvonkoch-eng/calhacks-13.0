@@ -624,6 +624,9 @@ import Observation
         met = nil
         glasses?.demoClear()
         glasses?.demo.reset()
+        // The demo starts by looking at someone: recognition has to be on (Oct 25 it was left off
+        // from the menu, and the lens just said "No face in view").
+        glasses?.watching = true
     }
 
     /// Contacts made while demo mode is on, which Reset takes back out.
