@@ -238,7 +238,7 @@ import Observation
         guard !armed else { return }
         armed = true
         // A new conversation starts clean; the last one stays readable on the phone until then.
-        aid.reset()
+        aid.reset(trigger: "listening started (mic on, or app back to the foreground)")
         aid.warm()
         aid.assume(wearer: Self.me)
         speakers = Speakers(wearer: aid.config.wearer)
@@ -277,9 +277,9 @@ import Observation
 
     /// One conversation is over (ended by hand, or 30 s of quiet): its notes are filed and the aid
     /// starts clean, still listening, for the next.
-    func endConversation() {
+    func endConversation(trigger: String) {
         crm?.tick(force: true)
-        aid.reset()
+        aid.reset(trigger: "end of conversation: \(trigger)")
         voiceLevels = [:]
         voices = [:]
     }
@@ -316,6 +316,12 @@ import Observation
             listener.use(newValue)
             glasses?.setStreamAudio(newValue == .glasses)
         }
+    }
+
+    /// Introduction mode: "Hi, I'm Priya" names the unnamed person you just met or are looking
+    /// at. On unless switched off from the menu; remembered across launches.
+    var namesFromIntroductions: Bool = (UserDefaults.standard.object(forKey: "NameFromIntros") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(namesFromIntroductions, forKey: "NameFromIntros") }
     }
 
     /// What it heard last, for the phone: the turn in progress, else the last finished line.
@@ -530,11 +536,16 @@ import Observation
         return id
     }
 
-    /// "I'm Priya" from the other person: the newest face met this conversation that has no name yet.
+    /// "I'm Priya" from the other person: the newest face met this conversation that has no name
+    /// yet, else the unnamed face the glasses are on (a contact met earlier and never named).
     private func introduced(_ name: String) {
-        guard let crm, let id = newcomers.last(where: { crm.newcomer == $0 }),
-              let person = person(id), person.name == CRM.newName else { return }
-        rename(id, name)
+        guard namesFromIntroductions, let crm else { return }
+        let unnamed = { (id: String) in crm.renamable(id) && self.person(id)?.name != name }
+        if let id = newcomers.last(where: { crm.newcomer == $0 }), unnamed(id) {
+            rename(id, name)
+        } else if let id = glasses?.facing, !isWearer(id), unnamed(id) {
+            rename(id, name)
+        }
     }
 
     private func rename(_ id: String, _ name: String) {
@@ -548,9 +559,9 @@ import Observation
 
     /// A glance at the conversation so far: who they are and what they've said, onto the card.
     private func learned(_ id: String, _ glance: Glance) {
-        guard newcomers.contains(id), var person = person(id), let crm else { return }
-        if person.name == CRM.newName, let name = glance.name { person.name = name }
-        if person.name != CRM.newName { crm.named(id, person.name) }
+        guard let crm, var person = person(id), crm.renamable(id) || newcomers.contains(id) else { return }
+        // The CRM settled the name (heard, maybe corrected); the card follows it.
+        if crm.renamable(id) { person.name = crm.name(id) }
         if let label = glance.label { person.role = label }
         let facts = crm.facts(about: id).map(\.text)
         person.tie = facts.first

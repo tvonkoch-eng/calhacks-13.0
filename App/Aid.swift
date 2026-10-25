@@ -420,6 +420,13 @@ enum Talk {
             if newest.split(separator: " ").count >= 3, Date().timeIntervalSince(lastCoach) > 1.5,
                !isCommand(newest) { coachSoon() }
         }
+        // "Jarvis" starting the sentence still being said shows the listening row now. The request
+        // itself still waits for the sentence to close (`command`), so nothing fires early.
+        // Only the wearer's own "Jarvis": someone else in the room saying it must not wipe an answer.
+        if !wakeShownThisTurn, mine, Tools.opensWithJarvis(open) {
+            wakeShownThisTurn = true
+            if wokenAt == nil { showWake() }
+        }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
         publish()
         // Muse can take seconds to close a turn that ends in silence, and a lull is exactly that:
@@ -453,6 +460,7 @@ enum Talk {
         partial = ""
         saying = ""   // it's a line now
         closedInTurn = 0
+        wakeShownThisTurn = false
         compositor.hold(false, at: Date())
 
         if let speaker {
@@ -546,7 +554,8 @@ enum Talk {
     private(set) var others: [Them] = []
 
     /// Start over for a new conversation.
-    func reset() {
+    func reset(trigger: String = "unknown") {
+        SpeedLog.record(["event": "reset", "trigger": trigger, "cards": "\(compositor.view.cards.map(\.title))"])
         answerTask?.cancel(); coachTask?.cancel(); lookupTask?.cancel(); tickTask?.cancel(); silenceTask?.cancel(); jarvisTask?.cancel()
         lines = []; turns = []; events = []; them = Them(); others = []; ideas = []; roles = Roles(); partial = ""; status = ""
         compositor.clear(); defined = []; noted = []; lastInsight = .distantPast; asked = []; answeredAt = .distantPast; firedText = ""; generation += 1
@@ -875,6 +884,8 @@ enum Talk {
     @ObservationIgnored private var lastCommand: (text: String, at: Date)?
     /// "Jarvis." on its own: when, and the row on the lens saying it's listening.
     @ObservationIgnored private var wokenAt: (at: Date, card: Int)?
+    /// The listening row was already shown for the turn in progress, so partials don't re-show it.
+    @ObservationIgnored private var wakeShownThisTurn = false
     /// How long a bare "Jarvis." waits for the request.
     static let wakeWindow: TimeInterval = 8
     /// The last sentence taken as a request after a bare "Jarvis.", so it isn't conversation.
@@ -897,22 +908,7 @@ enum Talk {
     private func command(_ sentence: String, mine: Bool) -> Bool {
         guard config.toolbox != nil else { return false }
         if Tools.wakeOnly(sentence) {
-            if wokenAt == nil || Date().timeIntervalSince(wokenAt!.at) > 2 {
-                nextCard += 1
-                wokenAt = (Date(), nextCard)
-                jarvisTask?.cancel()
-                compositor.startJarvis("Listening\u{2026}", at: Date())
-                log(.status, "Jarvis listening")
-                publish()
-                let card = nextCard
-                Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(Self.wakeWindow))
-                    guard let self, self.wokenAt?.card == card else { return }
-                    self.wokenAt = nil
-                    self.compositor.clearJarvis()
-                    self.publish()
-                }
-            }
+            if wokenAt == nil || Date().timeIntervalSince(wokenAt!.at) > 2 { showWake() }
             return true
         }
         // More of a turn that began "Jarvis, …": part of the request ("Marcus works at DeepMind.
@@ -954,6 +950,24 @@ enum Talk {
             toolRound(request, command: true)
         }
         return true
+    }
+
+    /// The "Listening…" row, up for `wakeWindow` seconds unless a request replaces it.
+    private func showWake() {
+        nextCard += 1
+        wokenAt = (Date(), nextCard)
+        jarvisTask?.cancel()
+        compositor.startJarvis("Listening\u{2026}", at: Date())
+        log(.status, "Jarvis listening")
+        publish()
+        let card = nextCard
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.wakeWindow))
+            guard let self, self.wokenAt?.card == card else { return }
+            self.wokenAt = nil
+            self.compositor.clearJarvis()
+            self.publish()
+        }
     }
 
     /// The request said to Jarvis so far this turn, and what of it is already being worked on.
@@ -1061,6 +1075,7 @@ enum Talk {
             } catch {
                 guard !Task.isCancelled else { return }
                 if command { self?.put(Card(kind: .answer, title: "Couldn't do that", detail: echo, id: card, icon: "exclamationCircle")) }
+                self?.lastCommand = nil
                 self?.log(.status, "Tool failed: \(error.localizedDescription)")
             }
         }
@@ -1126,6 +1141,7 @@ enum Talk {
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.log(.status, "Jarvis failed: \(error.localizedDescription)")
+                self?.lastCommand = nil   // a retry of the same question is a new request, not a repeat
                 answer = "I couldn't do that."
             }
             guard !Task.isCancelled, let self else { return }
@@ -1297,9 +1313,11 @@ enum Talk {
         // realized vol" (the judge: 2/8, during the recruiting moment).
         let theirOwn = Talk.normalized(lines.suffix(10).filter { roles.isWearer($0.speaker) }.map(\.text).joined(separator: " ")
             + (predictedWearer() ? " " + partial : ""))
+        // Where they are and who they are is known already: the event they're at ("CalHacks") is not news.
+        let known = Talk.normalized(config.situation + " " + config.background).filter { $0 != " " }
         for term in advice.define where !Talk.mentioned(term.term, in: theirOwn) && !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + (term.meaning ?? ""))) })
             && term.term.count >= 3 && Talk.mentioned(term.term, in: recent) && !Talk.mentioned(term.term, in: answered)
-            && !quiet {
+            && !known.contains(Talk.normalized(term.term).filter { $0 != " " }) && !quiet {
             defined.append(term.term)
             // No meaning, or one the coach isn't sure of: search for it instead of guessing.
             guard let meaning = term.meaning, !unsure.contains(where: meaning.lowercased().contains) else {
@@ -1622,6 +1640,7 @@ enum Talk {
     @ObservationIgnored private var tickTask: Task<Void, Never>?
 
     private func publish() {
+        for entry in compositor.drainJournal() { SpeedLog.record(entry.merging(["event": "card"]) { $1 }) }
         let view = compositor.view
         if view != lens {
             lens = view

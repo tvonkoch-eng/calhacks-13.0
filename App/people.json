@@ -33,15 +33,15 @@
   {
     "id": "avi",
     "name": "Avi Shah",
-    "role": "LSE Economics, year abroad at UCSB",
-    "school": "LSE · Economics (year abroad at UCSB)",
-    "work": "Summer Analyst, Investment Banking · BofA London",
+    "role": "UCSB Economics exchange student",
+    "school": "UCSB · Economics (exchange from LSE)",
+    "work": "Investment Banking · BofA London",
     "from": "London",
     "tags": [
+      "UCSB",
       "LSE",
       "BofA",
-      "London",
-      "Cal Hacks"
+      "London"
     ]
   },
   {

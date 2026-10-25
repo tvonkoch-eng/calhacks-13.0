@@ -1027,31 +1027,32 @@ struct LensMirror: View {
         .modifier(LensCardBackground(radius: m.radius))
     }
 
-    /// Mirror of `LensCards.groupCards`: a quarter of the lens each, photo at the top, name and
-    /// headline at the foot. The talker's name is the brighter one; no bubble.
+    /// Mirror of `LensCards.groupCards`: two cards stacked in one column, full width, each half of
+    /// the people's space. Photo at the top, name and headline at the foot. The talker's name is the
+    /// brighter one; no bubble.
     private var groupCards: some View {
-        HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: LensFit.stackGap) {
             ForEach(shot.group.prefix(2), id: \.id) { member in
                 VStack(alignment: .leading, spacing: 8) {
                     header(id: member.id, name: member.fullName.isEmpty ? member.name : member.fullName,
-                           width: LensFit.memberWidth(member), bright: member.speaking, focused: member.focused)
+                           width: LensFit.stackedWidth, bright: member.speaking, focused: member.focused, compact: true)
                     ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
                         Text(line).font(.system(size: m.body)).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
                 .padding(LensFit.splitPad)
-                .frame(maxHeight: .infinity, alignment: .topLeading)
-                .frame(width: memberWidth(member))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .modifier(LensCardBackground(radius: m.radius))
             }
         }
     }
 
     /// Mirror of `LensCards.header`: photo left, full name over what they do on the right.
-    @ViewBuilder private func header(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool) -> some View {
+    @ViewBuilder private func header(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool,
+                                     compact: Bool = false) -> some View {
         if LensFit.full(width) {
-            wideHeader(id: id, name: name, width: width, bright: bright, focused: focused)
+            wideHeader(id: id, name: name, width: width, bright: bright, focused: focused, compact: compact)
         } else {
             // Mirror of the lens's 50/50 header: photo and icon on a row, the bold name under them.
             VStack(alignment: .leading, spacing: 4) {
@@ -1090,8 +1091,8 @@ struct LensMirror: View {
         }
     }
 
-    private func wideHeader(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool) -> some View {
-        let size = (width - LensFit.photoGap) * LensFit.photoShare(width)
+    private func wideHeader(id: String, name: String, width: CGFloat, bright: Bool, focused: Bool, compact: Bool = false) -> some View {
+        let size = compact ? LensFit.stackedPhoto : (width - LensFit.photoGap) * LensFit.photoShare(width)
         return HStack(alignment: .center, spacing: LensFit.photoGap) {
             // Grey until the photo's write lands, as on the lens.
             if shot.photoPending && id == shot.photo {
@@ -1235,9 +1236,9 @@ struct LensMirror: View {
                     .padding(m.pad)
                     .modifier(GlassText())
                 if shot.group.count >= 2 {
-                    groupCards.frame(height: LensFit.half).clipped()
+                    groupCards.frame(height: LensFit.half(band: shot.band)).clipped()
                 } else if let id = shot.photo {
-                    personCard(id: id).frame(height: LensFit.half).clipped()
+                    personCard(id: id).frame(height: LensFit.half(band: shot.band)).clipped()
                 }
             }
 
@@ -1688,6 +1689,11 @@ struct HomeHeader: View {
                     glasses.watching.toggle()
                 } label: {
                     Label("Auto-recognize", systemImage: glasses.watching ? "checkmark" : "eye.slash")
+                }
+                Button {
+                    assistant.namesFromIntroductions.toggle()
+                } label: {
+                    Label("Name from introductions", systemImage: assistant.namesFromIntroductions ? "checkmark" : "person.crop.circle.badge.questionmark")
                 }
                 Section("Microphone") {
                     Button {

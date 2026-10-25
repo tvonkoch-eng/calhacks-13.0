@@ -350,10 +350,10 @@ struct ContactView: View {
     @Environment(CRM.self) private var crm
     @Environment(\.dismiss) private var dismiss
     let id: String
-    @State private var name = ""
-    @FocusState private var typingName: Bool
     @State private var editing = false
     @State private var addingToContacts = false
+    @State private var name = ""
+    @FocusState private var typingName: Bool
     @State private var note = ""
     @State private var learned = ""
     @State private var allHistory = false
@@ -379,6 +379,8 @@ struct ContactView: View {
                             .padding(12)
                             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
+                    PersonCRM(person: person, conversations: false, learned: false)
+                    section("What you know") { knowledge(person) }
                     section("Contact") { ContactRows(person: person) { editing = true } }
                     section("History") { history(person) }.id("history")
                     if crm.consent(id) != .pending {
@@ -451,8 +453,8 @@ struct ContactView: View {
             VStack(alignment: .leading, spacing: 3) {
                 // The name is edited in place: tap it (or its pencil) and type.
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    TextField("Name", text: $name, axis: .vertical)
-                        .font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(1...2)
+                    TextField("Name", text: $name, axis: .horizontal)
+                        .font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(1)
                         .focused($typingName)
                         .submitLabel(.done)
                         .onChange(of: name) { _, text in
@@ -661,12 +663,12 @@ struct ContactEditor: View {
     @State private var from = ""
     @State private var interests = ""
     @State private var tie = ""
-    @State private var photo: UIImage?
     @State private var phone = ""
     @State private var email = ""
     @State private var linkedin = ""
     @State private var instagram = ""
     @State private var website = ""
+    @State private var photo: UIImage?
 
     var body: some View {
         NavigationStack {

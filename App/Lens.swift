@@ -53,7 +53,7 @@ struct JarvisPanel: Equatable {
 
     /// How long an answer stays: long enough to read twice, a little more for a longer one.
     static func life(of answer: String) -> TimeInterval {
-        max(12, 6 + 0.45 * Double(answer.split(separator: " ").count))
+        max(20, 8 + 0.45 * Double(answer.split(separator: " ").count))
     }
 }
 
@@ -171,7 +171,7 @@ struct Compositor {
     mutating func remove(id: Int, kind: Card.Kind, at now: Date) {
         waiting.removeAll { $0.card.id == id && $0.card.kind == kind }
         guard let index = slots.firstIndex(where: { $0.card.id == id && $0.card.kind == kind }) else { return }
-        slots.remove(at: index)
+        note("removed", slots.remove(at: index).card, "taken down early")
         promote(at: now)
     }
 
@@ -241,6 +241,9 @@ struct Compositor {
     mutating func tick(at now: Date) {
         // A lane that never reported back doesn't get to sit on the lens forever.
         view.working.removeAll { now.timeIntervalSince($0.started) > max($0.eta * 4, 30) }
+        for slot in slots where slot.expiresAt.map({ now >= $0 }) ?? false {
+            note("expired", slot.card, "shown \(String(format: "%.1f", now.timeIntervalSince(slot.shownAt))) s, ttl \(Self.ttl[slot.card.kind] ?? 8) s")
+        }
         if slots.contains(where: { $0.expiresAt.map { now >= $0 } ?? false }) {
             slots.removeAll { $0.expiresAt.map { now >= $0 } ?? false }
         }
@@ -252,7 +255,9 @@ struct Compositor {
     }
 
     mutating func clear() {
+        let kept = journal
         self = Compositor()
+        journal = kept
     }
 
     /// When `tick` next has something to do, if anything.
@@ -285,11 +290,23 @@ struct Compositor {
     private mutating func place(_ card: Card, at now: Date) -> Bool {
         if slots.count >= Self.maxCards {
             guard let index = evictable(for: card, at: now) else { return false }
-            slots.remove(at: index)
+            let evicted = slots.remove(at: index).card
+            note("pushedOut", evicted, "\(card.kind) \"\(card.title)\" needed the slot")
         }
         slots.insert(Slot(card: card, shownAt: now,
                           expiresAt: card.live ? nil : now.addingTimeInterval(Self.ttl[card.kind] ?? 8)), at: 0)
+        note("shown", card, "\(slots.count) of \(Self.maxCards) slots")
         return true
+    }
+
+    /// What happened to each card, for the speed log: drained by Aid after each change.
+    private(set) var journal: [[String: String]] = []
+    private mutating func note(_ action: String, _ card: Card, _ reason: String) {
+        journal.append(["action": action, "kind": "\(card.kind)", "title": card.title, "reason": reason])
+    }
+    mutating func drainJournal() -> [[String: String]] {
+        defer { journal = [] }
+        return journal
     }
 
     /// Which card goes to make room: the oldest one that has had its time up. An answer always
@@ -310,10 +327,14 @@ struct Compositor {
     private mutating func wait(_ card: Card, at now: Date) {
         waiting.removeAll { $0.card.kind == card.kind && $0.card.title == card.title }
         waiting.append((card, now))
-        if waiting.count > 3 { waiting.removeFirst() }
+        note("queued", card, holding ? "the wearer is talking" : "no free slot")
+        if waiting.count > 3 { note("dropped", waiting.removeFirst().card, "queue full") }
     }
 
     private mutating func promote(at now: Date) {
+        for entry in waiting where now.timeIntervalSince(entry.since) > Self.maxWait[entry.card.kind] ?? 5 {
+            note("stale", entry.card, "waited past \(Self.maxWait[entry.card.kind] ?? 5) s")
+        }
         waiting.removeAll { now.timeIntervalSince($0.since) > Self.maxWait[$0.card.kind] ?? 5 }
         guard !holding else { return }
         // Most important first, then oldest; stop at the first one that can't get a place.

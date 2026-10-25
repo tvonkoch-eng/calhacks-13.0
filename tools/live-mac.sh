@@ -48,7 +48,7 @@ if [ ! -x "$out/live" ] || [ -n "$(find App tools Secrets.xcconfig -newer "$out/
   } > "$out/Info.plist"
   echo "Building (~30 s)…"
   cp tools/live-mac.swift "$out/main.swift"   # top-level code must live in main.swift
-  swiftc -O "$out/main.swift" App/Listen.swift App/Aid.swift App/Lens.swift App/Coach.swift App/Answer.swift App/Question.swift App/Tools.swift App/CRM.swift \
+  swiftc -O "$out/main.swift" App/Listen.swift App/Aid.swift App/Lens.swift App/Coach.swift App/Answer.swift App/Question.swift App/Tools.swift App/CRM.swift App/SpeedLog.swift \
     -o "$out/live" -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$out/Info.plist" 2>&1 | grep -E "error" && exit 1
 fi
 "$out/live" "$@"
