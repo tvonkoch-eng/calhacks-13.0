@@ -511,6 +511,13 @@ enum LensCards {
         if shot.jarvis?.answer != nil, wanted != .none {
             shot.band = min(max(LensFit.answersBand, LensFit.content(answerOnly, bottom: wanted) + 8), LensFit.maxBand)
         }
+        // So does the newest answer card ("what is a derivative?"): the whole answer beside the
+        // people, with their cards shrinking to make room, instead of a lone "…".
+        if shot.jarvis == nil, let newest = shot.cards.first, wanted != .none {
+            var newestOnly = shot
+            newestOnly.cards = [newest]
+            shot.band = min(max(shot.band, LensFit.content(newestOnly, bottom: wanted) + 8), LensFit.maxBand)
+        }
         if let full = shot.jarvis?.answer, wanted != .none, LensFit.content(answerOnly, bottom: wanted) > LensFit.room(wanted, band: shot.band) {
             var words = full.split(separator: " ")
             repeat {
@@ -861,7 +868,7 @@ enum LensFit {
         let all = words.count
         func text() -> String { words.joined(separator: " ") + (words.count < all ? "…" : "") }
         var trial = shot
-        while words.count > 1, content(trial, bottom: bottom) > room(bottom) {
+        while words.count > 1, content(trial, bottom: bottom) > room(bottom, band: shot.band) {
             words.removeLast()
             trial.cards[0].title = text()
         }
