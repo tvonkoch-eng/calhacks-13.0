@@ -215,8 +215,8 @@ struct Reminder: Codable, Identifiable, Equatable {
     @ObservationIgnored private(set) var newcomer: String?
     /// Whether the newcomer has said anything in the conversation they were met in.
     @ObservationIgnored private var newcomerSpoke = false
-    /// Where in the live conversation the newcomer joined: their glance reads from here.
-    @ObservationIgnored private var metAtLine = 0
+    /// Where in the live conversation each face met joined: their glance reads from there.
+    @ObservationIgnored private var metLine: [String: Int] = [:]
     @ObservationIgnored private var glancing = false
     @ObservationIgnored private var lastGlance = Date.distantPast
     /// Lines heard from them at each person's last glance, so each fills in on their own lines.
@@ -354,8 +354,8 @@ struct Reminder: Codable, Identifiable, Equatable {
         // Only while they're still "New person": words as they're said are for the name, the one
         // thing worth having mid-sentence. Bullets wait for the finished sentence (Oct 25: "I work on
         // a software" became a bullet before the sentence was done).
-        guard let newcomer, renamable(newcomer), name(newcomer) == Self.newName,
-              words >= 1, text != partialText else { return }
+        let unnamed = { (id: String?) in id.map { self.renamable($0) && self.name($0) == Self.newName } ?? false }
+        guard unnamed(facing) || unnamed(newcomer), words >= 1, text != partialText else { return }
         partialText = text
         glanceIfDue(now: now, partial: text)
     }
@@ -363,12 +363,14 @@ struct Reminder: Codable, Identifiable, Equatable {
 
     private func glanceIfDue(now: Date, partial: String? = nil) {
         guard let conversation = live, !glancing, now.timeIntervalSince(lastGlance) >= (partial == nil ? glanceEvery : partialGlanceEvery),
-              let id = [newcomer, facing].compactMap({ $0 }).first(where: { conversation.faces.contains($0) })
+              // Whoever is in view and still unnamed gets the name they give; else the newest face met.
+              let id = [facing, newcomer].compactMap({ $0 }).first(where: { conversation.faces.contains($0) && renamable($0) && name($0) == Self.newName })
+                ?? [newcomer, facing].compactMap({ $0 }).first(where: { conversation.faces.contains($0) })
         else { return }
         // Someone just met: every line counts, the wearer's too. The recognizer merges their answer
         // into the wearer's question ("So what do you do? Yeah I'm a student at UCSB", tagged ME).
-        let theirs = id == newcomer ? conversation.lines.count : conversation.lines.filter { $0.who != "ME" }.count
-        guard partial != nil && id == newcomer || theirs - glancedLines[id, default: 0] >= glanceLines else { return }
+        let theirs = metLine[id] != nil ? conversation.lines.count : conversation.lines.filter { $0.who != "ME" }.count
+        guard partial != nil && metLine[id] != nil || theirs - glancedLines[id, default: 0] >= glanceLines else { return }
         if partial == nil { partialText = "" }
         glancing = true
         lastGlance = now
@@ -383,7 +385,7 @@ struct Reminder: Codable, Identifiable, Equatable {
                                 // Someone just met: only what was said since they joined, so a name or fact
                                 // from whoever was there before is never filed under them (Oct 25: Avi
                                 // got "Toby Von Koch").
-                                transcript: conversation.lines.dropFirst(id == newcomer ? metAtLine : 0)
+                                transcript: conversation.lines.dropFirst(metLine[id] ?? 0)
                                     .map { "\(selfTest ? "SPEAKER" : label(retag($0.speaker))): \($0.text)" }
                                     + (partial.map { ["SPEAKER (still talking): \($0)"] } ?? []))
         let nameOnly = partial != nil
@@ -392,8 +394,9 @@ struct Reminder: Codable, Identifiable, Equatable {
             guard var glance = await look(input), roster(id) != nil || contacts.contains(where: { $0.id == id }) else { return }
             if nameOnly { glance = Glance(name: glance.name) }
             // First name only: "Toby Von Koch" reads "Toby" on the card.
+            // Same first name as now ("Toby" for "Toby von Koch", linked to the roster): leave it.
             if let name = glance.name?.split(separator: " ").first.map({ $0.prefix(1).uppercased() + $0.dropFirst() }),
-               renamable(id) { named(id, name) }
+               renamable(id), first(id).lowercased() != name.lowercased() { named(id, name) }
             for text in glance.facts where !facts.contains(where: { $0.person == id && Talk.same($0.text, text) }) {
                 facts.append(Fact(id: UUID(), person: id, text: text, learned: .now))
             }
@@ -442,7 +445,7 @@ struct Reminder: Codable, Identifiable, Equatable {
             contacts[i].consent = .saved
         }
         newcomer = id
-        metAtLine = live?.lines.count ?? 0
+        metLine[id] = live?.lines.count ?? 0
         newcomerSpoke = false
         glancedLines[id] = 0
         if live?.faces.contains(id) == false { live?.faces.append(id) }
@@ -477,6 +480,7 @@ struct Reminder: Codable, Identifiable, Equatable {
     func dropLive() {
         live = nil
         newcomer = nil
+        metLine = [:]
     }
 
     /// Called on a timer and when the mic goes off. Closes the live conversation once it's been

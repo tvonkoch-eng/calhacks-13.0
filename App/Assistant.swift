@@ -566,7 +566,11 @@ import Observation
     private func rename(_ id: String, _ name: String) {
         guard var person = person(id) else { return }
         person.name = name
-        crm?.named(id, name)
+        // A teammate's name: their roster profile fills the card, as in the lens test.
+        if store?.linkToRoster(&person, heard: name) == true {
+            SpeedLog.record(["event": "metLinked", "person": id, "roster": person.name])
+        }
+        crm?.named(id, person.name)
         store?.updateMet(person)
         glasses?.refresh(person)
         SpeedLog.record(["event": "metNamed", "person": id])
@@ -583,6 +587,11 @@ import Observation
             rename(id, person.name)
         } else if crm.renamable(id), person.name != CRM.newName {
             glasses?.demo.named(id)
+        }
+        // Linked to a teammate on the roster: their profile stays, the notes don't replace it.
+        if store?.linkedToRoster.contains(id) == true {
+            SpeedLog.record(["event": "metLearned", "person": id, "linked": true])
+            return
         }
         if let label = glance.label { person.role = label }
         let facts = crm.facts(about: id).map(\.text)

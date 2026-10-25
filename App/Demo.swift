@@ -1,57 +1,48 @@
 import Foundation
 import Observation
 
-/// Demo mode: one task line at the top of the lens telling the wearer what to do next, moved on
-/// by what actually happens (a contact made, a name heard, a bullet learned, Jarvis answering, an
-/// answer card), or by the phone's Next step button. Jarvis stays off until its task, and the
-/// auto answers until theirs, so nothing gets ahead of the script.
+/// Demo mode: one tip at the top of the lens, moved on by what actually happens (a contact made,
+/// a name heard, Jarvis answering, an answer card), or by the phone's Next step button. Jarvis
+/// stays off until its tip and the auto answers until theirs, so nothing gets ahead of the script.
 @MainActor @Observable
 final class Demo {
     enum Step: Int, CaseIterable {
-        case look = 1, firstName, work, next, secondName, school, jarvis, question, done
+        case look = 1, name, jarvis, talk, done
     }
 
     var on: Bool = (UserDefaults.standard.object(forKey: "DemoMode") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(on, forKey: "DemoMode"); changed?() }
     }
     private(set) var step: Step = .look
-    /// The two people met in the demo, in order.
+    /// The person met in the demo.
     private(set) var first: String?
-    private(set) var second: String?
     /// Redraw the lens.
     @ObservationIgnored var changed: (() -> Void)?
 
-    /// The task line, or nil when demo mode is off or finished.
+    /// The tip, or nil when demo mode is off or finished.
     var prompt: String? {
         guard on else { return nil }
-        let task: String
         switch step {
-        case .look: task = "Go up to the student and look at them"
-        case .firstName: task = "Ask them their name"
-        case .work: task = "Ask them what they do"
-        case .next: task = "Meet the next person!"
-        case .secondName: task = "Ask them their name!"
-        case .school: task = "Ask them where they go to school!"
-        case .jarvis: task = "Ask Jarvis where to get pizza nearby"
-        case .question: task = "Wait for someone to ask you a question!"
+        case .look: return "Tip: Look at someone to create a new contact!"
+        case .name: return "Tip 2: Ask someone their name to get their information!"
+        case .jarvis: return "Tip: Ask Jarvis any question!"
+        case .talk: return "Tip: Talk to people to see how it works in convo!"
         case .done: return nil
         }
-        return "Task \(step.rawValue): \(task)"
     }
 
-    /// Jarvis is held back until its task.
+    /// Jarvis is held back until its tip.
     var allowsJarvis: Bool { !on || step.rawValue >= Step.jarvis.rawValue }
-    /// Auto answers, definitions and suggestions are held back until the last task.
-    var allowsAnswers: Bool { !on || step.rawValue >= Step.question.rawValue }
+    /// Auto answers, definitions and suggestions are held back until the last tip.
+    var allowsAnswers: Bool { !on || step.rawValue >= Step.talk.rawValue }
 
     func reset() {
         step = .look
         first = nil
-        second = nil
         changed?()
     }
 
-    /// The phone's Next step: on to the next task whatever happened.
+    /// The phone's Next step: on to the next tip whatever happened.
     func skip() {
         guard on, let next = Step(rawValue: step.rawValue + 1) else { return }
         go(next)
@@ -59,39 +50,27 @@ final class Demo {
 
     /// Someone new became a contact, picture and all.
     func met(_ id: String) {
-        guard on else { return }
-        if step == .look, first == nil {
-            first = id
-            go(.firstName)
-        } else if step == .next, second == nil, id != first {
-            second = id
-            go(.secondName)
-        }
+        guard on, step == .look else { return }
+        first = id
+        go(.name)
     }
 
-    /// Their name was filled in from the conversation.
+    /// A name was filled in from the conversation, for whoever is in view.
     func named(_ id: String) {
-        guard on else { return }
-        if step == .firstName, id == first { go(.work) }
-        if step == .secondName, id == second { go(.school) }
+        guard on, step == .name else { return }
+        go(.jarvis)
     }
 
-    /// Their profile got a bullet (what they do, where they study).
-    func learned(_ id: String) {
-        guard on else { return }
-        if step == .work, id == first { go(.next) }
-        if step == .school, id == second { go(.jarvis) }
-    }
+    /// Their profile got a bullet: no tip waits on it now.
+    func learned(_ id: String) {}
 
-    func jarvisAnswered() { if on, step == .jarvis { go(.question) } }
-    func answered() { if on, step == .question { go(.done) } }
+    func jarvisAnswered() { if on, step == .jarvis { go(.talk) } }
+    func answered() { if on, step == .talk { go(.done) } }
 
     #if targetEnvironment(simulator)
-    /// What Next step stands in for in the simulator, per task (`Assistant.demoDrive`).
+    /// What Next step stands in for in the simulator, per tip (`Assistant.demoDrive`).
     static let simulated: [Step: String] = [
-        .look: "meet?photo=avi", .firstName: "name?n=Avi", .work: "fact?t=Builds AR glasses at Cal Hacks",
-        .next: "meet?photo=toby_01", .secondName: "name?n=Toby", .school: "fact?t=Studies CS at UC Berkeley",
-        .jarvis: "jarvis", .question: "answer",
+        .look: "meet?photo=toby_01", .name: "name?n=Toby", .jarvis: "jarvis", .talk: "answer",
     ]
     #endif
 

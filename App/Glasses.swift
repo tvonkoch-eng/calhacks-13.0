@@ -1171,6 +1171,8 @@ enum Identification {
         // Demo mode holds Jarvis and the auto answers back until their tasks.
         if !demo.allowsJarvis { view.jarvis = nil }
         if !demo.allowsAnswers { view.cards = []; view.followup = nil; view.working = [] }
+        // Jarvis was asked: it has the top alone, the auto answer that also fired goes.
+        if view.jarvis != nil { view.cards = []; view.working = [] }
         if view.jarvis?.answer != nil { demo.jarvisAnswered() }
         if view.cards.contains(where: { $0.kind == .answer && !$0.live }) { demo.answered() }
         guard view != aidLens else { return }

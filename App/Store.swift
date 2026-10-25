@@ -383,8 +383,29 @@ struct Match {
     }
 
     /// A recap revised who someone met this session is: their label and top facts onto the card.
+    /// People met who said a teammate's name ("Toby"): their card carries the roster's profile,
+    /// which a save from the conversation's notes must not overwrite.
+    var linkedToRoster: Set<String> = []
+
+    /// "Toby", "Avi", "Mirabelle" from someone just met: the roster's profile onto their card (the
+    /// lens-test info), keeping their own id and photo. False if the name is nobody on the roster.
+    func linkToRoster(_ person: inout Person, heard name: String) -> Bool {
+        let first = name.split(separator: " ").first.map { $0.lowercased() } ?? ""
+        guard !first.isEmpty, let roster = people.first(where: {
+            $0.isMe != true && $0.name.split(separator: " ").first?.lowercased() == first
+        }) else { return false }
+        person.name = roster.name; person.role = roster.role; person.school = roster.school
+        person.work = roster.work; person.from = roster.from; person.interests = roster.interests
+        person.tags = roster.tags; person.tie = roster.tie; person.highlights = roster.highlights
+        person.personal = roster.personal; person.source = roster.source; person.phone = roster.phone
+        person.email = roster.email; person.linkedin = roster.linkedin; person.instagram = roster.instagram
+        person.website = roster.website
+        linkedToRoster.insert(person.id)
+        return true
+    }
+
     func refreshMet(_ person: Person) {
-        guard var current = met[person.id] else { return }
+        guard !linkedToRoster.contains(person.id), var current = met[person.id] else { return }
         current.role = person.role
         if let highlights = person.highlights { current.highlights = highlights; current.tie = nil }
         if current != met[person.id] { met[person.id] = current }
@@ -420,6 +441,7 @@ struct Match {
     /// A contact the CRM deleted: no face, no photo.
     func forget(_ id: String) {
         met[id] = nil
+        linkedToRoster.remove(id)
         if edits.removeValue(forKey: id) != nil { saveEdits() }
         if notes[id] != nil { setNote(id, "") }
         reset(id)
