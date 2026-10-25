@@ -14,7 +14,7 @@ struct NotesHome: View {
         NavigationStack {
             VStack(spacing: 0) {
                 // Live only once speech is heard: the mic listening to a quiet room is still Notes.
-                if assistant.armed, !Transcripts.lines(assistant).isEmpty {
+                if assistant.armed, Transcripts.shared.active {
                     live
                 } else {
                     header(title: "Notes", trailing: assistant.armed ? AnyView(EmptyView()) : AnyView(listenButton))
@@ -205,6 +205,9 @@ struct SavedConversation: Codable, Identifiable, Equatable {
     /// The live conversation's people, added as they're recognised, until it ends.
     private(set) var people: [String] = []
     private var started: Date?
+    /// A conversation is running. One starts only when someone is in front of the glasses and a
+    /// line is loud enough to be the wearer talking; until then what the mic hears is dropped.
+    var active: Bool { started != nil }
 
     private static var url: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("transcripts.json")
@@ -219,7 +222,15 @@ struct SavedConversation: Codable, Identifiable, Equatable {
     func tick(_ assistant: Assistant, faces: [String]) {
         let lines = assistant.aid.lines.filter { !$0.command }
         guard let first = lines.first else { return }
-        if started == nil { started = first.at }
+        if started == nil {
+            let here = assistant.glasses?.someoneHere ?? false
+            guard here, Date().timeIntervalSince(assistant.lastLoud) < 5 else {
+                // Room noise with nobody to talk to: let it go, don't start a conversation.
+                if Date().timeIntervalSince(first.at) > 8, assistant.aid.partial.isEmpty { assistant.endConversation() }
+                return
+            }
+            started = first.at
+        }
         for id in faces where !people.contains(id) { people.append(id) }
         if assistant.aid.partial.isEmpty, let last = lines.last, Date().timeIntervalSince(last.at) >= Self.quiet {
             end(assistant)

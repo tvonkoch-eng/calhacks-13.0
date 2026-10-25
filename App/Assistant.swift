@@ -18,6 +18,8 @@ import Observation
     /// Muse's own voice label for each transcript line (Person A, B, … follow these).
     @ObservationIgnored private(set) var voices: [Int: String] = [:]
     @ObservationIgnored private var lineLevels: [Float] = []
+    /// The last line loud enough to be the wearer's.
+    @ObservationIgnored private(set) var lastLoud = Date.distantPast
     /// Loudness of each Muse voice's lines (dB, loudest 30% of each line).
     @ObservationIgnored private var voiceLevels: [String: [Float]] = [:]
 
@@ -353,6 +355,9 @@ import Observation
             if mine { verdict = Speakers.Verdict(who: .me, sure: true, why: String(format: "%.0f dB louder at the glasses", gap)) }
             else if verdict.who == .me { verdict = Speakers.Verdict(who: .someone, sure: true, why: String(format: "only %.0f dB louder at the glasses", gap)) }
         }
+        // Loud enough to be the wearer talking: what lets a new conversation start.
+        if let gap, gap >= Tuning.float("meGapDb", 14) { lastLoud = end }
+        else if gap == nil, let level, level >= Tuning.float("startDb", -24) { lastLoud = end }
         let label: String?
         switch verdict.who {
         case .me: label = Self.me

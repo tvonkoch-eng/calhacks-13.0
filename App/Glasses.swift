@@ -99,6 +99,8 @@ enum Identification {
     /// Who's on the lens. A new face joins; a third replaces whoever was seen longest ago; anyone
     /// unseen for `groupHolds` times out.
     @ObservationIgnored private var lensPeople: [String] = []
+    /// Someone is on the lens right now (seen within `groupHolds`): a conversation may start.
+    var someoneHere: Bool { !lensPeople.isEmpty }
 
     /// Each person's side once two share the lens (0 left, 1 right). Fixed until they leave it, so
     /// cards never swap as people move; a newcomer takes whichever side is free.
