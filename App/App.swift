@@ -1032,7 +1032,7 @@ struct LensMirror: View {
                     Spacer(minLength: 0)
                     Text(member.name).font(.system(size: m.heading, weight: .semibold))
                         .foregroundStyle(member.speaking ? Color.white : secondary)
-                    Text(LensCards.short(member.headline, max: 20)).font(.system(size: m.body)).foregroundStyle(secondary)
+                    Text(LensCards.short(member.headline, max: 40)).font(.system(size: m.body)).foregroundStyle(secondary)
                 }
                 .padding(m.pad)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1128,7 +1128,7 @@ struct LensMirror: View {
                 if shot.group.count >= 2 {
                     groupCards.frame(height: LensFit.half)
                 } else if let id = shot.photo {
-                    personCard(id: id).frame(height: LensFit.half)
+                    personCard(id: id).frame(height: LensFit.personRoom(shot))
                 }
             }
 

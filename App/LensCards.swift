@@ -96,7 +96,8 @@ enum LensCards {
     static func personCard(_ person: Person, shot: LensShot, avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .column, spacing: 10) {
             if let photo = avatar(person.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-            FlexBox(direction: .column) {}.padding(.top, LensFit.fill(lines: shot.primary.count + (shot.primary.isEmpty && shot.context != nil ? 1 : 0)))
+            FlexBox(direction: .column) {}.padding(.top, LensFit.fill(lines: shot.primary.count + (shot.primary.isEmpty && shot.context != nil ? 1 : 0),
+                                                                    room: LensFit.personRoom(shot)))
             Text(person.name, style: .heading)
             Text(person.headline, style: .body).flexShrink(1)
             // Why they matter: the tie and highlights, the same lines the full card shows.
@@ -169,7 +170,7 @@ enum LensCards {
                     if let photo = avatar(member.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
                     FlexBox(direction: .column) {}.padding(.top, LensFit.fill(lines: 2))
                     Text(member.name, style: .heading, color: member.speaking ? .primary : .secondary)
-                    Text(short(member.headline, max: 20), style: .body, color: .secondary).flexShrink(1)
+                    Text(short(member.headline, max: 40), style: .body, color: .secondary).flexShrink(1)
                 }
                 .padding(22)
                 .background(.card)
@@ -375,20 +376,19 @@ enum LensCards {
     static func shot(split view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false) -> LensShot {
         var shot = shot(aid: view, person: person, group: group, meSpeaking: meSpeaking)
         shot.kind = .split
-        if let person, group.count < 2 {
-            // The tie and highlights, as on the full card, so the split view and the mirror say the
-            // same things. Without them, the one line that says why they matter: how you know them,
-            // else their first detail.
-            let highlights = Array((person.highlights ?? []).prefix(Self.highlightCount))
-            var primary: [String] = []
-            if let tie = person.tie, !tie.isEmpty { primary.append(tie) }
-            primary += highlights.map { "\u{2014} " + $0 }
-            shot.primary = primary
-            shot.context = [LensCards.recall?(person.id), person.tie, person.highlights?.first, person.details.first?.text]
-                .compactMap { $0 }.first { !$0.isEmpty }
-        }
         // What doesn't fit goes here, once, so the glass and the mirror drop the same thing.
         _ = LensFit.fit(&shot, bottom: bottom(person: person, group: group))
+        if let person, group.count < 2 {
+            // As much as the person's card has room for: the half, or more when the aid is short.
+            // Recall and tie first, then every highlight, then the detail rows.
+            var pool: [String] = []
+            if let recall = LensCards.recall?(person.id), !recall.isEmpty { pool.append(recall) }
+            if let tie = person.tie, !tie.isEmpty { pool.append(tie) }
+            pool += (person.highlights ?? []).map { "\u{2014} " + $0 }
+            pool += person.details.map(\.text).filter { !$0.isEmpty }
+            shot.primary = Array(pool.prefix(LensFit.maxLines(room: LensFit.personRoom(shot))))
+            shot.context = pool.first
+        }
         if let newest = shot.cards.first {
             shot.answer = newest.title
             shot.echo = newest.detail
@@ -498,8 +498,18 @@ enum LensFit {
 
     /// The space a people card needs filling down to the half: its base, plus a line for each text
     /// line that sits between the photo and the name.
-    static func fill(lines: Int) -> CGFloat {
-        max(0, half - cardBase - 26 * CGFloat(lines))
+    static func fill(lines: Int, room: CGFloat = half) -> CGFloat {
+        max(0, room - cardBase - 26 * CGFloat(lines))
+    }
+
+    /// The person card's height in the split: the bottom half, grown into whatever the aid leaves.
+    static func personRoom(_ shot: LensShot) -> CGFloat {
+        max(half, available - content(shot, bottom: .person) - spacing)
+    }
+
+    /// Detail lines that fit under the name in `room`.
+    static func maxLines(room: CGFloat) -> Int {
+        max(0, Int((room - cardBase) / 26))
     }
 
     /// Drops what won't fit in the aid's room (an older card's detail, then the older card) and
@@ -516,7 +526,8 @@ enum LensFit {
     }
 
     static func gap(_ shot: LensShot, bottom: LensCards.Bottom) -> CGFloat {
-        max(0, (room(bottom) - content(shot, bottom: bottom)).rounded(.down))
+        let aid = bottom == .person ? available - personRoom(shot) : room(bottom)
+        return max(0, (aid - content(shot, bottom: bottom)).rounded(.down))
     }
 
     private static var available: CGFloat { panel - floor - margin }
