@@ -215,6 +215,8 @@ struct Reminder: Codable, Identifiable, Equatable {
     @ObservationIgnored private(set) var newcomer: String?
     /// Whether the newcomer has said anything in the conversation they were met in.
     @ObservationIgnored private var newcomerSpoke = false
+    /// Where in the live conversation the newcomer joined: their glance reads from here.
+    @ObservationIgnored private var metAtLine = 0
     @ObservationIgnored private var glancing = false
     @ObservationIgnored private var lastGlance = Date.distantPast
     /// Lines heard from them at each person's last glance, so each fills in on their own lines.
@@ -223,8 +225,10 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// a later "it's Priya, P-R-I-Y-A" may correct them. A name typed in People is never touched.
     @ObservationIgnored private var heardNames: Set<String> = []
     /// At most one glance this often, and only after this many new lines from them.
-    var glanceEvery: TimeInterval { Self.knob("glanceEvery", 12) }
-    var glanceLines: Int { Int(Self.knob("glanceLines", 2)) }
+    /// Every answer of theirs is worth a look: the card should fill in while they're still in front
+    /// of you (Oct 25: a school took 10 s to show).
+    var glanceEvery: TimeInterval { Self.knob("glanceEvery", 3) }
+    var glanceLines: Int { Int(Self.knob("glanceLines", 1)) }
 
     /// What a new contact is called until they say their name.
     static let newName = "New person"
@@ -353,11 +357,16 @@ struct Reminder: Codable, Identifiable, Equatable {
         let input = Recap.Input(wearer: wearer, when: conversation.started,
                                 with: nil, name: known == Self.newName || known == "Someone" ? nil : known,
                                 picture: picture(id), known: facts(about: id).map(\.text), owed: [],
-                                transcript: conversation.lines.map { "\(label(retag($0.speaker))): \($0.text)" })
+                                // Someone just met: only what was said since they joined, so a name or fact
+                                // from whoever was there before is never filed under them (Oct 25: Avi
+                                // got "Toby Von Koch").
+                                transcript: conversation.lines.dropFirst(id == newcomer ? metAtLine : 0)
+                                    .map { "\(label(retag($0.speaker))): \($0.text)" })
         Task {
             defer { glancing = false }
             guard let glance = await look(input), roster(id) != nil || contacts.contains(where: { $0.id == id }) else { return }
-            if let name = glance.name, renamable(id) { named(id, name) }
+            // First name only: "Toby Von Koch" reads "Toby" on the card.
+            if let name = glance.name?.split(separator: " ").first.map(String.init), renamable(id) { named(id, name) }
             for text in glance.facts where !facts.contains(where: { $0.person == id && Talk.same($0.text, text) }) {
                 facts.append(Fact(id: UUID(), person: id, text: text, learned: .now))
             }
@@ -402,6 +411,7 @@ struct Reminder: Codable, Identifiable, Equatable {
             contacts[i].consent = .saved
         }
         newcomer = id
+        metAtLine = live?.lines.count ?? 0
         newcomerSpoke = false
         glancedLines[id] = 0
         if live?.faces.contains(id) == false { live?.faces.append(id) }
@@ -1250,7 +1260,7 @@ struct Glance: Equatable {
     wasn't settled.
 
     Reply with one JSON object with exactly these keys:
-    "name": THEM's name if they said it (first, plus last if said), else null. If the input gives \
+    "name": THEM's first name if they said it, else null. If the input gives \
     a name and THEM said or spelled it differently, or corrected it, the corrected spelling. \
     Speaker tags are often wrong: a short reply that is just a name ("Avi Shah", "It's Toby") \
     right after someone asks "what's your name?" is THEM's name whichever tag either line has. \

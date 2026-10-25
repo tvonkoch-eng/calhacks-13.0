@@ -36,6 +36,10 @@ final class Tuning {
         (UserDefaults.standard.object(forKey: key) as? NSNumber)?.intValue ?? fallback
     }
 
+    static func string(_ key: String, _ fallback: String) -> String {
+        (UserDefaults.standard.string(forKey: key)).flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+    }
+
     static func bool(_ key: String, _ fallback: Bool) -> Bool {
         (UserDefaults.standard.object(forKey: key) as? NSNumber)?.boolValue ?? fallback
     }

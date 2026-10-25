@@ -121,6 +121,13 @@ import Observation
     /// eat the rate-limited coach key the aid's suggestions need.
     private static func glanceModels(_ config: Aid.Config) -> [Aid.Model] {
         var models: [Aid.Model] = []
+        // First: a small fast model on OpenRouter. On the Oct 25 Toby transcript Gemini 2.5 Flash
+        // Lite took 1 s and $0.08 per 1,000 glances, with the name and fact right; Qwen 3.8 27B
+        // took 7.5 s and $3.73. `glanceModel` swaps it without a build.
+        if let openrouter = [config.backup, config.answers, config.coach].compactMap(\.self).first(where: { $0.provider == .openrouter }) {
+            models.append(Aid.Model(provider: .openrouter, key: openrouter.key,
+                                    model: Tuning.string("glanceModel", "google/gemini-2.5-flash-lite")))
+        }
         for model in [config.backup, config.answers, config.coach].compactMap(\.self) where !models.contains(model) {
             models.append(model)
         }
