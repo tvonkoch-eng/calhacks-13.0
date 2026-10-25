@@ -261,7 +261,7 @@ struct Match {
     func meet(_ person: Person, face: [Float], photo: UIImage?) {
         met[person.id] = person
         gallery[person.id] = [face]
-        if let photo { setAvatar(person.id, photo) }
+        if let photo { setAvatar(person.id, photo, score: 0) }
         // Kept from the start (asked for, Oct 24): they persist, their looks build up, and they
         // wait in People to be named. Remove them there to forget them.
         if !saved.contains(where: { $0.id == person.id }) { saved.append(person) }
@@ -374,11 +374,26 @@ struct Match {
         met[person.id] = person
     }
 
-    func setAvatar(_ id: String, _ image: UIImage) {
+    /// `score`: how good a headshot it is (`Glasses.photoScore`), kept next to it so a relaunch
+    /// doesn't forget the bar and let the first look of the day replace a good photo. A photo
+    /// picked by hand (the default) scores infinity: the glasses never replace it.
+    func setAvatar(_ id: String, _ image: UIImage, score: Float = .infinity) {
         avatars[id] = image
         lensAvatars[id] = nil
+        avatarScores[id] = score
         try? image.jpegData(compressionQuality: 0.85)?.write(to: avatarURL(id), options: [.atomic, .completeFileProtection])
+        try? String(score).write(to: avatarScoreURL(id), atomically: true, encoding: .utf8)
     }
+
+    /// The bar a new headshot has to clear. 0 for a photo saved before scores were kept.
+    func avatarScore(_ id: String) -> Float {
+        if let score = avatarScores[id] { return score }
+        let score = (try? String(contentsOf: avatarScoreURL(id), encoding: .utf8)).flatMap(Float.init) ?? 0
+        avatarScores[id] = score
+        return score
+    }
+    @ObservationIgnored private var avatarScores: [String: Float] = [:]
+    private func avatarScoreURL(_ id: String) -> URL { docs.appendingPathComponent("avatar-\(id).score") }
 
     /// A contact the CRM deleted: no face, no photo.
     func forget(_ id: String) {
@@ -498,7 +513,9 @@ struct Match {
         lensAvatars[id] = nil
         gallery[id] = nil
         avatars[id] = nil
+        avatarScores[id] = nil
         try? FileManager.default.removeItem(at: avatarURL(id))
+        try? FileManager.default.removeItem(at: avatarScoreURL(id))
         save()
     }
 

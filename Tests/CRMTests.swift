@@ -298,7 +298,8 @@ await MainActor.run {
     check(got.count == 1, "no details, no hand-off")
 }
 
-// Someone met by face who never speaks was in the background: nothing is filed, the contact goes.
+// Someone met by face who never speaks: nothing is filed. They stay as a contact (kept from the
+// start, Oct 24) until removed in People.
 do {
     let crm = CRM(url: nil)
     crm.glancer = { _ in Glance() }
@@ -306,7 +307,6 @@ do {
     crm.heard("Long day, huh.", speaker: "A", at: at(1))
     crm.heard("It really was.", speaker: "A", at: at(2))
     crm.tick(now: at(3), force: true)
-    check(crm.contacts.first { $0.id == id } == nil, "a background face is not kept")
     check(crm.conversations.isEmpty, "no conversation filed under a background face")
 }
 
