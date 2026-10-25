@@ -13,10 +13,11 @@ struct NotesHome: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if assistant.armed {
+                // Live only once speech is heard: the mic listening to a quiet room is still Notes.
+                if assistant.armed, !LiveNotes.entries(assistant).isEmpty {
                     live
                 } else {
-                    header(title: "Notes", trailing: AnyView(listenButton))
+                    header(title: "Notes", trailing: assistant.armed ? AnyView(LiveDot()) : AnyView(listenButton))
                     pastList
                 }
             }
