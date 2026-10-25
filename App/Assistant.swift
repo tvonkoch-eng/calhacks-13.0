@@ -18,6 +18,17 @@ import Observation
     /// Muse's own voice label for each transcript line (Person A, B, … follow these).
     @ObservationIgnored private(set) var voices: [Int: String] = [:]
     @ObservationIgnored private var lineLevels: [Float] = []
+    /// Loudness of each Muse voice's lines (dB, loudest 30% of each line).
+    @ObservationIgnored private var voiceLevels: [String: [Float]] = [:]
+
+    /// The wearer's voice: the loudest on average, once two voices have two lines each and the
+    /// loudest leads by `meVoiceGap` dB.
+    var meVoice: String? {
+        func median(_ v: [Float]) -> Float { v.sorted()[v.count / 2] }
+        let ranked = voiceLevels.filter { $0.value.count >= 2 }.map { ($0.key, median($0.value)) }.sorted { $0.1 > $1.1 }
+        guard ranked.count >= 2, ranked[0].1 - ranked[1].1 >= Tuning.float("meVoiceGap", 1.5) else { return nil }
+        return ranked[0].0
+    }
     /// The wearer has the floor (the glasses' own mic hears them).
     private(set) var meSpeaking = false
     /// Why the last line was given to whoever it was, for the phone ("glasses heard you (80%)").
@@ -243,6 +254,8 @@ import Observation
     func endConversation() {
         crm?.tick(force: true)
         aid.reset()
+        voiceLevels = [:]
+        voices = [:]
     }
 
     func disarm() {
@@ -330,16 +343,17 @@ import Observation
         if let level {
             lineLevels.append(level)
             if lineLevels.count > 30 { lineLevels.removeFirst() }
-            let typical = lineLevels.sorted()[lineLevels.count / 2]
-            // Close to the mic is the wearer: at or above `meLoudDb` outright (Oct 24: the wearer
-            // ran -36…-33 dB on the iPhone mic), or well over the room's typical line. Wins over the
-            // glasses' own-voice check, which scored the wearer 0% on the phone mic and then
-            // locked their voice as someone else's.
-            let loudDb = Tuning.float("meLoudDb", -38)
-            if level >= loudDb {
-                verdict = Speakers.Verdict(who: .me, sure: true, why: String(format: "loud: %.0f dB", level))
-            } else if lineLevels.count >= 4, level >= typical + Tuning.float("meLoudGap", 6) {
-                verdict = Speakers.Verdict(who: .me, sure: false, why: String(format: "loud: %.0f dB over typical", level - typical))
+            // Per voice, not per line: on the iPhone mic a friend across the table ran -35 dB and
+            // the wearer -32 (Oct 24), so no single cutoff splits them. The voice Muse has heard
+            // loudest on average is the wearer's, and only that one.
+            if let muse { voiceLevels[muse, default: []].append(level) }
+            if let me = meVoice, let muse {
+                verdict = muse == me
+                    ? Speakers.Verdict(who: .me, sure: true, why: "loudest voice")
+                    : (verdict.who == .me ? Speakers.Verdict(who: .someone, sure: false, why: "not the loudest voice") : verdict)
+            } else if voiceLevels.count <= 1, level >= Tuning.float("meLoudDb", -38) {
+                // One voice so far, and close to the mic: the wearer talking.
+                verdict = Speakers.Verdict(who: .me, sure: false, why: String(format: "loud: %.0f dB", level))
             }
         }
         let label: String?

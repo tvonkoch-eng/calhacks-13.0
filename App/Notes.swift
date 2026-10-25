@@ -252,8 +252,14 @@ struct SavedConversation: Codable, Identifiable, Equatable {
             letters[key] = letter
             return letter
         }
+        // Me is the loudest voice once that's known, so earlier lines relabel as evidence comes in.
+        let meVoice = assistant.meVoice
+        func isMe(_ line: Line) -> Bool {
+            if let meVoice, let voice = assistant.voices[line.id] { return voice == meVoice }
+            return line.speaker == Assistant.me
+        }
         var out = assistant.aid.lines.filter { !$0.command }.map { line in
-            line.speaker == Assistant.me
+            isMe(line)
                 ? SavedLine(id: "\(line.id)", who: "Me", text: line.text, me: true)
                 : SavedLine(id: "\(line.id)", who: person(assistant.voices[line.id] ?? line.speaker), text: line.text, me: false)
         }
