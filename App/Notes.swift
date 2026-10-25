@@ -9,6 +9,7 @@ struct NotesHome: View {
     @Environment(Assistant.self) private var assistant
     @Environment(CRM.self) private var crm
     @Environment(Store.self) private var store
+    @State private var query = ""
 
     var body: some View {
         NavigationStack {
@@ -74,39 +75,62 @@ struct NotesHome: View {
     // MARK: Past
 
     private var pastList: some View {
-        let past = Transcripts.shared.saved
+        let q = query.lowercased()
+        let past = Transcripts.shared.saved.filter { row in
+            q.isEmpty || row.people.contains { crm.name($0).lowercased().contains(q) }
+                || row.lines.contains { $0.text.lowercased().contains(q) }
+        }
+        // Same look as People: search, a "+ New" row, then 46 pt rows with a hairline under each.
         return List {
-                if past.isEmpty {
-                    Text("Your conversations will show up here.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .listRowSeparator(.hidden)
+            SearchField(text: $query)
+                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+            Button { Transcripts.shared.start(assistant) } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .background(Color(.secondarySystemBackground), in: Circle())
+                    Text("New recording").font(.body.weight(.medium))
+                    Spacer()
                 }
-                ForEach(past) { row in
-                    NavigationLink(value: row.id) {
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(row.people.isEmpty ? "Conversation"
-                                     : "Conversation with " + Self.list(row.people.map { crm.first($0) }))
-                                    .font(.system(size: 17, weight: .semibold, design: .serif))
-                                    .foregroundStyle(.primary).lineLimit(2)
-                                Text(row.started.formatted(date: .abbreviated, time: .shortened))
-                                    .font(.footnote).foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 8)
-                            faces(row.people, size: 28)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+            .listRowSeparator(.hidden)
+            if past.isEmpty {
+                Text(query.isEmpty ? "Your conversations will show up here." : "Nothing matches \u{201C}\(query)\u{201D}.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
+            }
+            ForEach(past) { row in
+                NavigationLink(value: row.id) {
+                    HStack(spacing: 14) {
+                        faces(row.people, size: 46)
+                            .frame(width: 46, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.people.isEmpty ? "Conversation"
+                                 : "Conversation with " + Self.list(row.people.map { crm.first($0) }))
+                                .font(.body.weight(.medium)).lineLimit(1)
+                            Text(row.lines.first?.text ?? "")
+                                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                         }
-                        .padding(.vertical, 6)
-                        .contentShape(Rectangle())
-                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                        Spacer(minLength: 8)
+                        Text(relative(row.started)).font(.footnote).foregroundStyle(.secondary)
                     }
-                    // Swipe left to discard.
-                    .swipeActions(edge: .trailing) {
-                        Button("Delete", systemImage: "trash", role: .destructive) { Transcripts.shared.delete(row.id) }
-                    }
+                    .padding(.vertical, 5)
                 }
+                .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 60 }
+                // Swipe left to discard.
+                .swipeActions(edge: .trailing) {
+                    Button("Delete", systemImage: "trash", role: .destructive) { Transcripts.shared.delete(row.id) }
+                }
+            }
         }
         .listStyle(.plain)
         .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.immediately)
     }
 
     // MARK: Pieces
@@ -243,6 +267,13 @@ struct SavedConversation: Codable, Identifiable, Equatable {
         if assistant.aid.partial.isEmpty, let last = lines.last, Date().timeIntervalSince(last.at) >= Self.quiet {
             end(assistant)
         }
+    }
+
+    /// "+ New recording": start a conversation now, mic on, without waiting for a face.
+    func start(_ assistant: Assistant) {
+        if !assistant.armed { Task { await assistant.toggle() } }
+        if started == nil { started = Date() }
+        lastHere = Date()
     }
 
     func delete(_ id: UUID) {
