@@ -1689,6 +1689,11 @@ struct HomeHeader: View {
                 } label: {
                     Label("Auto-recognize", systemImage: glasses.watching ? "checkmark" : "eye.slash")
                 }
+                Button {
+                    assistant.namesFromIntroductions.toggle()
+                } label: {
+                    Label("Name from introductions", systemImage: assistant.namesFromIntroductions ? "checkmark" : "person.crop.circle.badge.questionmark")
+                }
                 Section("Microphone") {
                     Button {
                         assistant.mic = .glasses

@@ -318,6 +318,12 @@ import Observation
         }
     }
 
+    /// Introduction mode: "Hi, I'm Priya" names the unnamed person you just met or are looking
+    /// at. On unless switched off from the menu; remembered across launches.
+    var namesFromIntroductions: Bool = (UserDefaults.standard.object(forKey: "NameFromIntros") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(namesFromIntroductions, forKey: "NameFromIntros") }
+    }
+
     /// What it heard last, for the phone: the turn in progress, else the last finished line.
     var heard: (tag: String, text: String)? {
         if !aid.partial.isEmpty { return (meSpeaking ? "YOU" : "…", aid.partial) }
@@ -530,11 +536,16 @@ import Observation
         return id
     }
 
-    /// "I'm Priya" from the other person: the newest face met this conversation that has no name yet.
+    /// "I'm Priya" from the other person: the newest face met this conversation that has no name
+    /// yet, else the unnamed face the glasses are on (a contact met earlier and never named).
     private func introduced(_ name: String) {
-        guard let crm, let id = newcomers.last(where: { crm.newcomer == $0 }),
-              let person = person(id), person.name == CRM.newName else { return }
-        rename(id, name)
+        guard namesFromIntroductions, let crm else { return }
+        let unnamed = { (id: String) in self.person(id)?.name == CRM.newName }
+        if let id = newcomers.last(where: { crm.newcomer == $0 }), unnamed(id) {
+            rename(id, name)
+        } else if let id = glasses?.facing, !isWearer(id), unnamed(id) {
+            rename(id, name)
+        }
     }
 
     private func rename(_ id: String, _ name: String) {
