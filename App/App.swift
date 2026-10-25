@@ -1040,7 +1040,8 @@ struct LensMirror: View {
                     Spacer(minLength: 0)
                 }
                 .padding(m.pad)
-                .frame(width: memberInner(member), maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxHeight: .infinity, alignment: .topLeading)
+                .frame(width: memberWidth(member))
                 .modifier(LensCardBackground(radius: m.radius))
             }
         }
@@ -1068,10 +1069,10 @@ struct LensMirror: View {
         }
     }
 
-    /// A two-up card's width inside its padding, from its share of the lens.
-    private func memberInner(_ member: Member) -> CGFloat {
+    /// A two-up card's width, from its share of the lens.
+    private func memberWidth(_ member: Member) -> CGFloat {
         let total: CGFloat = LensMetrics.canvas - 12
-        return total * member.share - 2 * m.pad
+        return total * member.share
     }
 
     /// Mirror of `LensCards.groupRow`.
