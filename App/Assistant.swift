@@ -228,6 +228,8 @@ import Observation
         config.suggestions = Tuning.bool("aidSuggest", true)
         config.answerMine = Tuning.bool("aidAnswerMine", true)
         config.defineMine = Tuning.bool("aidDefineMine", true)
+        // Off: the "one striking fact" cards were noise. Definitions of useful terms stay.
+        config.insights = Tuning.bool("aidInsights", false)
         return Aid(config: config)
     }
 
