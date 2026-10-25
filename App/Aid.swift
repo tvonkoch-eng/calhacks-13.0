@@ -389,7 +389,7 @@ enum Talk {
             closedInTurn = closed.count
             // Coach each real sentence of theirs as it lands, so a definition is up while they're
             // still talking and the wearer is listening anyway.
-            if newest.split(separator: " ").count >= 4, Date().timeIntervalSince(lastCoach) > 3,
+            if newest.split(separator: " ").count >= 3, Date().timeIntervalSince(lastCoach) > 1.5,
                Tools.command(in: newest) == nil { coachSoon() }
         }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
@@ -1062,7 +1062,7 @@ enum Talk {
         if let moment, wanted != nil {
             // A lull is optional: a line the coach itself rates as one anyone could say isn't worth
             // breaking the silence for. Asked for, or a face just recognised, the best one goes up.
-            let good = moment != .lull || (advice.score ?? 3) >= 3
+            let good = moment != .lull || (advice.score ?? 3) >= 2
             // The best that passes the checks; a runner-up when the best asks them about the wearer's
             // own promise ("Did you catch the demo video?" when Toby owes it) or was already said.
             let promises = (them.facts + others.flatMap(\.facts)).filter { Talk.isPromise($0, by: config.wearer) }
@@ -1073,7 +1073,7 @@ enum Talk {
         // The runners-up wait for the next lull, which then needs no call at all.
         if moment != nil {
             // Only ones good enough to show in a lull on their own (score 3+).
-            let fresh = advice.alternatives.filter { ($0.score ?? 3) >= 3 }.map(\.say)
+            let fresh = advice.alternatives.filter { ($0.score ?? 3) >= 2 }.map(\.say)
                 .filter { text in usable(text) && !ideas.contains { Talk.same($0.text, text) } }
             ideas = Array((fresh.map { (text: $0, at: now, line: lines.count) } + ideas).prefix(4))
         }
@@ -1111,7 +1111,7 @@ enum Talk {
     @ObservationIgnored private var suggested: [String] = []
 
     /// Seconds of quiet after a line that count as a lull. Under three seconds is someone thinking.
-    private static let lull: TimeInterval = 3
+    private static let lull: TimeInterval = 2
 
     /// The wearer asks what to say: a pinch on the glasses, "Lens, what should I ask?", `s` on the Mac.
     func suggestNow() {

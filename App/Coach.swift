@@ -83,9 +83,10 @@ enum Coach {
     either speaker: finance (financial derivatives, short selling, a yield curve), science, \
     engineering, medicine, law, a named method or model (Black-Scholes, transformers, CRISPR), a \
     foreign phrase. The point is to make the conversation richer, so lean toward giving one when \
-    a line has a real concept in it, even one the wearer roughly knows. Only established concepts, \
-    never a specific law, company, product, person or event: those change, and you may not know \
-    the latest. Never plain everyday or generic business words (startup, meeting, team, money, \
+    a line has a real concept or topic in it, even one the wearer roughly knows; when in doubt, give \
+    one. A well-known topic counts too (a famous company, place, historical event, field or \
+    movement), defined by what is stable about it ("Great Wall of China": "Ming-era fortifications, \
+    ~21,000 km long"); never its latest news, numbers that change, or a private person. Never plain everyday or generic business words (startup, meeting, team, money, \
     app, AI, coding, hackathon). Skip a term the speaker explains in the same breath and pick the \
     next one instead. Speech recognition mangles jargon: if a term looks misheard, define what \
     was clearly meant under its real name ("lawyer adapter" → LoRA adapter), or skip it if \
