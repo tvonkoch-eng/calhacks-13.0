@@ -95,17 +95,12 @@ enum LensCards {
     /// with the space between filled so the card reads as tall as the half it sits in.
     static func personCard(_ person: Person, shot: LensShot, avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .column, spacing: 10) {
-            if let photo = avatar(person.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-            FlexBox(direction: .column) {}.padding(.top, LensFit.person(person, lines: shot.primary).left)
-            Text(person.name, style: .heading)
-            Text(person.headline, style: .body).flexShrink(1)
-            // Why they matter: the tie and highlights, the same lines the full card shows.
+            header(photo: avatar(person.id), name: person.name, headline: person.headline, bright: true)
+            // Why they matter, straight under the header: every bullet that fits.
             for line in shot.primary {
-                Text(line, style: .meta, color: .secondary).flexShrink(1)
+                Text(line, style: .body).flexShrink(1)
             }
-            if let context = shot.context, shot.primary.isEmpty {
-                Text(context, style: .meta, color: .secondary).flexShrink(1)
-            }
+            FlexBox(direction: .column) {}.padding(.top, LensFit.person(person, lines: shot.primary).left)
         }
         .padding(22)
         .background(.card)
@@ -169,20 +164,31 @@ enum LensCards {
     static func groupCards(_ group: [Member], avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .row, spacing: 12) {
             for member in group.prefix(2) {
-                FlexBox(direction: .column, spacing: 10) {
-                    if let photo = avatar(member.id) { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
-                    FlexBox(direction: .column) {}.padding(.top, LensFit.member(member, lines: member.lines).left)
-                    Text(member.name, style: .heading, color: member.speaking ? .primary : .secondary)
-                    Text(member.headline, style: .body, color: .secondary).flexShrink(1)
+                FlexBox(direction: .column, spacing: 8) {
+                    header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
+                           headline: member.headline, bright: member.speaking)
                     for line in member.lines {
-                        Text(line, style: .meta, color: .secondary).flexShrink(1)
+                        Text(line, style: .meta).flexShrink(1)
                     }
+                    FlexBox(direction: .column) {}.padding(.top, LensFit.member(member, lines: member.lines).left)
                 }
                 .padding(22)
                 .background(.card)
                 .flexGrow(1)
                 .flexShrink(1)
             }
+        }
+    }
+
+    /// Photo on the left, full name over what they do on the right.
+    private static func header(photo: UIImage?, name: String, headline: String, bright: Bool) -> FlexBox {
+        FlexBox(direction: .row, spacing: 14) {
+            if let photo { Image(image: photo, sizePreset: .icon, cornerRadius: .medium) }
+            FlexBox(direction: .column, spacing: 2) {
+                Text(name, style: .heading, color: bright ? .primary : .secondary).flexShrink(1)
+                Text(headline, style: .meta, color: .secondary).flexShrink(1)
+            }
+            .flexShrink(1)
         }
     }
 
@@ -410,9 +416,9 @@ enum LensCards {
         var pool: [String] = []
         if let recall = recall?(person.id), !recall.isEmpty { pool.append(recall) }
         if let tie = person.tie, !tie.isEmpty { pool.append(tie) }
-        pool += (person.highlights ?? []).map { "\u{2014} " + $0 }
+        pool += person.highlights ?? []
         pool += person.details.map(\.text).filter { !$0.isEmpty }
-        return pool
+        return pool.map { "\u{2022} " + $0 }
     }
 
     /// The phone's stand-in for an aid card's lens icon.
@@ -530,20 +536,24 @@ enum LensFit {
     /// A person card's lines: those from `pool` that fit its height measured as they wrap, and the
     /// height left over, which goes between the photo and the name.
     static func person(_ person: Person, lines pool: [String]) -> (lines: [String], left: CGFloat) {
-        take(pool, name: person.name, headline: person.headline, width: panel - 44)
+        take(pool, name: person.name, headline: person.headline, width: panel - 44, font: body, gap: 10)
     }
 
     /// The same for one of two side-by-side cards.
     static func member(_ member: Member, lines pool: [String]) -> (lines: [String], left: CGFloat) {
-        take(pool, name: member.name, headline: member.headline, width: (panel - 12) / 2 - 44)
+        take(pool, name: member.fullName.isEmpty ? member.name : member.fullName, headline: member.headline,
+             width: (panel - 12) / 2 - 44, font: meta, gap: 8)
     }
 
-    private static func take(_ pool: [String], name: String, headline: String, width: CGFloat) -> (lines: [String], left: CGFloat) {
-        // Padding, photo, the spacings, the name and the headline as it wraps.
-        var left = half - (44 + 56 + 30 + (lines(name, heading, width) + lines(headline, body, width)) * slack)
+    private static func take(_ pool: [String], name: String, headline: String, width: CGFloat,
+                             font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
+        // Padding, then the header: the photo, or the name over the headline beside it if taller.
+        let beside = width - 70
+        let header = max(56, (lines(name, heading, beside) + lines(headline, meta, beside)) * slack + 2)
+        var left = half - (44 + header + gap)
         var out: [String] = []
         for line in pool {
-            let h = lines(line, meta, width) * slack + 10
+            let h = lines(line, font, width) * slack + gap
             if h > left { break }
             left -= h
             out.append(line)

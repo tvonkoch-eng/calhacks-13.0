@@ -991,26 +991,11 @@ struct LensMirror: View {
     /// Mirror of `LensCards.personCard`: photo at the top, name and what they do at the foot.
     private func personCard(id: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Grey until the photo's write lands, as on the lens.
-            if shot.photoPending {
-                RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous)
-                    .fill(Color(white: 0.28))
-                    .frame(width: m.icon, height: m.icon)
-            } else if let photo = avatar(id) {
-                Image(uiImage: photo)
-                    .resizable().aspectRatio(contentMode: .fill)
-                    .frame(width: m.icon, height: m.icon)
-                    .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+            header(id: id, name: shot.name ?? "", headline: shot.headline ?? "", bright: true)
+            ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
+                Text(line).font(.system(size: m.body))
             }
             Spacer(minLength: 0)
-            Text(shot.name ?? "").font(.system(size: m.heading, weight: .semibold))
-            Text(shot.headline ?? "").font(.system(size: m.body))
-            ForEach(Array(shot.primary.enumerated()), id: \.offset) { _, line in
-                Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
-            }
-            if let context = shot.context, shot.primary.isEmpty {
-                Text(context).font(.system(size: m.meta)).foregroundStyle(secondary)
-            }
         }
         .padding(m.pad)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1022,24 +1007,39 @@ struct LensMirror: View {
     private var groupCards: some View {
         HStack(alignment: .top, spacing: 12) {
             ForEach(shot.group.prefix(2), id: \.id) { member in
-                VStack(alignment: .leading, spacing: 10) {
-                    if let photo = avatar(member.id) {
-                        Image(uiImage: photo)
-                            .resizable().aspectRatio(contentMode: .fill)
-                            .frame(width: m.icon, height: m.icon)
-                            .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                VStack(alignment: .leading, spacing: 8) {
+                    header(id: member.id, name: member.fullName.isEmpty ? member.name : member.fullName,
+                           headline: member.headline, bright: member.speaking)
+                    ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: m.meta))
                     }
                     Spacer(minLength: 0)
-                    Text(member.name).font(.system(size: m.heading, weight: .semibold))
-                        .foregroundStyle(member.speaking ? Color.white : secondary)
-                    Text(member.headline).font(.system(size: m.body)).foregroundStyle(secondary)
-                    ForEach(Array(member.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
-                    }
                 }
                 .padding(m.pad)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .modifier(LensCardBackground(radius: m.radius))
+            }
+        }
+    }
+
+    /// Mirror of `LensCards.header`: photo left, full name over what they do on the right.
+    private func header(id: String, name: String, headline: String, bright: Bool) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            // Grey until the photo's write lands, as on the lens.
+            if shot.photoPending && id == shot.photo {
+                RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous)
+                    .fill(Color(white: 0.28))
+                    .frame(width: m.icon, height: m.icon)
+            } else if let photo = avatar(id) {
+                Image(uiImage: photo)
+                    .resizable().aspectRatio(contentMode: .fill)
+                    .frame(width: m.icon, height: m.icon)
+                    .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).font(.system(size: m.heading, weight: .semibold))
+                    .foregroundStyle(bright ? Color.white : secondary)
+                Text(headline).font(.system(size: m.meta)).foregroundStyle(secondary)
             }
         }
     }

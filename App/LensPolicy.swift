@@ -29,4 +29,6 @@ struct Member: Equatable {
     var speaking = false
     /// What else is known about them, most telling first; the split lens shows what fits.
     var lines: [String] = []
+    /// Full name, for the split lens's card.
+    var fullName: String = ""
 }
