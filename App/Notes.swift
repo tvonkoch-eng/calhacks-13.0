@@ -205,6 +205,7 @@ struct SavedConversation: Codable, Identifiable, Equatable {
     /// The live conversation's people, added as they're recognised, until it ends.
     private(set) var people: [String] = []
     private var started: Date?
+    private var lastHere = Date()
     /// A conversation is running. One starts only when someone is in front of the glasses and a
     /// line is loud enough to be the wearer talking; until then what the mic hears is dropped.
     var active: Bool { started != nil }
@@ -230,6 +231,13 @@ struct SavedConversation: Codable, Identifiable, Equatable {
                 return
             }
             started = first.at
+            lastHere = Date()
+        }
+        // Once going, every line counts. It ends after 30 s of quiet, or 30 s with nobody in front.
+        if assistant.glasses?.someoneHere ?? false { lastHere = Date() }
+        if Date().timeIntervalSince(lastHere) >= Self.quiet {
+            end(assistant)
+            return
         }
         for id in faces where !people.contains(id) { people.append(id) }
         if assistant.aid.partial.isEmpty, let last = lines.last, Date().timeIntervalSince(last.at) >= Self.quiet {
@@ -276,9 +284,9 @@ struct SavedConversation: Codable, Identifiable, Equatable {
             let other = assistant.aid.lines.last { $0.speaker != Assistant.me && !$0.command }.flatMap { assistant.voices[$0.id] ?? $0.speaker }
             out.append(SavedLine(id: "live", who: mine ? "Me" : person(other), text: partial, me: mine, speaking: true))
         }
-        // The iPhone mic can't tell the wearer by volume: everyone is Person A, B, …, and the
-        // bubbles just switch sides whenever the speaker does.
-        if assistant.mic == .phone {
+        // Volume can't reliably tell the wearer from someone close (Oct 24: 13.5 dB vs up to 13.2),
+        // so the bubbles just switch sides whenever the speaker does.
+        do {
             var right = false
             for index in out.indices {
                 if index > 0, out[index - 1].who != out[index].who { right.toggle() }
