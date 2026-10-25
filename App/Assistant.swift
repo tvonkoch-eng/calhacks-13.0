@@ -12,7 +12,8 @@ import Observation
     var armed = false
     var note = ""
     /// The wearer turned listening off; until they turn it on again, don't re-arm on our own.
-    var mutedByUser = false
+    /// Starts true: every launch and redeploy comes up with the mic off until the pill turns it on.
+    var mutedByUser = true
     /// Everyone in the conversation, in the order they joined, the one talking marked.
     private(set) var members: [Member] = []
     /// Muse's own voice label for each transcript line (Person A, B, … follow these).
