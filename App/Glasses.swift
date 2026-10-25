@@ -95,9 +95,24 @@ enum Identification {
     }
 
     /// Rewrites the lens when who is in frame changes the group row (two in view, or back to one).
+    /// Who's on the lens, oldest first. A new face joins; a third pushes the oldest off; anyone
+    /// unseen for `groupHolds` times out. First in, first out.
+    @ObservationIgnored private var lensPeople: [String] = []
+
+    private func updateLensPeople(seen: [String]) {
+        for id in seen where !lensPeople.contains(id) { lensPeople.append(id) }
+        if lensPeople.count > 2 { lensPeople.removeFirst(lensPeople.count - 2) }
+        lensPeople.removeAll { id in sighted[id].map { clockNow.timeIntervalSince($0) >= groupHolds } ?? true }
+    }
+
+    /// In view right now: seen in the last second.
+    private func inView(_ id: String) -> Bool {
+        sighted[id].map { clockNow.timeIntervalSince($0) < 1 } ?? false
+    }
+
     private func refreshGroupView() {
-        // Ids with their shares, so a card growing or shrinking also rewrites the lens.
-        let visible = groupInView.map { "\($0.id):\($0.share)" }
+        // Who's up and who's glowing: either changing rewrites the lens.
+        let visible = lensPeople.map { "\($0):\(inView($0))" }
         guard visible != visibleGroup else { return }
         visibleGroup = visible
         if lensMode == .split { renderLens() }
@@ -217,7 +232,10 @@ enum Identification {
     /// 30 fell to 504x896 within ~10 s, and per-frame sharpness falls as the rate rises. Face scans
     /// cost the same at every size. Battery is the price; push `streamFps: 2` to go back.
     ///
-    /// Now high at 7. The evening link test (Oct 24, glasses on) never got 720p at 15 fps, not even
+    /// Now 15 again (Oct 24, 7:50 pm, asked for): smoother faces, at the risk below of dropping
+    /// under 720p. `streamFps: 7` goes back with no rebuild.
+    ///
+    /// Was high at 7. The evening link test (Oct 24, glasses on) never got 720p at 15 fps, not even
     /// with the lens idle; at 7 fps it held 720p 100% idle and while writing names. Full-card
     /// writes can still push it to 504x896, so a card is written once per new person.
     /// What the currently-attached camera was actually built with, so a pushed change to
@@ -226,7 +244,7 @@ enum Identification {
     @ObservationIgnored private var liveStreamSettings: String?
     private var streamSettings: String { "\(streamFps)/\(streamRes)" }
     var streamRes: String { UserDefaults.standard.string(forKey: "streamRes") ?? "high" }
-    var streamFps: Int { Tuning.int("streamFps", 7) }
+    var streamFps: Int { Tuning.int("streamFps", 15) }
     /// Names a recorded run. A simulated pair ignores the knobs (see `streamConfig`), so say so.
     private var streamLabel: String {
         #if DEBUG
@@ -1775,6 +1793,7 @@ enum Identification {
         // still owns the lens. Decided before sightings are recorded, so this frame can't silence itself.
         let allowed = chosen.map { correcting ? !identifying : mayShow($0.match.person.id) } ?? false
         for seen in seenNow { sighted[seen.id] = frameTime }
+        updateLensPeople(seen: seenNow.map(\.id))
         onSeen?(seenNow.map(\.id))
         refreshGroupView()
         // Who the wearer is facing, for the aid: the clearest match in view right now.
@@ -2310,25 +2329,23 @@ enum Identification {
         case .identity:
             return hud()
         case .split:
-            // Two or more people in the conversation: a card each. Otherwise the person on the card.
-            let inView = groupInView
-            var members = inView.count >= 2 ? inView : []
-            // A new face while the last one is still about: both go up at once, rather than the new
-            // one alone until the conversation's group catches up a second later.
-            // Face ID clears the card between faces; the people stay while they're still about.
-            if let person, person.id != cardPerson?.id { priorPerson = cardPerson; cardPerson = person }
-            let recent = { (p: Person?) in p.flatMap { p in self.sighted[p.id].map { self.clockNow.timeIntervalSince($0) < self.groupHolds } } ?? false }
-            let person = person ?? (recent(cardPerson) ? cardPerson : nil)
-            if members.isEmpty, let person, let prior = priorPerson, prior.id != person.id,
-               let seen = sighted[prior.id], clockNow.timeIntervalSince(seen) < groupHolds {
-                members = [member(person, share: 0.55), member(prior, share: 0.45)]
+            // The people on the lens (`lensPeople`): two side by side, 50/50, left to right as they
+            // stand; one alone fills the half. Whoever is in view right now glows.
+            let people = lensPeople.compactMap { id in store?.people.first { $0.id == id } }
+            var members: [Member] = []
+            var partner = person
+            if people.count == 2 {
+                members = people.map { var m = member($0, share: 0.5); m.focused = inView($0.id); return m }
                     .sorted { (faceX[$0.id] ?? 0.5) < (faceX[$1.id] ?? 0.5) }
+                partner = nil
+            } else if let only = people.first {
+                partner = only
             }
-            let partner = members.isEmpty ? person : nil
             lensShot = LensCards.shot(split: aidLens, person: partner, group: members, meSpeaking: meSpeaking)
+            lensShot?.focused = partner.map { inView($0.id) } ?? false
             lensShot?.photoPending = photoPending && partner != nil
             return LensCards.split(aidLens, person: partner, group: members, meSpeaking: meSpeaking,
-                                   photoPending: photoPending, avatar: avatar)
+                                   photoPending: photoPending, focused: lensShot?.focused ?? false, avatar: avatar)
         }
     }
 

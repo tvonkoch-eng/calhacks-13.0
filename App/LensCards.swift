@@ -60,6 +60,8 @@ struct LensShot: Equatable {
     var group: [Member] = []
     /// The wearer is the one talking.
     var meSpeaking = false
+    /// The one person's card is in view right now: it glows.
+    var focused = false
 }
 
 /// What the Ray-Ban Display lens shows. One root FlexBox per send; keep it glanceable:
@@ -74,8 +76,9 @@ enum LensCards {
     /// cards land right on top of the person, mid-lens. The spacer therefore also gets an explicit
     /// height: what's left of the panel after an estimate of everything else (`LensFit`).
     static func split(_ view: LensView, person: Person?, group: [Member] = [], meSpeaking: Bool = false,
-                      photoPending: Bool = false, avatar: (String) -> UIImage?) -> FlexBox {
-        let shot = Self.shot(split: view, person: person, group: group, meSpeaking: meSpeaking)
+                      photoPending: Bool = false, focused: Bool = false, avatar: (String) -> UIImage?) -> FlexBox {
+        var shot = Self.shot(split: view, person: person, group: group, meSpeaking: meSpeaking)
+        shot.focused = focused
         let gap = LensFit.gap(shot, bottom: bottom(person: person, group: group))
         return FlexBox(direction: .column, spacing: LensFit.spacing) {
             for (index, card) in shot.cards.enumerated() { cardBox(card, newest: index == 0) }
@@ -97,6 +100,7 @@ enum LensCards {
     /// with the space between filled so the card reads as tall as the half it sits in.
     static func personCard(_ person: Person, shot: LensShot, avatar: (String) -> UIImage?) -> FlexBox {
         FlexBox(direction: .column, spacing: 10) {
+            if shot.focused, let glow = glowBar { Image(image: glow, sizePreset: .fill, cornerRadius: .none) }
             header(photo: avatar(person.id), name: person.name, width: LensFit.personWidth, bright: true)
             // Why they matter, straight under the header: every bullet that fits.
             for line in shot.primary {
@@ -171,6 +175,7 @@ enum LensCards {
         FlexBox(direction: .row, spacing: 12) {
             for member in group.prefix(2) {
                 FlexBox(direction: .column, spacing: 8) {
+                    if member.focused, let glow = glowBar { Image(image: glow, sizePreset: .fill, cornerRadius: .none) }
                     header(photo: avatar(member.id), name: member.fullName.isEmpty ? member.name : member.fullName,
                            width: LensFit.memberWidth(member), bright: member.speaking)
                     for line in member.lines {
@@ -505,6 +510,13 @@ enum LensCards {
         case .from: .house
         case .interests: .heart
         }
+    }
+
+    /// The in-focus mark: the lens draws no borders or glows, so a thin bright bar across the top
+    /// of the card, drawn as an image, stands in for one.
+    static let glowBar: UIImage? = UIGraphicsImageRenderer(size: CGSize(width: 600, height: 8)).image { _ in
+        UIColor(white: 1, alpha: 0.95).setFill()
+        UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: 600, height: 8), cornerRadius: 4).fill()
     }
 
     /// A small green tag with the count in it. The lens text has no colors, so the tag is drawn.

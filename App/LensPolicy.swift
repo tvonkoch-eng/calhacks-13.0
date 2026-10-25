@@ -33,4 +33,6 @@ struct Member: Equatable {
     var fullName: String = ""
     /// Their share of the lens's width when two are up: 0.55 for the dominant one, 0.45 for the other: just enough to tell.
     var share: CGFloat = 0.5
+    /// In view right now: the card glows.
+    var focused = false
 }

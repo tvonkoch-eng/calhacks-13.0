@@ -1023,7 +1023,7 @@ struct LensMirror: View {
         }
         .padding(m.pad)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .modifier(LensCardBackground(radius: m.radius))
+        .modifier(LensCardBackground(radius: m.radius, glow: shot.focused))
     }
 
     /// Mirror of `LensCards.groupCards`: a quarter of the lens each, photo at the top, name and
@@ -1042,7 +1042,7 @@ struct LensMirror: View {
                 .padding(m.pad)
                 .frame(maxHeight: .infinity, alignment: .topLeading)
                 .frame(width: memberWidth(member))
-                .modifier(LensCardBackground(radius: m.radius))
+                .modifier(LensCardBackground(radius: m.radius, glow: member.focused))
             }
         }
     }
@@ -1314,6 +1314,8 @@ private struct GlassText: ViewModifier {
 /// glass, not inset from it.
 private struct LensCardBackground: ViewModifier {
     let radius: CGFloat
+    /// In focus: the glass's bar across the top, and on the phone a soft glow round the card too.
+    var glow = false
     /// Measured (39, 40, 45) on the real renderer. Not black, and slightly blue.
     static let fill = Color(red: 39 / 255, green: 40 / 255, blue: 45 / 255)
 
@@ -1325,6 +1327,18 @@ private struct LensCardBackground: ViewModifier {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .fill(Self.fill.opacity(Double(Tuning.float("lensCardAlpha", 0.6))))
             )
+            .overlay(alignment: .top) {
+                if glow {
+                    Capsule().fill(Color.white.opacity(0.95)).frame(height: 8).padding(.horizontal, radius * 0.6).padding(.top, 6)
+                }
+            }
+            .overlay {
+                if glow {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.85), lineWidth: 3)
+                        .shadow(color: .white.opacity(0.8), radius: 10)
+                }
+            }
     }
 }
 
