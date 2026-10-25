@@ -80,12 +80,17 @@ enum Tools {
     /// way to know.
     static func wants(_ question: String) -> Bool {
         let q = " " + question.lowercased().replacingOccurrences(of: "\u{2019}", with: "'") + " "
-        return cues.contains { q.contains($0) }
+        // "How far is Berkeley from San Francisco": between two named places, a fact from memory,
+        // streamed before the question ends. Only a distance from here needs the device.
+        let between = q.contains(" from ") && ![" from here", " from us", " from me", " from where"].contains(where: q.contains)
+        return cues.contains { cue in q.contains(cue) && !(between && (cue == "how far" || cue == "walking distance")) }
     }
 
     private static let cues = [
         // places
         "nearest", "closest", "near me", "near here", "nearby", "around here", "close by", "close to here",
+        // "us" and "you" as often as "me": "a popular Chinese restaurant near us" went unanswered.
+        "near us", "near you", "around us", "close to us", "in the area", "around the corner", "walk from here",
         "how far", "walking distance", "where's the", "where is the", "where can i", "where do i find",
         "directions to", "get to the",
         // weather
@@ -482,6 +487,9 @@ final class DeviceTools: Toolbox, @unchecked Sendable {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
         request.region = MKCoordinateRegion(center: here.coordinate, latitudinalMeters: 6000, longitudinalMeters: 6000)
+        // Inside the region, not just near it: as a hint, "coffee" around Berkeley came back as a café
+        // 10 miles away.
+        if #available(iOS 18.0, macOS 15.0, *) { request.regionPriority = .required }
         let items = try await MKLocalSearch(request: request).start().mapItems
         let ranked = items.compactMap { item in Self.location(of: item).map { (item, $0.distance(from: here)) } }
         guard let (item, meters) = ranked.min(by: { $0.1 < $1.1 }) else {
@@ -664,12 +672,17 @@ actor Locator {
             asked = true
             await MainActor.run { Permission.location() }
         }
+        // No fix last time (no permission, deep indoors, a Mac): don't make every question wait
+        // another 1.5 s for one, for a minute.
+        if -failedAt.timeIntervalSinceNow < 60 { return last }
         if let fresh = await fix(within: 1.5) {
             last = fresh
             return fresh
         }
+        failedAt = Date()
         return last
     }
+    private var failedAt = Date.distantPast
 
     private var described: (text: String, at: Date)?
 

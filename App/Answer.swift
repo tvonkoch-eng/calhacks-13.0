@@ -100,26 +100,27 @@ struct Answerer {
     truly needs explaining (how or why something works) give one or two short sentences, at most \
     25 words: the core idea only, no list of every factor. \
     Never a preamble or the question restated. A number keeps its unit, always in US units: miles, feet, °F, pounds, gallons; never km, \
-    meters, °C or kg, and never both. Plain facts only. If the \
-    conversation or what's known about them answers it, answer from that.
+    meters, °C or kg, and never both. Plain facts only. The conversation and what's known about \
+    them are for understanding the question ("it", "they"), never the answer to repeat back.
 
     Stable facts (distances between places, sizes, dates, definitions, history) come from memory, \
     never WEB: a quick answer beats a slow lookup.
 
     Reply with exactly WEB, and nothing else, if it is a public fact you can't give reliably from \
-    memory: news or anything recent, prices, scores, schedules, or a specific company, product or \
-    paper you don't know well. You do know the current date and time (below): use them for time \
+    memory: news or anything recent, prices, scores, schedules, awards, or a specific person, \
+    company, product or paper you don't know well. You do know the current date and time (below): use them for time \
     zones, ages and countdowns.
 
     "Where" names the event and place they're at: use it for "here" and "this thing". A question \
     about this place or event that nothing above answers is WEB only when "Where" names the \
     event; otherwise SKIP.
 
-    Reply with exactly SKIP, and nothing else, if the question is personal or social (about the \
-    people talking, their feelings, plans, opinions or preferences, or anything that's theirs: \
-    their company, project, school, family) and nothing above answers it; or if it is rhetorical, \
-    a request to do something, or too fragmentary to guess at. Never guess about the people \
-    talking, and never send them to the web.
+    Reply with exactly SKIP, and nothing else, if the question is about the people talking or \
+    anything that's theirs (their work, project, product, company, school, plans, opinions, \
+    feelings), even when the conversation says the answer: they know their own lives, and an \
+    answer there speaks for them ("is it like Cluely?" about the wearer's project is SKIP). Also \
+    SKIP if it is rhetorical, a request to do something, or too fragmentary to guess at. Never send \
+    the people talking to the web.
     """
 
     /// "I don't have real-time…", "Sorry, …": a refusal on the lens is worse than nothing, so it is

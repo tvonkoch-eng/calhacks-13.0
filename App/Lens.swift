@@ -77,7 +77,7 @@ struct Card: Equatable {
     /// Higher wins the slot. An answer was asked for out loud; a definition explains something just
     /// said.
     enum Kind: Int, Comparable {
-        case definition = 2, answer = 3
+        case insight = 1, definition = 2, answer = 3
         static func < (a: Kind, b: Kind) -> Bool { a.rawValue < b.rawValue }
     }
 
@@ -111,13 +111,17 @@ struct Compositor {
     private(set) var view = LensView()
 
     /// Two fit above the person on a 600 px panel; a third would push the newest one's detail off.
-    static let maxCards = 2
-    static let ttl: [Card.Kind: TimeInterval] = [.answer: 15, .definition: 10]
+    /// Three: with definitions and insights coming every few sentences, two let most of them
+    /// expire waiting for a slot. LensFit drops the oldest when they don't fit the top half.
+    static let maxCards = 3
+    static let ttl: [Card.Kind: TimeInterval] = [.answer: 15, .definition: 10, .insight: 10]
     static let minDwell: TimeInterval = 2.5
     static let answerDwell: TimeInterval = 5
     /// How long a card may wait for a place (or for the wearer to stop talking) before it is
     /// stale. In a fast conversation a definition is worth little five seconds on.
-    static let maxWait: [Card.Kind: TimeInterval] = [.answer: 3, .definition: 5]
+    /// Eight seconds for a definition or insight: the wearer's own turn holds new cards, and at 5 s
+    /// most of what was found while they talked was thrown away unseen.
+    static let maxWait: [Card.Kind: TimeInterval] = [.answer: 3, .definition: 8, .insight: 8]
     /// A suggestion is for the wearer's next turn (Aid clears it once they've spoken); if they
     /// don't take it, it fades.
     static let followupLife: TimeInterval = 20

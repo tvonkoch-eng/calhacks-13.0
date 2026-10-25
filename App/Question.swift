@@ -94,12 +94,13 @@ enum QuestionGate {
             break
         }
         guard !clause.isEmpty else { return nil }
-        // "congrats, how was it?": with a question mark, a few leading words before the question
-        // word are an interjection. Without one, "the guy who wrote it" is not a question.
+        // "congrats, how was it?", "last thing, is there a coffee place near here?": with a question
+        // mark, a few leading words before the question word or auxiliary are an interjection.
+        // Without one, "the guy who wrote it" is not a question.
         if explicitMark, !peeled {
             let words = clause.split(separator: " ").map(String.init)
             if let first = words.first, !wh.contains(first), !aux.contains(first),
-               let at = words.prefix(4).firstIndex(where: { wh.contains($0) }), at > 0 {
+               let at = words.prefix(4).firstIndex(where: { wh.contains($0) || aux.contains($0) }), at > 0 {
                 clause = words[at...].joined(separator: " ")
             }
         }
