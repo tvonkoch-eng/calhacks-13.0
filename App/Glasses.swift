@@ -1906,8 +1906,9 @@ enum Identification {
         // Who the wearer is facing, for the aid: the clearest match in view right now.
         let looking = seenNow.max { $0.score < $1.score }?.id
         if looking != facing { facing = looking }
-        // Any face big enough to name that nobody matches yet, alongside known ones or not.
-        detecting = inView.contains { facePx($0) >= minAnnouncePx && store.confidentMatch($0.probe) == nil && metTracks[$0.id] == nil }
+        // Any face big enough to name that nobody matches yet, alongside known ones or not. Only
+        // for the demo's first task: everywhere else the card was noise.
+        detecting = demo.on && demo.step == .look && inView.contains { facePx($0) >= minAnnouncePx && store.confidentMatch($0.probe) == nil && metTracks[$0.id] == nil }
         if seenNow.isEmpty { noticeStranger(inView, image: image, store: store) }
         betterLooks(inView, hits: scan.hits, image: image, store: store)
         guard let chosen, allowed else {
