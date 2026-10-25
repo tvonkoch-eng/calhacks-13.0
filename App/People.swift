@@ -349,7 +349,8 @@ struct ContactView: View {
     @Environment(CRM.self) private var crm
     @Environment(\.dismiss) private var dismiss
     let id: String
-    @State private var editing = false
+    @State private var name = ""
+    @FocusState private var typingName: Bool
     @State private var note = ""
     @State private var learned = ""
     @State private var allHistory = false
@@ -367,8 +368,6 @@ struct ContactView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     header(person)
-                    // Filled in by the backend's enrichment; nothing to type here.
-                    section("About") { about(person) }
                     section("Notes") {
                         TextField("Anything worth remembering about \(first(person))", text: $note, axis: .vertical)
                             .font(.subheadline)
@@ -392,6 +391,8 @@ struct ContactView: View {
                             .buttonStyle(.plain)
                         }
                     }
+                    // Filled in by the backend's enrichment; read-only.
+                    section("Enriched data") { about(person) }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 40)
@@ -415,8 +416,7 @@ struct ContactView: View {
                     } label: { Image(systemName: "ellipsis.circle") }
                 }
             }
-            .sheet(isPresented: $editing) { ContactEditor(person: person) { _ in } }
-            .onAppear { note = store.notes[id] ?? "" }
+            .onAppear { note = store.notes[id] ?? ""; name = person.name }
             .onChange(of: note) { _, text in store.setNote(id, text) }
         } else {
             Text("Forgotten.").foregroundStyle(.secondary)
@@ -425,8 +425,8 @@ struct ContactView: View {
 
     private func header(_ person: Person) -> some View {
         HStack(alignment: .center, spacing: 16) {
-            // One tap on the photo or the name edits them; the little pencils say so.
-            Button { editing = true } label: {
+            // The photo opens their face photos, to pick one or upload a new one.
+            NavigationLink { FaceGallery(person: person) } label: {
                 Avatar(person: person, size: 76, corner: 22)
                     .overlay(alignment: .bottomTrailing) {
                         Image(systemName: "pencil").font(.system(size: 10, weight: .bold))
@@ -438,21 +438,39 @@ struct ContactView: View {
             }
             .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 3) {
-                Button { editing = true } label: {
-                    (Text(person.name) + Text("  ") + Text(Image(systemName: "pencil")).font(.system(size: 15, weight: .semibold)).foregroundColor(.secondary))
-                        .font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(2)
-                        .multilineTextAlignment(.leading)
+                // The name is edited in place: tap it (or its pencil) and type.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    TextField("Name", text: $name, axis: .vertical)
+                        .font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(1...2)
+                        .focused($typingName)
+                        .submitLabel(.done)
+                        .onChange(of: name) { _, text in
+                            // Return ends editing rather than adding a line.
+                            if text.contains("\n") { name = text.replacingOccurrences(of: "\n", with: ""); typingName = false }
+                        }
+                    if !typingName {
+                        Button { typingName = true } label: {
+                            Image(systemName: "pencil").font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
-                Text(crm.label(id) ?? person.headline).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 Text(summary).font(.caption).foregroundStyle(.tertiary).padding(.top, 2)
             }
             Spacer(minLength: 0)
         }
-        // Anywhere on the header (photo, name, the lines under it) opens the editor.
-        .contentShape(Rectangle())
-        .onTapGesture { editing = true }
         .padding(.top, 8)
+        .onChange(of: typingName) { _, typing in if !typing { rename(person) } }
+    }
+
+    private func rename(_ person: Person) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { name = person.name; return }
+        guard clean != person.name else { return }
+        var updated = person
+        updated.name = clean
+        store.update(updated)
+        crm.rename(id, to: clean)
     }
 
     /// "Talked 3 times · last on Oct 22" or "Haven't talked yet".
@@ -826,27 +844,31 @@ struct PhotoPick: View {
 struct FaceGallery: View {
     @Environment(Store.self) private var store
     let person: Person
-    @State private var doomed: Store.Shot?
+    /// The photo tapped: make it the profile photo, or (one of theirs) delete it.
+    @State private var chosen: (image: UIImage, shot: Store.Shot?)?
     @State private var adding = false
+    @State private var upload: PhotosPickerItem?
 
     var body: some View {
         let shots = store.shots[person.id] ?? []
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 6)], spacing: 6) {
-                // First tile: add a photo.
-                Button { adding = true } label: {
-                    Color(.secondarySystemBackground).aspectRatio(1, contentMode: .fit)
-                        .overlay(Image(systemName: "plus").font(.title2.weight(.medium)).foregroundStyle(.secondary))
-                }
-                .buttonStyle(.plain)
+                // First tiles: take a photo, or upload one as the profile photo.
+                Button { adding = true } label: { action("camera") }.buttonStyle(.plain)
+                PhotosPicker(selection: $upload, matching: .images) { action("photo.badge.plus") }.buttonStyle(.plain)
                 // Their profile photo, first.
-                if let avatar = store.avatars[person.id] { tile(avatar) }
+                if let avatar = store.avatars[person.id] {
+                    tile(avatar).overlay(alignment: .bottomLeading) {
+                        Text("Profile").font(.caption2.weight(.semibold)).foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 2).background(.black.opacity(0.55), in: Capsule()).padding(5)
+                    }
+                }
                 ForEach(shots.reversed()) { shot in
-                    Button { doomed = shot } label: { tile(shot.image) }.buttonStyle(.plain)
+                    Button { chosen = (shot.image, shot) } label: { tile(shot.image) }.buttonStyle(.plain)
                 }
                 // The bundled photos face ID was built from; part of the app, so not deletable here.
                 ForEach(Array(store.referencePhotos(person.id).enumerated()), id: \.offset) { _, image in
-                    tile(image)
+                    Button { chosen = (image, nil) } label: { tile(image) }.buttonStyle(.plain)
                 }
             }
             .padding(6)
@@ -854,13 +876,33 @@ struct FaceGallery: View {
         .navigationTitle("Face photos · \(store.samples(person.id))")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $adding) { EnrollView(person: person) }
-        .confirmationDialog("Delete this photo?", isPresented: Binding(get: { doomed != nil }, set: { if !$0 { doomed = nil } }),
-                            titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                if let doomed { store.deleteShot(person.id, doomed.id) }
-                doomed = nil
+        .onChange(of: upload) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                    store.setAvatar(person.id, image)
+                    store.addShot(person.id, embedding: nil, image: image)
+                }
+                upload = nil
             }
         }
+        .confirmationDialog("This photo", isPresented: Binding(get: { chosen != nil }, set: { if !$0 { chosen = nil } })) {
+            Button("Use as profile photo") {
+                if let chosen { store.setAvatar(person.id, chosen.image) }
+                chosen = nil
+            }
+            if let shot = chosen?.shot {
+                Button("Delete", role: .destructive) {
+                    store.deleteShot(person.id, shot.id)
+                    chosen = nil
+                }
+            }
+        }
+    }
+
+    private func action(_ symbol: String) -> some View {
+        Color(.secondarySystemBackground).aspectRatio(1, contentMode: .fit)
+            .overlay(Image(systemName: symbol).font(.title2.weight(.medium)).foregroundStyle(.secondary))
     }
 
     private func tile(_ image: UIImage) -> some View {
