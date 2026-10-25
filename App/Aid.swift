@@ -420,6 +420,13 @@ enum Talk {
             if newest.split(separator: " ").count >= 3, Date().timeIntervalSince(lastCoach) > 1.5,
                !isCommand(newest) { coachSoon() }
         }
+        // "Jarvis" starting the sentence still being said shows the listening row now. The request
+        // itself still waits for the sentence to close (`command`), so nothing fires early.
+        // Only the wearer's own "Jarvis": someone else in the room saying it must not wipe an answer.
+        if !wakeShownThisTurn, mine, Tools.opensWithJarvis(open) {
+            wakeShownThisTurn = true
+            if wokenAt == nil { showWake() }
+        }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
         publish()
         // Muse can take seconds to close a turn that ends in silence, and a lull is exactly that:
@@ -453,6 +460,7 @@ enum Talk {
         partial = ""
         saying = ""   // it's a line now
         closedInTurn = 0
+        wakeShownThisTurn = false
         compositor.hold(false, at: Date())
 
         if let speaker {
@@ -876,6 +884,8 @@ enum Talk {
     @ObservationIgnored private var lastCommand: (text: String, at: Date)?
     /// "Jarvis." on its own: when, and the row on the lens saying it's listening.
     @ObservationIgnored private var wokenAt: (at: Date, card: Int)?
+    /// The listening row was already shown for the turn in progress, so partials don't re-show it.
+    @ObservationIgnored private var wakeShownThisTurn = false
     /// How long a bare "Jarvis." waits for the request.
     static let wakeWindow: TimeInterval = 8
     /// The last sentence taken as a request after a bare "Jarvis.", so it isn't conversation.
@@ -898,22 +908,7 @@ enum Talk {
     private func command(_ sentence: String, mine: Bool) -> Bool {
         guard config.toolbox != nil else { return false }
         if Tools.wakeOnly(sentence) {
-            if wokenAt == nil || Date().timeIntervalSince(wokenAt!.at) > 2 {
-                nextCard += 1
-                wokenAt = (Date(), nextCard)
-                jarvisTask?.cancel()
-                compositor.startJarvis("Listening\u{2026}", at: Date())
-                log(.status, "Jarvis listening")
-                publish()
-                let card = nextCard
-                Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(Self.wakeWindow))
-                    guard let self, self.wokenAt?.card == card else { return }
-                    self.wokenAt = nil
-                    self.compositor.clearJarvis()
-                    self.publish()
-                }
-            }
+            if wokenAt == nil || Date().timeIntervalSince(wokenAt!.at) > 2 { showWake() }
             return true
         }
         // More of a turn that began "Jarvis, …": part of the request ("Marcus works at DeepMind.
@@ -955,6 +950,24 @@ enum Talk {
             toolRound(request, command: true)
         }
         return true
+    }
+
+    /// The "Listening…" row, up for `wakeWindow` seconds unless a request replaces it.
+    private func showWake() {
+        nextCard += 1
+        wokenAt = (Date(), nextCard)
+        jarvisTask?.cancel()
+        compositor.startJarvis("Listening\u{2026}", at: Date())
+        log(.status, "Jarvis listening")
+        publish()
+        let card = nextCard
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.wakeWindow))
+            guard let self, self.wokenAt?.card == card else { return }
+            self.wokenAt = nil
+            self.compositor.clearJarvis()
+            self.publish()
+        }
     }
 
     /// The request said to Jarvis so far this turn, and what of it is already being worked on.
@@ -1062,6 +1075,7 @@ enum Talk {
             } catch {
                 guard !Task.isCancelled else { return }
                 if command { self?.put(Card(kind: .answer, title: "Couldn't do that", detail: echo, id: card, icon: "exclamationCircle")) }
+                self?.lastCommand = nil
                 self?.log(.status, "Tool failed: \(error.localizedDescription)")
             }
         }
@@ -1127,6 +1141,7 @@ enum Talk {
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.log(.status, "Jarvis failed: \(error.localizedDescription)")
+                self?.lastCommand = nil   // a retry of the same question is a new request, not a repeat
                 answer = "I couldn't do that."
             }
             guard !Task.isCancelled, let self else { return }
@@ -1388,9 +1403,9 @@ enum Talk {
 
     @ObservationIgnored private var lastInsight = Date.distantPast
     /// At most one insight this often: the least urgent card mustn't crowd out the rest.
-    private static let insightGap: TimeInterval = 6
+    private static let insightGap: TimeInterval = 2
     /// Later than this after the line, the conversation has moved on: dropped.
-    private static let insightLate: TimeInterval = 8
+    private static let insightLate: TimeInterval = 10
 
     private func ground(_ insight: (topic: String, query: String), line: String) {
         guard let researcher = config.researcher,

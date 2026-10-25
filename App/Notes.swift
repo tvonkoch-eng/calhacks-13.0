@@ -33,12 +33,39 @@ struct NotesHome: View {
     // MARK: Live
 
     private var live: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let names = livePeople.map { crm.first($0) }
+        let count = Transcripts.lines(assistant).count
+        return VStack(alignment: .leading, spacing: 0) {
             header(title: liveTitle, trailing: AnyView(endButton))
             faces(livePeople).padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
             Divider()
-            ChatTranscript()
+            // Top half: the transcript as it's heard. Bottom half: an AI summary of it so far.
+            GeometryReader { geo in
+                VStack(spacing: 0) {
+                    ChatTranscript().frame(height: geo.size.height / 2)
+                    Divider()
+                    liveSummary.frame(maxHeight: .infinity)
+                }
+            }
         }
+        .task(id: count) {
+            await Transcripts.shared.refreshSummary(assistant, crm: crm, with: names.isEmpty ? nil : Self.list(names))
+        }
+    }
+
+    private var liveSummary: some View {
+        let text = Transcripts.shared.liveSummary
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Summary").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ScrollView {
+                Text(text.isEmpty ? "Summarizes as the conversation goes on." : text)
+                    .font(.system(size: 17, design: .serif))
+                    .foregroundStyle(text.isEmpty ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
     }
 
     /// Everyone recognised since the conversation began, added as they appear, until it ends.
@@ -281,8 +308,36 @@ struct SavedConversation: Codable, Identifiable, Equatable {
     /// "+ New recording": start a conversation now, mic on, without waiting for a face.
     func start(_ assistant: Assistant) {
         if !assistant.armed { Task { await assistant.toggle() } }
-        if started == nil { started = Date() }
+        if started == nil { started = Date(); liveSummary = ""; summarizedLines = 0 }
         lastHere = Date()
+    }
+
+    /// The live summary of the conversation so far, refreshed at most every `summaryEvery` seconds
+    /// and only when it has grown. Uses the recap model; a failed call keeps the last summary.
+    private(set) var liveSummary = ""
+    @ObservationIgnored private var summaryAt = Date.distantPast
+    @ObservationIgnored private var summarizedLines = 0
+    static let summaryEvery: TimeInterval = 45
+
+    func refreshSummary(_ assistant: Assistant, crm: CRM, with: String?) async {
+        guard active, let model = crm.models.first else { return }
+        let lines = Self.lines(assistant)
+        guard lines.count >= 3, lines.count > summarizedLines + 2 else { return }
+        let wait = Self.summaryEvery - Date().timeIntervalSince(summaryAt)
+        if wait > 0 {
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled else { return }
+        }
+        summaryAt = Date()
+        summarizedLines = lines.count
+        let input = Recap.Input(wearer: crm.wearer, when: started ?? Date(), with: with, name: nil,
+                                known: [], owed: [], transcript: lines.map { "\($0.who): \($0.text)" })
+        do {
+            let result = try await Recap.ask(input, model: model)
+            if let text = result.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { liveSummary = text }
+        } catch {
+            // Keep the last summary; the next growth retries.
+        }
     }
 
     func delete(_ id: UUID) {
@@ -299,6 +354,8 @@ struct SavedConversation: Codable, Identifiable, Equatable {
         }
         people = []
         started = nil
+        liveSummary = ""
+        summarizedLines = 0
         assistant.endConversation(trigger: "ended from Notes")
     }
 

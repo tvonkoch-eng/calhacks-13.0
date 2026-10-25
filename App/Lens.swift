@@ -53,7 +53,7 @@ struct JarvisPanel: Equatable {
 
     /// How long an answer stays: long enough to read twice, a little more for a longer one.
     static func life(of answer: String) -> TimeInterval {
-        max(12, 6 + 0.45 * Double(answer.split(separator: " ").count))
+        max(20, 8 + 0.45 * Double(answer.split(separator: " ").count))
     }
 }
 

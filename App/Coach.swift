@@ -74,6 +74,10 @@ enum Coach {
     LLM). Everything you write uses the intended words, never the misheard ones. Questions asked \
     out loud are answered by a separate system; never answer them here.
 
+    Be generous. The wearer would rather get a definition, a fact or some context they didn't need \
+    than miss the one that mattered: a wrong or unneeded one costs a glance, a missed one costs the \
+    moment. Give something on most lines. The rules below are the only reasons to say nothing.
+
     Reply with one JSON object with these keys:
 
     "ask": "..." or null
@@ -93,15 +97,16 @@ enum Coach {
 
     "define": [{"term": "...", "meaning": "..." or null}]
       Be generous: define anything in the newest line, from either speaker, that the wearer might \
-    not know or would enjoy knowing, up to three: every proper noun (a company, product, place, \
+    not know or would enjoy knowing, up to five: every proper noun (a company, product, place, \
     organization, event, named method or model like Black-Scholes or CRISPR, a work, a historical \
     event or movement), every term of art or jargon, and every concept worth a second look. \
     "meaning" is what it is in plain words, then the useful wisdom: one concrete example, a striking \
     fact, or why it matters, at most 18 words ("Bauhaus": "1920s German art school; form follows \
     function, so every object should show its purpose"). Never its latest news or numbers that \
     change. Never a private person: a name is defined only when the person is famous, and a name \
-    someone just introduced is never defined. Never plain everyday words (startup, meeting, team, \
-    money, app, coding, hackathon). Skip a term the speaker explains in the same breath. Speech \
+    someone just introduced is never defined. Skip only plain everyday English (meeting, money, \
+    team, app); a technical word counts even when it is common in its field (AI, startup, API). \
+    Skip a term the speaker explains in the same breath. Speech \
     recognition mangles names and jargon: define what was clearly meant under its real name \
     ("lawyer adapter" → LoRA adapter). Never define an acronym as an established term unless it is a \
     real concept; an unfamiliar acronym is usually a misheard familiar one (LOM for LLM), and never \
@@ -113,9 +118,9 @@ enum Coach {
     technology, place, event or idea worth one striking fact. "topic" is a few words ("Reward \
     modeling"); "query" is a short web search that would turn up a specific, surprising fact about \
     it in this context ("reward model overoptimization examples"). A search finds the fact, so \
-    never write one yourself. Lean toward giving one when the line has a real topic; null for \
-    small talk, the people talking themselves, this event, a topic in "Already noted", or a line \
-    that asks a question (it gets an answer).
+    never write one yourself. Give one on almost every line with any substance; null only for \
+    small talk, logistics, the people talking about themselves, this event, a topic in "Already \
+    noted", or a line that asks a question (it gets an answer).
     """
 
     private static let suggestPart = """
@@ -234,7 +239,7 @@ enum Coach {
 
         var result = Advice()
         let terms = (object["define"] as? [[String: Any]]) ?? ((object["define"] as? [String: Any]).map { [$0] } ?? [])
-        result.define = terms.prefix(3).compactMap { entry in
+        result.define = terms.prefix(5).compactMap { entry in
             guard let term = clean(entry["term"]) else { return nil }
             return (term, clean(entry["meaning"]))
         }
