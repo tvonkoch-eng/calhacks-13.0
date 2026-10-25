@@ -116,7 +116,7 @@ enum Identification {
         let visible = lensPeople.map { "\($0):\(inView($0))" }
         guard visible != visibleGroup else { return }
         visibleGroup = visible
-        if lensMode == .split { renderLens() }
+        if !identifying, !confirming { renderLens() }
     }
 
     func setGroup(_ group: [Member], meSpeaking: Bool) {
@@ -2322,7 +2322,10 @@ enum Identification {
 
     private func lensView() -> FlexBox {
         let person = knownPerson
-        let mode = currentMode()
+        var mode = currentMode()
+        // Anyone on the lens gets the people layout (50/50, the glasses icon on whoever's in view),
+        // mic on or off. The identity card is only for a press: identifying or confirming.
+        if mode == .identity, !identifying, !confirming, !lensPeople.isEmpty { mode = .split }
         lensMode = mode
         let avatar: (String) -> UIImage? = { [store] in store?.lensAvatar($0) }
         switch mode {
