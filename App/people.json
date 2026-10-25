@@ -2,54 +2,88 @@
   {
     "id": "joaquin",
     "name": "Joaquin Del Pego",
-    "role": "LegalTime AI · UCSB CS junior",
-    "school": "UCSB · Computer Science, junior",
-    "work": "LegalTime AI",
+    "role": "CS junior at UCSB",
+    "school": "UCSB · Computer Science, Junior",
+    "work": "LegalTime AI · timekeeping for lawyers",
     "from": "San Diego",
     "tags": [
       "UCSB",
-      "Computer Science",
       "LegalTime AI",
+      "San Diego",
       "Cal Hacks"
-    ]
+    ],
+    "tie": "Both UCSB · your Cal Hacks 13 team",
+    "highlights": [
+      "Built LegalTime AI, timekeeping for lawyers",
+      "Cal Hacks 13: face ID + live conversation assist",
+      "CS junior at UCSB"
+    ],
+    "personal": "Grew up in San Diego",
+    "source": "TEAM NOTES · TODAY"
   },
   {
     "id": "mirabelle",
     "name": "Mirabelle Brown",
-    "role": "Environmental sustainability finance · UCSB junior",
-    "school": "UCSB · Financial Math & Statistics (FMS), junior",
-    "from": "Gresham, New York",
-    "interests": "Environmental studies",
+    "role": "Renewable Finance @ Advantage Renewables",
+    "school": "UCSB · Honors Financial Math & Stats + Environmental Studies",
+    "from": "New York City",
     "tags": [
       "UCSB",
-      "FMS",
-      "Sustainability finance"
+      "Advantage Renewables",
+      "Investment Connection",
+      "Surfrider"
     ],
-    "work": "Environmental sustainability finance"
+    "work": "Renewable Finance Intern · Advantage Renewables",
+    "tie": "You both studied at UC Santa Barbara",
+    "highlights": [
+      "President · UCSB Investment Connection",
+      "Investment Analyst · Wyoming Investor (100-page ESG pension paper)",
+      "Policy Committee · Surfrider Foundation",
+      "Trilingual: English, French, Spanish"
+    ],
+    "linkedin": "mirabelle-brown"
   },
   {
     "id": "avi",
     "name": "Avi Shah",
-    "role": "Investment Banking · BofA London",
-    "school": "LSE · Economics, junior (year abroad at UCSB)",
-    "work": "Investment Banking · BofA London",
-    "from": "London",
+    "role": "LSE | University of California",
+    "school": "LSE · University of California",
+    "work": "Founder · Force Systems ai",
+    "from": "Los Angeles",
     "tags": [
       "LSE",
-      "BofA",
-      "London",
+      "Bank of America",
+      "Force Systems ai",
       "UCSB"
-    ]
+    ],
+    "tie": "You both studied at UC Santa Barbara",
+    "highlights": [
+      "Summer Analyst · Bank of America, London (return offer)",
+      "Summer Intern · Alvarez & Marsal, PE performance improvement",
+      "Sales & Growth · Ventrix Labs"
+    ],
+    "linkedin": "avi-shah1"
   },
   {
     "id": "toby",
     "name": "Toby von Koch",
-    "role": "UCSB FMS junior",
+    "role": "Financial Math & Statistics @ UCSB",
     "tags": [
       "UCSB",
-      "FMS",
-      "Cal Hacks"
+      "Haystack Collective",
+      "Playa House",
+      "D8"
     ],
-    "school": "UCSB · Financial Math & Statistics (FMS), junior"
+    "work": "Product Engineering Intern · Haystack Collective",
+    "tie": "You both worked at Playa House, UCSB's Founder House",
+    "highlights": [
+      "Agentic Engineering Intern · The DORIAN Group",
+      "Founding Member · Playa House",
+      "Founded D8, a date-idea app",
+      "Top 0.2% chess player (rapid Elo 2043)"
+    ],
+    "school": "UCSB · Financial Mathematics & Statistics",
+    "from": "Portland, Oregon",
+    "linkedin": "tobias-von-koch"
   }
 ]
