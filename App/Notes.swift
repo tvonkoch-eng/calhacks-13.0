@@ -14,7 +14,7 @@ struct NotesHome: View {
         NavigationStack {
             VStack(spacing: 0) {
                 // Live only once speech is heard: the mic listening to a quiet room is still Notes.
-                if assistant.armed, !LiveNotes.entries(assistant).isEmpty {
+                if assistant.armed, !Transcripts.lines(assistant).isEmpty {
                     live
                 } else {
                     header(title: "Notes", trailing: assistant.armed ? AnyView(LiveDot()) : AnyView(listenButton))
@@ -23,7 +23,9 @@ struct NotesHome: View {
             }
             .background(Color(.systemBackground))
             .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: UUID.self) { ConversationDetail(id: $0) }
+            .navigationDestination(for: UUID.self) { id in
+                if let kept = Transcripts.shared.saved.first(where: { $0.id == id }) { SavedTranscriptView(conversation: kept) }
+            }
         }
     }
 
@@ -38,10 +40,11 @@ struct NotesHome: View {
         }
     }
 
-    /// Who's in it: the faces looked at while it runs, else the conversation's members.
+    /// Everyone recognised since the conversation began, added as they appear, until it ends.
     private var livePeople: [String] {
-        let faces = crm.live?.faces ?? []
-        return faces.isEmpty ? assistant.members.map(\.id) : faces
+        var ids = Transcripts.shared.people
+        for id in (crm.live?.faces ?? []) + assistant.members.map(\.id) where !ids.contains(id) { ids.append(id) }
+        return ids
     }
 
     private var liveTitle: String {
@@ -50,7 +53,7 @@ struct NotesHome: View {
     }
 
     private var endButton: some View {
-        Button { Task { await assistant.toggle() } } label: {
+        Button { Transcripts.shared.end(assistant) } label: {
             Text("End conversation").font(.footnote.weight(.semibold))
                 .foregroundStyle(Color(.systemBackground))
                 .padding(.horizontal, 12).padding(.vertical, 7)
@@ -70,32 +73,9 @@ struct NotesHome: View {
 
     // MARK: Past
 
-    /// One row per conversation. The CRM keeps one record per person, so records that started
-    /// within two minutes of each other are the same conversation.
-    struct Past: Identifiable {
-        var id: UUID
-        var people: [String]
-        var started: Date
-        var ended: Date?
-    }
-
-    private var past: [Past] {
-        var rows: [Past] = []
-        for conversation in crm.conversations.sorted(by: { $0.started > $1.started }) {
-            if let last = rows.last, abs(last.started.timeIntervalSince(conversation.started)) < 120 {
-                if !rows[rows.count - 1].people.contains(conversation.person) {
-                    rows[rows.count - 1].people.append(conversation.person)
-                }
-            } else {
-                rows.append(Past(id: conversation.id, people: [conversation.person],
-                                 started: conversation.started, ended: conversation.ended))
-            }
-        }
-        return rows
-    }
-
     private var pastList: some View {
-        ScrollView {
+        let past = Transcripts.shared.saved
+        return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if past.isEmpty {
                     Text("Your conversations will show up here.")
@@ -106,7 +86,8 @@ struct NotesHome: View {
                     NavigationLink(value: row.id) {
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Conversation with " + Self.list(row.people.map { crm.first($0) }))
+                                Text(row.people.isEmpty ? "Conversation"
+                                     : "Conversation with " + Self.list(row.people.map { crm.first($0) }))
                                     .font(.system(size: 17, weight: .semibold, design: .serif))
                                     .foregroundStyle(.primary).lineLimit(2)
                                 Text(row.started.formatted(date: .abbreviated, time: .shortened))
@@ -164,59 +145,160 @@ struct NotesHome: View {
     }
 }
 
-/// The live transcript as a text thread: each change of speaker flips the bubble to the other
-/// side, with their name over the first bubble of their turn. Follows the newest line.
+/// The live transcript as a text thread: Me on the right, Person A, B, C on the left, the name
+/// over the first bubble of each turn. Follows the newest line.
 struct ChatTranscript: View {
     @Environment(Assistant.self) private var assistant
 
     var body: some View {
-        let entries = LiveNotes.entries(assistant)
-        let sides = Self.sides(entries)
+        let lines = Transcripts.lines(assistant)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 6) {
-                    if entries.isEmpty {
-                        Text("Listening for conversation").font(.callout).foregroundStyle(.tertiary)
-                            .padding(.top, 24)
-                    }
-                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                        let right = sides[index]
-                        let named = index == 0 || entries[index - 1].who != entry.who
-                        VStack(alignment: right ? .trailing : .leading, spacing: 2) {
-                            if named, !entry.who.isEmpty {
-                                Text(entry.who).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                                    .padding(.horizontal, 6).padding(.top, 6)
-                            }
-                            Text(entry.text)
-                                .font(.body)
-                                .foregroundStyle(right ? Color(.systemBackground) : Color.primary)
-                                .opacity(entry.speaking ? 0.7 : 1)
-                                .padding(.horizontal, 14).padding(.vertical, 9)
-                                .background(right ? Color.primary : Color(.secondarySystemBackground),
-                                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        }
-                        .frame(maxWidth: .infinity, alignment: right ? .trailing : .leading)
-                        .padding(right ? .leading : .trailing, 56)
-                        .id(entry.id)
+                    ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
+                        ChatBubble(line: line, named: index == 0 || lines[index - 1].who != line.who).id(line.id)
                     }
                     Color.clear.frame(height: 1).id("end")
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
             }
             .scrollIndicators(.hidden)
-            .onChange(of: entries.last?.text) { _, _ in
+            .onChange(of: lines.last?.text) { _, _ in
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("end", anchor: .bottom) }
             }
             .onAppear { proxy.scrollTo("end", anchor: .bottom) }
         }
     }
+}
 
-    /// Left for the first speaker, then the other side every time the speaker changes.
-    static func sides(_ entries: [LiveNotes.Entry]) -> [Bool] {
-        var right = false
-        return entries.enumerated().map { index, entry in
-            if index > 0, entries[index - 1].who != entry.who { right.toggle() }
-            return right
+// MARK: - Transcripts
+
+/// One line of a kept transcript, already labeled: "Me" or "Person A/B/C".
+struct SavedLine: Codable, Identifiable, Equatable {
+    var id: String
+    var who: String
+    var text: String
+    var me: Bool
+    var speaking = false
+}
+
+struct SavedConversation: Codable, Identifiable, Equatable {
+    var id: UUID
+    var started: Date
+    var ended: Date
+    /// Everyone face ID put in it, in order of first sighting.
+    var people: [String]
+    var lines: [SavedLine]
+}
+
+/// Every conversation's transcript, kept on the phone (Documents/transcripts.json). A conversation
+/// runs from the first line heard until it's ended by hand or goes quiet for 30 s; then it's saved
+/// and the next one starts with the next words.
+@MainActor @Observable final class Transcripts {
+    static let shared = Transcripts()
+    static let quiet: TimeInterval = 30
+
+    private(set) var saved: [SavedConversation] = []
+    /// The live conversation's people, added as they're recognised, until it ends.
+    private(set) var people: [String] = []
+    private var started: Date?
+
+    private static var url: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("transcripts.json")
+    }
+
+    init() {
+        if let data = try? Data(contentsOf: Self.url),
+           let kept = try? JSONDecoder().decode([SavedConversation].self, from: data) { saved = kept }
+    }
+
+    /// Once a second while listening.
+    func tick(_ assistant: Assistant, faces: [String]) {
+        let lines = assistant.aid.lines.filter { !$0.command }
+        guard let first = lines.first else { return }
+        if started == nil { started = first.at }
+        for id in faces where !people.contains(id) { people.append(id) }
+        if assistant.aid.partial.isEmpty, let last = lines.last, Date().timeIntervalSince(last.at) >= Self.quiet {
+            end(assistant)
         }
+    }
+
+    func end(_ assistant: Assistant) {
+        let lines = Self.lines(assistant).filter { !$0.speaking }
+        if !lines.isEmpty {
+            let start = started ?? assistant.aid.lines.first?.at ?? Date()
+            saved.insert(SavedConversation(id: UUID(), started: start, ended: Date(), people: people, lines: lines), at: 0)
+            if let data = try? JSONEncoder().encode(saved) { try? data.write(to: Self.url, options: .atomic) }
+        }
+        people = []
+        started = nil
+        assistant.endConversation()
+    }
+
+    /// The wearer is "Me" (their voice is told apart by loudness and the glasses' own mic); every
+    /// other voice Muse separates is Person A, B, C in order of first speaking.
+    static func lines(_ assistant: Assistant) -> [SavedLine] {
+        var letters: [String: String] = [:]
+        func person(_ label: String?) -> String {
+            let key = label ?? "?"
+            if let known = letters[key] { return known }
+            let letter = "Person " + String(UnicodeScalar(UInt8(65 + min(letters.count, 25))))
+            letters[key] = letter
+            return letter
+        }
+        var out = assistant.aid.lines.filter { !$0.command }.map { line in
+            line.speaker == Assistant.me
+                ? SavedLine(id: "\(line.id)", who: "Me", text: line.text, me: true)
+                : SavedLine(id: "\(line.id)", who: person(line.speaker), text: line.text, me: false)
+        }
+        let partial = assistant.aid.partial
+        if !partial.isEmpty {
+            let mine = assistant.meSpeaking
+            let other = assistant.aid.lines.last { $0.speaker != Assistant.me && !$0.command }?.speaker
+            out.append(SavedLine(id: "live", who: mine ? "Me" : person(other), text: partial, me: mine, speaking: true))
+        }
+        return out
+    }
+}
+
+/// A kept conversation, read back as the same chat it was live.
+struct SavedTranscriptView: View {
+    let conversation: SavedConversation
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 6) {
+                ForEach(Array(conversation.lines.enumerated()), id: \.element.id) { index, line in
+                    ChatBubble(line: line, named: index == 0 || conversation.lines[index - 1].who != line.who)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+        }
+        .navigationTitle(conversation.started.formatted(date: .abbreviated, time: .shortened))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Me on the right, everyone else on the left, the name over the first bubble of each turn.
+struct ChatBubble: View {
+    let line: SavedLine
+    let named: Bool
+
+    var body: some View {
+        VStack(alignment: line.me ? .trailing : .leading, spacing: 2) {
+            if named {
+                Text(line.who).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.top, 6)
+            }
+            Text(line.text)
+                .font(.body)
+                .foregroundStyle(line.me ? Color(.systemBackground) : Color.primary)
+                .opacity(line.speaking ? 0.7 : 1)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(line.me ? Color.primary : Color(.secondarySystemBackground),
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: line.me ? .trailing : .leading)
+        .padding(line.me ? .leading : .trailing, 56)
     }
 }

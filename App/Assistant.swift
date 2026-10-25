@@ -230,8 +230,16 @@ import Observation
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 self?.refreshGroup()
+                if let self { Transcripts.shared.tick(self, faces: (self.crm?.live?.faces ?? []) + self.members.map(\.id)) }
             }
         }
+    }
+
+    /// One conversation is over (ended by hand, or 30 s of quiet): its notes are filed and the aid
+    /// starts clean, still listening, for the next.
+    func endConversation() {
+        crm?.tick(force: true)
+        aid.reset()
     }
 
     func disarm() {
