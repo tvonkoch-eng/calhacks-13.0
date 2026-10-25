@@ -1120,13 +1120,11 @@ struct LensMirror: View {
                         .modifier(LensCardBackground(radius: m.radius))
                 }
                 // Always up, blank until there's a suggestion: the top third is reserved for it.
-                do {
-                    extrasBody
-                        .frame(minHeight: LensFit.blank, alignment: .topLeading)
-                        .padding(m.pad)
-                        .modifier(LensCardBackground(radius: m.radius))
-                }
-                Spacer(minLength: 0)
+                // Stretched down to the people: the top third is one solid box.
+                extrasBody
+                    .frame(minHeight: LensFit.blank, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(m.pad)
+                    .modifier(LensCardBackground(radius: m.radius))
                 if shot.group.count >= 2 {
                     groupCards.frame(height: LensFit.half)
                 } else if let id = shot.photo {

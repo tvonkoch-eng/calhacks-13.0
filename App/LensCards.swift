@@ -78,10 +78,9 @@ enum LensCards {
         return FlexBox(direction: .column, spacing: LensFit.spacing) {
             for (index, card) in shot.cards.enumerated() { cardBox(card, newest: index == 0) }
             // Always up, blank until there's something to say: the top third is the suggestions'.
-            extrasBox(shot)
-            // The aid has the top half. The people have the bottom half: one card taking all of it,
-            // or two, a quarter of the lens each.
-            FlexBox(direction: .column) {}.padding(.top, gap).flexGrow(1)
+            // It stretches down to the people, so the top third is one solid box: no glass between.
+            extrasBox(shot, fill: gap)
+            // The people have the bottom two-thirds: one card taking all of it, or two side by side.
             if group.count >= 2 {
                 groupCards(group, avatar: avatar)
             } else if let person {
@@ -140,7 +139,7 @@ enum LensCards {
     }
 
     /// Work in flight and the line to say next, under the cards.
-    private static func extrasBox(_ shot: LensShot) -> FlexBox {
+    private static func extrasBox(_ shot: LensShot, fill: CGFloat = 0) -> FlexBox {
         FlexBox(direction: .column, spacing: 10) {
             for line in shot.working {
                 FlexBox(direction: .row, spacing: 10, crossAlignment: .center) {
@@ -154,8 +153,9 @@ enum LensCards {
                     Text(followup, style: .body).flexShrink(1)
                 }
             }
-            if shot.working.isEmpty && shot.followup == nil {
-                FlexBox(direction: .column) {}.padding(.top, LensFit.blank)
+            let blank = shot.working.isEmpty && shot.followup == nil ? LensFit.blank : 0
+            if blank + fill > 0 {
+                FlexBox(direction: .column) {}.padding(.top, blank + fill)
             }
         }
         .padding(20)
