@@ -26,6 +26,9 @@ import Observation
             glasses?.onFacing = { [weak self] id in self?.facingChanged(id) }
             glasses?.onSeen = { [weak self] ids in self?.seen(ids) }
             glasses?.onStranger = { [weak self] face, photo in self?.meet(face: face, photo: photo) }
+            glasses?.onReplayFinished = { [weak self] ids in
+                for id in ids { self?.crm?.forgetPerson(id); self?.store?.forget(id) }
+            }
             glasses?.onOwnSpeech = { [weak self] text, _ in self?.ownSpeech(text) }
             let listener = self.listener
             glasses?.audioSink.handler = { buffer in listener.feed(buffer) }
@@ -444,7 +447,7 @@ import Observation
 
     /// The glasses held a face nobody knows while listening: a contact now, card up next scan.
     private func meet(face: [Float], photo: UIImage?) -> String? {
-        guard armed, let crm, let store else { return nil }
+        guard armed || glasses?.replaying == true, let crm, let store else { return nil }
         let id = crm.meet()
         store.meet(Person(id: id, name: CRM.newName, role: "Just met", source: "Met just now"), face: face, photo: photo)
         newcomers.append(id)

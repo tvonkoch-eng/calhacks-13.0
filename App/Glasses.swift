@@ -1412,6 +1412,12 @@ enum Identification {
             self.replayNow = nil
             self.connected = false
             self.status = "Replay finished · \(run.asked)"
+            self.onReplayFinished?(self.replayMet)
+            self.replayMet = []
+            self.metTracks.removeAll()
+            self.lastMet = .distantPast
+            // Back to the glasses on their own, so the next try needs no relaunch.
+            await self.connectIfRegistered()
         }
     }
 
@@ -1804,11 +1810,15 @@ enum Identification {
     @ObservationIgnored private var metTracks: [Int: String] = [:]
     @ObservationIgnored private var photoLook: [String: (score: Float, at: Date)] = [:]
     @ObservationIgnored private var lastMet = Date.distantPast
+    /// Contacts the stranger path made during a replay: taken back out when it finishes
+    /// (`onReplayFinished`), so a test doesn't leave "New person" contacts behind.
+    @ObservationIgnored private var replayMet: [String] = []
+    @ObservationIgnored var onReplayFinished: (([String]) -> Void)?
     @ObservationIgnored private let cropContext = CIContext()
 
     private func noticeStranger(_ inView: [FaceTracker.Track], image: CIImage, store: Store) {
-        guard meetNew, aidArmed, !identifying, let onStranger,
-              Date().timeIntervalSince(lastMet) > 10,
+        guard meetNew, aidArmed || replaying, !identifying, let onStranger,
+              clockNow.timeIntervalSince(lastMet) > 10,
               let track = inView.max(by: { $0.best.attention < $1.best.attention }),
               metTracks[track.id] == nil, track.looks >= meetLooks, track.weight >= minEvidence,
               facePx(track) >= minAnnouncePx else { return }
@@ -1818,7 +1828,8 @@ enum Identification {
         guard let id = onStranger(track.probe, photo) else { return }
         metTracks[track.id] = id
         photoLook[id] = (lookScore(track.box, track.best), Date())
-        lastMet = Date()
+        lastMet = clockNow
+        if replaying { replayMet.append(id) }
         SpeedLog.record(["event": "metNew", "person": id, "track": track.id, "looks": track.looks,
                          "facePx": Int(facePx(track)), "closest": (Double(best) * 1000).rounded() / 1000])
     }

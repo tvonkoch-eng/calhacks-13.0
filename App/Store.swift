@@ -419,10 +419,20 @@ struct Match {
     @ObservationIgnored private var index = Index()
     @ObservationIgnored private var indexDirty = true
 
+    /// People left out of matching for a test (`hidePeople`: comma-separated ids), so a known face
+    /// can be watched going through the stranger path. Changing it rebuilds the index.
+    private var hidden: Set<String> {
+        Set((UserDefaults.standard.string(forKey: "hidePeople") ?? "").split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    }
+    @ObservationIgnored private var indexedHidden: Set<String> = []
+
     private func rebuildIndex() {
         var flat: [Float] = [], owners: [String] = []
         var dims = 0
-        for person in contacts {
+        let hidden = self.hidden
+        indexedHidden = hidden
+        for person in contacts where !hidden.contains(person.id) {
             for sample in gallery[person.id] ?? [] {
                 if dims == 0 { dims = sample.count }
                 guard sample.count == dims, dims > 0 else { continue }
@@ -437,7 +447,7 @@ struct Match {
 
     /// Cosine similarity of `embedding` against every stored sample, in one pass.
     private func similarities(_ embedding: [Float]) -> [Float] {
-        if indexDirty { rebuildIndex() }
+        if indexDirty || hidden != indexedHidden { rebuildIndex() }
         guard index.dims == embedding.count, !index.owners.isEmpty else { return [] }
         var scores = [Float](repeating: 0, count: index.owners.count)
         let dims = vDSP_Length(index.dims)
