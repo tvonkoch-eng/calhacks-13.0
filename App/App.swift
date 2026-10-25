@@ -1272,7 +1272,8 @@ private struct LensCardBackground: ViewModifier {
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Self.fill)
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Self.fill.opacity(Double(Tuning.float("lensCardAlpha", 0.6))))
             )
     }
 }
