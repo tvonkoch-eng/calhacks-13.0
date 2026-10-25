@@ -171,7 +171,7 @@ struct NotesHome: View {
     }
 }
 
-/// The live transcript as a text thread: Me on the right, Person A, B, C on the left, the name
+/// The live transcript as a text thread: Person A and C on the right, B and D on the left, the name
 /// over the first bubble of each turn. Follows the newest line.
 struct ChatTranscript: View {
     @Environment(Assistant.self) private var assistant
@@ -199,7 +199,7 @@ struct ChatTranscript: View {
 
 // MARK: - Transcripts
 
-/// One line of a kept transcript, already labeled: "Me" or "Person A/B/C".
+/// One line of a kept transcript, already labeled "Person A/B/C/D"; `me` means drawn on the right.
 struct SavedLine: Codable, Identifiable, Equatable {
     var id: String
     var who: String
@@ -292,37 +292,30 @@ struct SavedConversation: Codable, Identifiable, Equatable {
         assistant.endConversation()
     }
 
-    /// The wearer is "Me" (their voice is told apart by loudness and the glasses' own mic); every
-    /// other voice Muse separates is Person A, B, C in order of first speaking.
+    /// Every voice is Person A, B, C, D in order of first speaking, and keeps its letter (and its
+    /// side) for the whole conversation: A and C on the right, B and D on the left. The wearer's
+    /// voice is just one more letter.
     static func lines(_ assistant: Assistant) -> [SavedLine] {
-        var letters: [String: String] = [:]
-        func person(_ label: String?) -> String {
-            let key = label ?? "?"
-            if let known = letters[key] { return known }
-            let letter = "Person " + String(UnicodeScalar(UInt8(65 + min(letters.count, 25))))
-            letters[key] = letter
-            return letter
+        var letters: [String: Int] = [:]
+        func person(_ key: String) -> (String, Bool) {
+            let index = letters[key] ?? letters.count
+            letters[key] = index
+            return ("Person " + String(UnicodeScalar(UInt8(65 + min(index, 25)))), index % 2 == 0)
         }
-        var out = assistant.aid.lines.filter { !$0.command }.map { line in
-            line.speaker == Assistant.me
-                ? SavedLine(id: "\(line.id)", who: "Me", text: line.text, me: true)
-                : SavedLine(id: "\(line.id)", who: person(assistant.voices[line.id] ?? line.speaker), text: line.text, me: false)
+        func key(_ line: Line) -> String {
+            line.speaker == Assistant.me ? "me" : (assistant.voices[line.id] ?? line.speaker ?? "?")
         }
+        let spoken = assistant.aid.lines.filter { !$0.command }
+        var out = spoken.map { line in
+            let (who, right) = person(key(line))
+            return SavedLine(id: "\(line.id)", who: who, text: line.text, me: right)
+        }
+        // The words still coming in stay with whoever spoke last until Muse finalises them, so the
+        // bubble never hops sides mid-sentence.
         let partial = assistant.aid.partial
         if !partial.isEmpty {
-            let mine = assistant.meSpeaking
-            let other = assistant.aid.lines.last { $0.speaker != Assistant.me && !$0.command }.flatMap { assistant.voices[$0.id] ?? $0.speaker }
-            out.append(SavedLine(id: "live", who: mine ? "Me" : person(other), text: partial, me: mine, speaking: true))
-        }
-        // Glasses mic: a line judged the wearer's (much louder at the glasses) is Me, on the right;
-        // everyone else on the left. iPhone mic: no telling by volume, so the bubbles just switch
-        // sides whenever the speaker does.
-        if assistant.mic == .phone {
-            var right = false
-            for index in out.indices {
-                if index > 0, out[index - 1].who != out[index].who { right.toggle() }
-                out[index].me = right
-            }
+            let (who, right) = person(spoken.last.map(key) ?? "me")
+            out.append(SavedLine(id: "live", who: who, text: partial, me: right, speaking: true))
         }
         return out
     }
@@ -346,7 +339,7 @@ struct SavedTranscriptView: View {
     }
 }
 
-/// Me on the right, everyone else on the left, the name over the first bubble of each turn.
+/// A and C on the right, B and D on the left, the name over the first bubble of each turn.
 struct ChatBubble: View {
     let line: SavedLine
     let named: Bool
