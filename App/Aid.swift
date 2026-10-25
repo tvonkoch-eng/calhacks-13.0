@@ -749,14 +749,28 @@ enum Talk {
         case .thinking, .answering, .done:
             // The question goes up at once with "…" under it, and the answer replaces the "…" word
             // by word as it streams. A SKIP takes the card down again (below).
-            if !turn.answer.isEmpty {
-                answeredAt = now
-                answeredText = turn.question + " " + turn.answer
-                if turn.state == .done { directAnswerAt = now }
+            // The same question again within 15 s (asked twice, or re-fired as the transcript grew):
+            // what's up stays up. A different question is the only reason to change it.
+            if let last = settled, last.card != turn.card, now.timeIntervalSince(last.at) < 15,
+               Talk.echoes(turn.question, last.question) || Talk.echoes(last.question, turn.question) {
+                return
             }
-            compositor.show(Card(kind: .answer, title: turn.answer.isEmpty ? "\u{2026}" : turn.answer,
-                                 detail: Self.echo(turn.question),
-                                 live: turn.state != .done, id: turn.card), at: now)
+            // The question is fixed the first time it goes up, and so is a finished answer.
+            let question = shownQuestion[turn.card] ?? turn.question
+            shownQuestion[turn.card] = question
+            let answer = finalAnswer[turn.card] ?? turn.answer
+            if !answer.isEmpty {
+                answeredAt = now
+                answeredText = question + " " + answer
+                if turn.state == .done, finalAnswer[turn.card] == nil {
+                    finalAnswer[turn.card] = answer
+                    directAnswerAt = now
+                    settled = (turn.card, question, now)
+                }
+            }
+            compositor.show(Card(kind: .answer, title: answer.isEmpty ? "\u{2026}" : answer,
+                                 detail: Self.echo(question),
+                                 live: finalAnswer[turn.card] == nil, id: turn.card), at: now)
         case .skipped, .failed:
             compositor.remove(id: turn.card, kind: .answer, at: now)
         }
@@ -1223,6 +1237,11 @@ enum Talk {
     /// When a direct answer last finished. A slower web lookup for the same question doesn't
     /// replace it: the answer would change under the wearer's eyes.
     @ObservationIgnored private var directAnswerAt = Date.distantPast
+    /// Per card: the question as first shown, and the answer once finished. Neither changes after.
+    @ObservationIgnored private var shownQuestion: [Int: String] = [:]
+    @ObservationIgnored private var finalAnswer: [Int: String] = [:]
+    /// The last finished answer's card, question and time, so a repeat of it doesn't replace it.
+    @ObservationIgnored private var settled: (card: Int, question: String, at: Date)?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
 
     private func publish() {
