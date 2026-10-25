@@ -251,6 +251,9 @@ struct Match {
         if let photo { setAvatar(person.id, photo) }
     }
 
+    /// Met here (not on the roster): their photo and face samples keep improving as they're seen.
+    func isMet(_ id: String) -> Bool { met[id] != nil || saved.contains { $0.id == id } }
+
     /// Another look at someone met but not on the roster: each scan adds a face sample, so they're
     /// recognised better every time they're seen. The newest 30 are kept.
     func addLook(_ id: String, _ face: [Float]) {

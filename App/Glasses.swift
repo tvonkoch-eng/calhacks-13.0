@@ -1965,7 +1965,9 @@ enum Identification {
     /// closer look later in the conversation replaces it (at most every few seconds).
     private func betterLooks(_ inView: [FaceTracker.Track], hits: [FaceHit], image: CIImage, store: Store) {
         for track in inView {
-            guard let id = metTracks[track.id], let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
+            // Someone met here, on the track they were met on or recognised again on a later one.
+            let known = metTracks[track.id] ?? store.confidentMatch(track.probe).map(\.person.id)
+            guard let id = known, store.isMet(id), let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
             let score = lookScore(hit.box, hit)
             let last = photoLook[id] ?? (0, .distantPast)
             guard score > last.score * 1.25, Date().timeIntervalSince(last.at) > 3,
@@ -2377,7 +2379,8 @@ enum Identification {
         case .split:
             // The people on the lens (`lensPeople`): two side by side, 50/50, left to right as they
             // stand; one alone fills the half. Whoever is in view right now glows.
-            let people = lensPeople.compactMap { id in store?.people.first { $0.id == id } }
+            // Roster and new people alike: anyone face ID knows gets the same cards and split.
+            let people = lensPeople.compactMap { id in store?.contacts.first { $0.id == id } }
             var members: [Member] = []
             var partner = person
             if people.count == 2 {
