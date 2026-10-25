@@ -544,6 +544,7 @@ import Observation
         let id = crm.meet()
         store.meet(Person(id: id, name: CRM.newName, role: "", source: "Met just now"), face: face, photo: photo)
         newcomers.append(id)
+        if glasses?.demo.on == true { demoContacts.append(id) }
         aid.metStranger()
         glasses?.demo.met(id)
         // A name already heard in this conversation, before the face was in focus, is theirs.
@@ -609,11 +610,13 @@ import Observation
                          "heardName": glance.name ?? ""])
     }
 
-    /// Reset demo: every contact met goes (the roster stays), and the prompt starts over.
+    /// Reset demo: the four of us walk up as new again. Only the contacts the demo made (stand-ins for
+    /// the crew before they gave a name) go; everyone else met stays (Oct 25).
     func resetDemo() {
         guard let crm, let store else { return }
         crm.dropLive()
-        for contact in crm.contacts { crm.forgetPerson(contact.id); store.forget(contact.id) }
+        for id in demoContacts { crm.forgetPerson(id); store.forget(id) }
+        demoContacts = []
         store.rosterHidden = true
         aid.reset(trigger: "demoReset")
         newcomers = []
@@ -621,6 +624,12 @@ import Observation
         met = nil
         glasses?.demoClear()
         glasses?.demo.reset()
+    }
+
+    /// Contacts made while demo mode is on, which Reset takes back out.
+    private var demoContacts: [String] {
+        get { UserDefaults.standard.stringArray(forKey: "demoContacts") ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: "demoContacts") }
     }
 
     #if DEBUG
