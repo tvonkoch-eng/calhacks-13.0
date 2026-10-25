@@ -288,7 +288,7 @@ enum LensCards {
                     if let photo = avatar(member.id) {
                         Image(image: photo, sizePreset: .icon, cornerRadius: .medium)
                     }
-                    Text(member.name, style: .meta, color: member.speaking ? .primary : .secondary)
+                    Text(LensFit.shown(member.name), style: .meta, color: member.speaking ? .primary : .secondary)
                 }
             }
             if group.count > shown.count {
@@ -375,7 +375,7 @@ enum LensCards {
                         .flexGrow(1)
                     }
                     FlexBox(direction: .column, spacing: 3) {
-                        Text(person.name, style: .heading)
+                        Text(LensFit.shown(person.name), style: .heading)
                         Text(person.headline, style: .body).flexShrink(1)
                     }
                     .flexGrow(2)
@@ -455,7 +455,7 @@ enum LensCards {
     /// the glasses ahead of the full card, which follows as a second write.
     static func name(_ person: Person) -> FlexBox {
         FlexBox(direction: .column, spacing: 3) {
-            Text(person.name, style: .heading)
+            Text(LensFit.shown(person.name), style: .heading)
             Text(person.headline, style: .body).flexShrink(1)
         }
         .padding(22)
@@ -821,7 +821,12 @@ enum LensFit {
 
     /// First name over last, each line clipped to what that layout holds ("Alexandria" fits; a
     /// longer word ends in "…"), so a name never wraps mid-word or changes size.
+    /// What the lens calls someone: "Ask My Name!" until they've said it.
+    static func shown(_ name: String) -> String { name == CRM.newName ? "Ask My Name!" : name }
+
     static func nameText(_ name: String, width: CGFloat) -> String {
+        // Someone met but not named yet: the card asks for it (Oct 25).
+        let name = shown(name)
         // Full width: first and last on one line whenever the whole name fits beside the photo.
         if full(width), oneLine(name, width: width) { return name }
         let most = full(width) ? 18 : 8

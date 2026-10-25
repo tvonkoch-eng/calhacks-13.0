@@ -1161,7 +1161,7 @@ struct LensMirror: View {
             ForEach(shot.group.prefix(3), id: \.id) { member in
                 HStack(spacing: 8) {
                     memberMark(member)
-                    Text(member.name).font(.system(size: m.meta))
+                    Text(LensFit.shown(member.name)).font(.system(size: m.meta))
                         .foregroundStyle(member.speaking ? Color.white : secondary)
                 }
             }
