@@ -201,7 +201,7 @@ enum LensCards {
             }
             FlexBox(direction: .column) {
                 // The lens can't shrink text to fit, so a name too wide for the heading drops a style.
-                Text(twoLines(name), style: LensFit.nameFits(name, width: width) ? .heading : .body,
+                Text(LensFit.nameText(name, width: width), style: LensFit.full(width) ? .heading : .body,
                      color: bright ? .primary : .secondary).flexShrink(1)
             }
             .flexGrow(1 - share).flexShrink(1)
@@ -629,6 +629,18 @@ enum LensFit {
 
     /// Whether every word of the name fits beside the photo in the heading style. Names get extra
     /// slack: Meta's face runs wider than the system font, and "Mirabelle" broke mid-word at 50/50.
+    /// One fixed name size per layout: the heading on a full-width card, body at 50/50.
+    static func full(_ width: CGFloat) -> Bool { width > 400 }
+
+    /// First name over last, each line clipped to what that layout holds ("Alexandria" fits; a
+    /// longer word ends in "…"), so a name never wraps mid-word or changes size.
+    static func nameText(_ name: String, width: CGFloat) -> String {
+        let most = full(width) ? 18 : 10
+        return LensCards.twoLines(name).split(separator: "\n").map { line in
+            line.count > most ? line.prefix(most - 1) + "\u{2026}" : String(line)
+        }.joined(separator: "\n")
+    }
+
     static func nameFits(_ name: String, width: CGFloat) -> Bool {
         name.split(separator: " ").allSatisfy {
             (String($0) as NSString).size(withAttributes: [.font: heading]).width * 1.25 <= beside(width) - iconRoom
@@ -645,7 +657,7 @@ enum LensFit {
                              font: UIFont, gap: CGFloat) -> (lines: [String], left: CGFloat) {
         // Padding, then the header: the photo, or the name beside it if taller.
         let photo = (width - photoGap) * photoShare(width)
-        let header = max(photo, lines(LensCards.twoLines(name), nameFits(name, width: width) ? heading : body,
+        let header = max(photo, lines(nameText(name, width: width), full(width) ? heading : body,
                                       width - photoGap - photo - iconRoom) * slack)
         var left = half - (44 + header + gap)
         var out: [String] = []
