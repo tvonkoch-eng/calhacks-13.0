@@ -133,6 +133,9 @@ enum Identification {
         let visible = lensPeople.map { "\($0):\(inView($0))" }
         guard visible != visibleGroup else { return }
         visibleGroup = visible
+        SpeedLog.record(["event": "lensPeople", "people": visible.joined(separator: " "),
+                         "sides": lensSide.map { "\($0.key):\($0.value)" }.sorted().joined(separator: " "),
+                         "identifying": identifying, "confirming": confirming])
         if !identifying, !confirming { renderLens() }
     }
 
@@ -2343,6 +2346,7 @@ enum Identification {
         // Anyone on the lens gets the people layout (50/50, the glasses icon on whoever's in view),
         // mic on or off. The identity card is only for a press: identifying or confirming.
         if mode == .identity, !identifying, !confirming, !lensPeople.isEmpty { mode = .split }
+        if mode != lensMode { SpeedLog.record(["event": "lensLayout", "mode": "\(mode)"]) }
         lensMode = mode
         let avatar: (String) -> UIImage? = { [store] in store?.lensAvatar($0) }
         switch mode {
