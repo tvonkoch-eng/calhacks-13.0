@@ -147,7 +147,7 @@ enum LensCards {
                     Text(followup, style: .body).flexShrink(1)
                 }
             }
-            let blank = shot.working.isEmpty && shot.followup == nil ? LensFit.blank : 0
+            let blank = shot.working.isEmpty && shot.followup == nil && shot.cards.isEmpty ? LensFit.blank : 0
             if blank + fill > 0 {
                 FlexBox(direction: .column) {}.padding(.top, blank + fill)
             }
@@ -588,11 +588,17 @@ enum LensFit {
     /// Drops what won't fit in the aid's room (an older card's detail, then the older card) and
     /// returns the spacer's height.
     static func fit(_ shot: inout LensShot, bottom: LensCards.Bottom) -> CGFloat {
-        while !shot.cards.isEmpty, content(shot, bottom: bottom) > room(bottom) {
-            if shot.cards[shot.cards.count - 1].detail != nil {
-                shot.cards[shot.cards.count - 1].detail = nil
-            } else {
+        // The newest card always stays: it is the answer they're waiting for. Older ones lose their
+        // detail, then go; last of all the newest gives up its echo of the question.
+        while content(shot, bottom: bottom) > room(bottom) {
+            let last = shot.cards.count - 1
+            if last < 0 { break }
+            if shot.cards[last].detail != nil {
+                shot.cards[last].detail = nil
+            } else if last > 0 {
                 shot.cards.removeLast()
+            } else {
+                break
             }
         }
         return gap(shot, bottom: bottom)
@@ -616,7 +622,8 @@ enum LensFit {
             return h
         }
         if shot.working.isEmpty && shot.followup == nil {
-            pieces.append(40 + blank)
+            // The blank box only holds its line open when there is nothing else up top.
+            pieces.append(40 + (shot.cards.isEmpty ? blank : 0))
         } else {
             var h: CGFloat = 40
             h += shot.working.map { lines($0, meta, width - 38) + 10 }.reduce(0, +)
