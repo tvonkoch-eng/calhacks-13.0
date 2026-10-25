@@ -567,8 +567,18 @@ enum LensCards {
         pool += person.highlights ?? []
         pool += person.details.map(\.text)
         if let personal = person.personal { pool.append(personal) }
-        var seen = Set<String>()
-        return pool.filter { !$0.isEmpty && seen.insert($0).inserted }.map { "\u{2022} " + $0 }
+        // One bullet per thing: the label ("student at uc santa barbara"), the fact ("student at UC
+        // Santa Barbara") and the school ("UC Santa Barbara") are the same answer three times (Oct 25).
+        var kept: [String] = []
+        for line in pool where !line.isEmpty {
+            let n = Talk.normalized(line)
+            if kept.contains(where: { k in
+                let m = Talk.normalized(k)
+                return m.contains(n) || n.contains(m) || Talk.same(k, line)
+            }) { continue }
+            kept.append(line)
+        }
+        return kept.map { "\u{2022} " + $0 }
     }
 
     /// Whether the lens can draw this icon. The lens drops a name it doesn't know, so the phone must too.

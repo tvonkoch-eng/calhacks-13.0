@@ -229,6 +229,8 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// of you (Oct 25: a school took 10 s to show).
     var glanceEvery: TimeInterval { Self.knob("glanceEvery", 3) }
     var glanceLines: Int { Int(Self.knob("glanceLines", 1)) }
+    /// While someone just met is mid-sentence: a glance this often on the words so far.
+    var partialGlanceEvery: TimeInterval { Self.knob("partialGlanceEvery", 1.2) }
 
     /// What a new contact is called until they say their name.
     static let newName = "New person"
@@ -344,14 +346,26 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// looking at), a quick look at it so far every few lines: their name, who they are, what
     /// they've said about themselves. Facts are kept as they come, so the phone and the lens fill
     /// in during the conversation, not after it.
-    private func glanceIfDue(now: Date) {
-        guard let conversation = live, !glancing, now.timeIntervalSince(lastGlance) >= glanceEvery,
+    /// What's being said right now, before the recognizer closes the turn. Muse finalizes a line
+    /// only after a pause, 5-10 s after "Toby von Koch" was said (Oct 25 log); someone just met is
+    /// glanced on the words as they come, so the card fills in while they're still talking.
+    func heardPartial(_ text: String, at now: Date = .now) {
+        let words = text.split(separator: " ").count
+        guard newcomer != nil, words >= 1, text != partialText else { return }
+        partialText = text
+        glanceIfDue(now: now, partial: text)
+    }
+    @ObservationIgnored private var partialText = ""
+
+    private func glanceIfDue(now: Date, partial: String? = nil) {
+        guard let conversation = live, !glancing, now.timeIntervalSince(lastGlance) >= (partial == nil ? glanceEvery : partialGlanceEvery),
               let id = [newcomer, facing].compactMap({ $0 }).first(where: { conversation.faces.contains($0) })
         else { return }
         // Someone just met: every line counts, the wearer's too. The recognizer merges their answer
         // into the wearer's question ("So what do you do? Yeah I'm a student at UCSB", tagged ME).
         let theirs = id == newcomer ? conversation.lines.count : conversation.lines.filter { $0.who != "ME" }.count
-        guard theirs - glancedLines[id, default: 0] >= glanceLines else { return }
+        guard partial != nil && id == newcomer || theirs - glancedLines[id, default: 0] >= glanceLines else { return }
+        if partial == nil { partialText = "" }
         glancing = true
         lastGlance = now
         glancedLines[id] = theirs
@@ -366,12 +380,14 @@ struct Reminder: Codable, Identifiable, Equatable {
                                 // from whoever was there before is never filed under them (Oct 25: Avi
                                 // got "Toby Von Koch").
                                 transcript: conversation.lines.dropFirst(id == newcomer ? metAtLine : 0)
-                                    .map { "\(selfTest ? "SPEAKER" : label(retag($0.speaker))): \($0.text)" })
+                                    .map { "\(selfTest ? "SPEAKER" : label(retag($0.speaker))): \($0.text)" }
+                                    + (partial.map { ["SPEAKER (still talking): \($0)"] } ?? []))
         Task {
             defer { glancing = false }
             guard let glance = await look(input), roster(id) != nil || contacts.contains(where: { $0.id == id }) else { return }
             // First name only: "Toby Von Koch" reads "Toby" on the card.
-            if let name = glance.name?.split(separator: " ").first.map(String.init), renamable(id) { named(id, name) }
+            if let name = glance.name?.split(separator: " ").first.map({ $0.prefix(1).uppercased() + $0.dropFirst() }),
+               renamable(id) { named(id, name) }
             for text in glance.facts where !facts.contains(where: { $0.person == id && Talk.same($0.text, text) }) {
                 facts.append(Fact(id: UUID(), person: id, text: text, learned: .now))
             }

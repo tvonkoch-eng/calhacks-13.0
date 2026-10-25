@@ -204,6 +204,7 @@ import Observation
             guard let self else { return }
             if self.turnStarted == nil { self.turnStarted = Date().addingTimeInterval(-0.5) }
             self.aid.heard(partial: text)
+            self.crm?.heardPartial(text)
         }
         listener.onLine = { [weak self] text, speaker, _ in self?.line(text, label: speaker) }
         wire(aid)
