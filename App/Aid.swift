@@ -620,7 +620,7 @@ enum Talk {
         // The model said this needs the web. Look up the whole question, unless it grew enough that
         // the verdict may have changed ("what's the latest" … "you've stayed up coding?").
         if turn.lookup, grew < Self.refireGrowth {
-            lookUp(candidate.text)
+            lookUp(candidate.text, card: turn.card)
             return
         }
         let refused: Bool
