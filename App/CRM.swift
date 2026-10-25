@@ -189,6 +189,8 @@ struct Reminder: Codable, Identifiable, Equatable {
     @ObservationIgnored private var retry: (id: UUID, input: Recap.Input)?
     /// Someone met by face in the conversation being heard (`meet`), whose card fills in as they talk.
     @ObservationIgnored private(set) var newcomer: String?
+    /// Whether the newcomer has said anything in the conversation they were met in.
+    @ObservationIgnored private var newcomerSpoke = false
     @ObservationIgnored private var glancing = false
     @ObservationIgnored private var lastGlance = Date.distantPast
     @ObservationIgnored private var glancedLines = 0
@@ -276,6 +278,7 @@ struct Reminder: Codable, Identifiable, Equatable {
         guard !command, !text.isEmpty else { return }
         // Someone met by face before anyone spoke belongs to it even if the wearer looked away.
         if live == nil { live = Live(started: now, faces: [newcomer, facing].compactMap { $0 }.uniqued) }
+        if let newcomer, speaker == "p:\(newcomer)" { newcomerSpoke = true }
         live?.lines.append(Said(speaker: speaker, who: retag(speaker), text: text, at: now))
         lastLine = now
         watchForQuiet()
@@ -328,6 +331,7 @@ struct Reminder: Codable, Identifiable, Equatable {
     @discardableResult func meet(at now: Date = .now) -> String {
         let id = newContact(Self.newName, at: now)
         newcomer = id
+        newcomerSpoke = false
         glancedLines = 0
         if live?.faces.contains(id) == false { live?.faces.append(id) }
         save()
@@ -354,7 +358,14 @@ struct Reminder: Codable, Identifiable, Equatable {
     func tick(now: Date = .now, force: Bool = false) {
         guard var conversation = live, force || now.timeIntervalSince(lastLine) >= gap else { return }
         live = nil
+        // Someone met by face who never spoke in this conversation was in the background, not in
+        // it: nothing is filed under them, and the pending contact goes.
+        if let id = newcomer, !newcomerSpoke {
+            conversation.faces.removeAll { $0 == id }
+            forgetPerson(id)
+        }
         newcomer = nil
+        newcomerSpoke = false
         watch?.cancel()
         // Who's who is often only settled late (an introduction, the wearer's louder voice).
         for i in conversation.lines.indices where conversation.lines[i].speaker != nil {

@@ -186,9 +186,10 @@ let meeting = await MainActor.run { () -> CRM in
     check(crm.consent(id) == .pending && crm.name(id) == CRM.newName, "met: pending, unnamed")
     crm.facing(id)
     crm.heard("Hi, I'm Toby.", speaker: "A", at: at(1))
-    crm.heard("Hey, I'm Priya, I'm building an evals startup.", speaker: "B", at: at(2))
+    // The aid resolves a face-identified speaker to "p:<id>" before the CRM hears the line.
+    crm.heard("Hey, I'm Priya, I'm building an evals startup.", speaker: "p:\(id)", at: at(2))
     crm.heard("Oh nice, what kind of evals?", speaker: "A", at: at(3))
-    crm.heard("Agents, mostly. We just raised a seed.", speaker: "B", at: at(4))
+    crm.heard("Agents, mostly. We just raised a seed.", speaker: "p:\(id)", at: at(4))
     return crm
 }
 await settle()
@@ -209,6 +210,18 @@ await MainActor.run {
     meeting.forgetPerson(c?.person ?? "")
     check(forgot == [c?.person ?? "-"], "forgetting tells the face store")
     UserDefaults.standard.removeObject(forKey: "glanceEvery")
+}
+
+// Someone met by face who never speaks was in the background: nothing is filed, the contact goes.
+do {
+    let crm = CRM(url: nil)
+    crm.glancer = { _ in Glance() }
+    let id = crm.meet(at: at(0))
+    crm.heard("Long day, huh.", speaker: "A", at: at(1))
+    crm.heard("It really was.", speaker: "A", at: at(2))
+    crm.tick(now: at(3), force: true)
+    check(crm.contacts.first { $0.id == id } == nil, "a background face is not kept")
+    check(crm.conversations.isEmpty, "no conversation filed under a background face")
 }
 
 print(failures == 0 ? "OK" : "\(failures) failed")
