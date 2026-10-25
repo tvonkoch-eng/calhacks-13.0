@@ -17,7 +17,7 @@ struct NotesHome: View {
                 if assistant.armed, !Transcripts.lines(assistant).isEmpty {
                     live
                 } else {
-                    header(title: "Notes", trailing: assistant.armed ? AnyView(LiveDot()) : AnyView(listenButton))
+                    header(title: "Notes", trailing: assistant.armed ? AnyView(EmptyView()) : AnyView(listenButton))
                     pastList
                 }
             }
@@ -97,6 +97,7 @@ struct NotesHome: View {
                         }
                         .padding(.vertical, 6)
                         .contentShape(Rectangle())
+                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
                     }
                     // Swipe left to discard.
                     .swipeActions(edge: .trailing) {
@@ -112,8 +113,9 @@ struct NotesHome: View {
 
     private func header(title: String, trailing: AnyView) -> some View {
         HStack(alignment: .top) {
-            Text(title).font(.system(size: 30, weight: .semibold, design: .serif))
-                .lineLimit(2).minimumScaleFactor(0.7)
+            // Same title as People: 34 pt serif, 20 pt in, 10 pt down.
+            Text(title).font(.system(size: 34, weight: .semibold, design: .serif))
+                .lineLimit(2).minimumScaleFactor(0.6)
             Spacer(minLength: 8)
             trailing.padding(.top, 6)
         }
