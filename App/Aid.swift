@@ -347,6 +347,8 @@ enum Talk {
     @ObservationIgnored var onLens: ((LensView) -> Void)?
     /// Fires on every new event; the Mac tool prints it.
     @ObservationIgnored var onEvent: ((Event) -> Void)?
+    /// THEM introduced themselves ("I'm Priya"): the host can name a face it didn't know.
+    @ObservationIgnored var onName: ((String) -> Void)?
     /// Whether the wearer is the one talking right now, if the host can tell (nil: it can't).
     @ObservationIgnored var liveWearer: (() -> Bool?)?
     /// A speaker label's first name when the host knows who that is (face ID: "p:<id>"), so with
@@ -446,6 +448,7 @@ enum Talk {
                     them.name = name
                     compositor.setHeader(name)
                     log(.learned, "Name: \(name)", detail: "they introduced themselves")
+                    onName?(name)
                 }
             }
         }

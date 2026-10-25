@@ -40,6 +40,7 @@ struct CalHacksApp: App {
                     }
                     crm.onCancelled = { Nudges.cancel($0) }
                     crm.onSaved = { kept in store.saved = kept.map { crm.person($0) } }
+                    crm.onForgot = { store.forget($0) }
                     // Listening is on from launch; the mic pill turns it off.
                     Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand

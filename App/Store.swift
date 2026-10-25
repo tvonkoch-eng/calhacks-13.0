@@ -225,10 +225,49 @@ struct Match {
     /// holder was kept out of matching, but both phones ship the same people.json, so the flag
     /// made whoever it named unrecognizable on every device at once. Per-device identity, if we
     /// want it later, belongs in UserDefaults — not in a file identical for the whole team.
-    var contacts: [Person] { people + saved.map { edits[$0.id] ?? $0 } }
+    var contacts: [Person] {
+        people + saved.map { edits[$0.id] ?? met[$0.id] ?? $0 } + met.values.filter { m in !saved.contains { $0.id == m.id } }
+    }
     /// People met in conversation whom the wearer chose to keep (`CRM.keep`). They match like the
     /// roster once they have face photos; people met but not kept are never here, so never matched.
-    var saved: [Person] = [] { didSet { indexDirty = true } }
+    var saved: [Person] = [] {
+        didSet {
+            indexDirty = true
+            save()
+            for person in saved where avatars[person.id] == nil {
+                if let image = UIImage(contentsOfFile: avatarURL(person.id).path) { avatars[person.id] = image }
+            }
+        }
+    }
+
+    /// Strangers met by face this session (`CRM.meet`): matchable while the app runs, so the card
+    /// stays on them through the conversation, but their face is only written to disk if the
+    /// wearer keeps them. The photo is, so the contact has a face on the phone until it expires.
+    private(set) var met: [String: Person] = [:] { didSet { indexDirty = true } }
+
+    func meet(_ person: Person, face: [Float], photo: UIImage?) {
+        met[person.id] = person
+        gallery[person.id] = [face]
+        if let photo { setAvatar(person.id, photo) }
+    }
+
+    /// What was learned about someone met this session (name, label, facts).
+    func updateMet(_ person: Person) {
+        guard met[person.id] != nil else { return }
+        met[person.id] = person
+    }
+
+    func setAvatar(_ id: String, _ image: UIImage) {
+        avatars[id] = image
+        lensAvatars[id] = nil
+        try? image.jpegData(compressionQuality: 0.85)?.write(to: avatarURL(id), options: [.atomic, .completeFileProtection])
+    }
+
+    /// A contact the CRM deleted: no face, no photo.
+    func forget(_ id: String) {
+        met[id] = nil
+        reset(id)
+    }
 
     /// The wearer's own corrections to anyone's details (People → Edit), over the roster and kept
     /// contacts alike. Per phone, in Documents/edits.json: the roster file stays the team's.
@@ -496,6 +535,8 @@ struct Match {
     }
 
     private func save() {
-        try? JSONEncoder().encode(gallery).write(to: galleryURL)
+        // Faces of people met but not kept stay in memory only.
+        let kept = gallery.filter { entry in met[entry.key] == nil || saved.contains { $0.id == entry.key } }
+        try? JSONEncoder().encode(kept).write(to: galleryURL)
     }
 }

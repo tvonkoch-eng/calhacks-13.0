@@ -153,6 +153,19 @@ struct Reminder: Codable, Identifiable, Equatable {
     @ObservationIgnored var onCancelled: ((UUID) -> Void)?
     /// Replaces the model call in tests.
     @ObservationIgnored var recapper: ((Recap.Input) async throws -> Recap.Result)?
+    /// Models for the glances while someone new is talking: fast ones first, the coach's key is
+    /// rate limited and the aid needs it more.
+    @ObservationIgnored var glanceModels: [Aid.Model] = []
+    /// Replaces the glance model call in tests.
+    @ObservationIgnored var glancer: ((Recap.Input) async throws -> Glance)?
+    /// A glance learned something about someone met in this conversation: show it now.
+    @ObservationIgnored var onGlance: ((String, Glance) -> Void)?
+    /// A contact was deleted (forgotten, expired, merged): drop their face and photo too.
+    @ObservationIgnored var onForgot: ((String) -> Void)? {
+        didSet { forgottenEarly.forEach { onForgot?($0) }; forgottenEarly = [] }
+    }
+    /// Expired at launch, before anyone was listening for it.
+    @ObservationIgnored private var forgottenEarly: [String] = []
 
     /// Quiet this long ends a conversation.
     var gap: TimeInterval { Self.knob("crmGap", 120) }
@@ -174,6 +187,17 @@ struct Reminder: Codable, Identifiable, Equatable {
     @ObservationIgnored private var lastSaved: [Contact] = []
     /// The last failed conversation's transcript, for "Summarize again". Memory only.
     @ObservationIgnored private var retry: (id: UUID, input: Recap.Input)?
+    /// Someone met by face in the conversation being heard (`meet`), whose card fills in as they talk.
+    @ObservationIgnored private(set) var newcomer: String?
+    @ObservationIgnored private var glancing = false
+    @ObservationIgnored private var lastGlance = Date.distantPast
+    @ObservationIgnored private var glancedLines = 0
+    /// At most one glance this often, and only after this many new lines from them.
+    var glanceEvery: TimeInterval { Self.knob("glanceEvery", 12) }
+    var glanceLines: Int { Int(Self.knob("glanceLines", 2)) }
+
+    /// What a new contact is called until they say their name.
+    static let newName = "New person"
 
     init(url: URL? = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
             .appendingPathComponent("crm.json"), now: Date = .now) {
@@ -198,6 +222,9 @@ struct Reminder: Codable, Identifiable, Equatable {
     }
 
     private func file(_ encounter: Encounter, under person: String, recap: Conversation.Recap) {
+        if let name = encounter.name, let i = contacts.firstIndex(where: { $0.id == person && $0.name == Self.newName }) {
+            contacts[i].name = name
+        }
         let conversation = Conversation(id: UUID(), person: person, started: encounter.at, ended: encounter.ended,
                                         place: encounter.place, label: encounter.label, summary: encounter.summary,
                                         hook: encounter.hook, topics: Array(encounter.topics.prefix(3)), recap: recap)
@@ -221,7 +248,9 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// The face-ID match when there is one and it may be recognized; else the pending contact
     /// with the same name met in the last day (people say their name twice); else a new one.
     private func key(for encounter: Encounter) -> String? {
-        if let match = encounter.match, roster(match) != nil || contacts.contains(where: { $0.id == match && $0.consent == .saved }) {
+        // A pending match is someone met by face in this very conversation (`meet`): pending
+        // contacts are never recognized otherwise.
+        if let match = encounter.match, roster(match) != nil || contacts.contains(where: { $0.id == match }) {
             return match
         }
         guard let name = encounter.name?.trimmingCharacters(in: .whitespaces), !name.isEmpty else {
@@ -245,10 +274,71 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// One finished line from the aid. Commands to the glasses ("Lens, …") aren't conversation.
     func heard(_ text: String, speaker: String?, at now: Date = .now, command: Bool = false) {
         guard !command, !text.isEmpty else { return }
-        if live == nil { live = Live(started: now, faces: facing.map { [$0] } ?? []) }
+        // Someone met by face before anyone spoke belongs to it even if the wearer looked away.
+        if live == nil { live = Live(started: now, faces: [newcomer, facing].compactMap { $0 }.uniqued) }
         live?.lines.append(Said(speaker: speaker, who: retag(speaker), text: text, at: now))
         lastLine = now
         watchForQuiet()
+        glanceIfDue(now: now)
+    }
+
+    /// While someone new is in the conversation, a quick look at it so far every few lines: their
+    /// name, who they are, what they've said about themselves. Facts are kept as they come, so the
+    /// phone and the lens fill in during the conversation, not after it.
+    private func glanceIfDue(now: Date) {
+        guard let id = newcomer, let conversation = live, conversation.faces.contains(id), !glancing,
+              now.timeIntervalSince(lastGlance) >= glanceEvery else { return }
+        let theirs = conversation.lines.filter { $0.who != "ME" }.count
+        guard theirs - glancedLines >= glanceLines else { return }
+        glancing = true
+        lastGlance = now
+        glancedLines = theirs
+        let input = Recap.Input(wearer: wearer, when: conversation.started,
+                                with: nil, name: contacts.first { $0.id == id && $0.name != Self.newName }?.name,
+                                known: facts(about: id).map(\.text), owed: [],
+                                transcript: conversation.lines.map { "\(label(retag($0.speaker))): \($0.text)" })
+        Task {
+            defer { glancing = false }
+            guard let glance = await look(input), contacts.contains(where: { $0.id == id }) else { return }
+            if let name = glance.name, contacts.first(where: { $0.id == id })?.name == Self.newName { named(id, name) }
+            for text in glance.facts where !facts.contains(where: { $0.person == id && Talk.same($0.text, text) }) {
+                facts.append(Fact(id: UUID(), person: id, text: text, learned: .now))
+            }
+            if let label = glance.label { liveLabels[id] = label }
+            save()
+            onGlance?(id, glance)
+        }
+    }
+
+    private func look(_ input: Recap.Input) async -> Glance? {
+        if let glancer { return try? await glancer(input) }
+        for model in glanceModels {
+            if let glance = try? await Glance.ask(input, model: model) { return glance }
+        }
+        return nil
+    }
+
+    /// The label a glance gave someone met in the conversation still going, until a recap files one.
+    @ObservationIgnored private var liveLabels: [String: String] = [:]
+
+    /// A face nobody knows, held in view while the aid listens: a new pending contact now, so the
+    /// lens can put a card up before they've said a word. It fills in as they talk (`onGlance`)
+    /// and the conversation files under them when it ends. Pending like anyone met: no catch-up,
+    /// gone after `pendingDays` unless kept.
+    @discardableResult func meet(at now: Date = .now) -> String {
+        let id = newContact(Self.newName, at: now)
+        newcomer = id
+        glancedLines = 0
+        if live?.faces.contains(id) == false { live?.faces.append(id) }
+        save()
+        return id
+    }
+
+    /// Someone met just now said their name.
+    func named(_ person: String, _ name: String) {
+        guard let i = contacts.firstIndex(where: { $0.id == person }), contacts[i].name != name else { return }
+        contacts[i].name = name
+        save()
     }
 
     /// The known face the wearer is looking at. Joins the live conversation; a look between
@@ -264,6 +354,7 @@ struct Reminder: Codable, Identifiable, Equatable {
     func tick(now: Date = .now, force: Bool = false) {
         guard var conversation = live, force || now.timeIntervalSince(lastLine) >= gap else { return }
         live = nil
+        newcomer = nil
         watch?.cancel()
         // Who's who is often only settled late (an introduction, the wearer's louder voice).
         for i in conversation.lines.indices where conversation.lines[i].speaker != nil {
@@ -411,6 +502,7 @@ struct Reminder: Codable, Identifiable, Equatable {
     /// Forget everything about someone who isn't on the roster.
     func forgetPerson(_ person: String) {
         guard roster(person) == nil else { return }
+        if let onForgot { onForgot(person) } else { forgottenEarly.append(person) }
         let ids = Set(reminders.filter { $0.person == person }.map(\.id))
         ids.forEach { onCancelled?($0) }
         contacts.removeAll { $0.id == person }
@@ -434,6 +526,7 @@ struct Reminder: Codable, Identifiable, Equatable {
         for i in reminders.indices where reminders[i].person == contact { reminders[i].person = person }
         reminders.removeAll { $0.person == person && $0.kind == .checkIn }
         contacts.removeAll { $0.id == contact }
+        onForgot?(contact)
         if let last = conversations.first(where: { $0.person == person }) {
             scheduleCheckIn(person, after: last.ended ?? last.started, conversation: last.id)
         }
@@ -509,7 +602,7 @@ struct Reminder: Codable, Identifiable, Equatable {
     var saved: [Contact] { contacts.filter { $0.consent == .saved } }
 
     /// The most recent four-word label for them ("evals startup founder").
-    func label(_ person: String) -> String? { conversations(with: person).lazy.compactMap(\.label).first }
+    func label(_ person: String) -> String? { conversations(with: person).lazy.compactMap(\.label).first ?? liveLabels[person] }
 
     /// The single most useful line from last time: what you owe them, else what they owe you,
     /// else the hook, else the first topic.
@@ -595,6 +688,10 @@ struct Reminder: Codable, Identifiable, Equatable {
 
 private extension String {
     var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
+}
+
+private extension Array where Element == String {
+    var uniqued: [String] { reduce(into: []) { if !$0.contains($1) { $0.append($1) } } }
 }
 
 extension Encounter {
@@ -698,13 +795,19 @@ enum Recap {
     }
 
     static func ask(_ input: Input, model: Aid.Model) async throws -> Result {
+        let text = try await complete(system: prompt, message(input), model: model)
+        guard let result = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
+        return result
+    }
+
+    static func complete(system prompt: String, _ message: String, model: Aid.Model) async throws -> String {
         var body: [String: Any] = [
             "model": model.model,
             "temperature": 0.2,
             "response_format": ["type": "json_object"],
             "messages": [
                 ["role": "system", "content": prompt],
-                ["role": "user", "content": message(input)],
+                ["role": "user", "content": message],
             ],
         ]
         if model.model.contains("gpt-oss") {
@@ -717,9 +820,7 @@ enum Recap {
             body["max_tokens"] = 700
         }
         if model.provider == .cerebras { body.removeValue(forKey: "response_format") }
-        let text = try await LLM.complete(model.provider.endpoint, key: model.key, body: body, timeout: 25)
-        guard let result = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
-        return result
+        return try await LLM.complete(model.provider.endpoint, key: model.key, body: body, timeout: 25)
     }
 
     /// Lenient like `Coach.parse`: prose around the object, null for [], strings for numbers.
@@ -748,5 +849,45 @@ enum Recap {
         }.prefix(3).map { $0 }
         if !result.skip, result.summary == nil { return nil }
         return result
+    }
+}
+
+/// What a conversation still going says about someone just met: enough to fill in their card.
+struct Glance: Equatable {
+    var name: String?
+    var label: String?
+    var facts: [String] = []
+
+    static let prompt = """
+    You fill in a contact card for the wearer of AR glasses while they talk to someone they just \
+    met. You get the conversation so far, from live speech recognition (expect misheard words). \
+    Lines are tagged ME (the wearer) and THEM (the other person), or SPEAKER labels when that \
+    wasn't settled.
+
+    Reply with one JSON object with exactly these keys:
+    "name": THEM's name if they said it (first, plus last if said), else null.
+    "label": who THEM is in at most 4 words, lowercase, from what they said: "evals startup \
+    founder", "berkeley eecs junior". null if unclear.
+    "facts": up to 3 durable things THEM said about themselves (job, school, project, where \
+    they're from, plans, interests), at most 8 words each, most useful first, never anything in \
+    "Known", never about the wearer. Often [].
+    """
+
+    static func ask(_ input: Recap.Input, model: Aid.Model) async throws -> Glance {
+        let text = try await Recap.complete(system: prompt, Recap.message(input), model: model)
+        guard let glance = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
+        return glance
+    }
+
+    static func parse(_ text: String) -> Glance? {
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,
+              let json = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any] else { return nil }
+        func clean(_ value: Any?) -> String? {
+            guard let s = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty,
+                  s.lowercased() != "null" else { return nil }
+            return s
+        }
+        return Glance(name: clean(json["name"]), label: clean(json["label"]),
+                      facts: ((json["facts"] as? [Any]) ?? []).compactMap(clean).prefix(3).map { $0 })
     }
 }
