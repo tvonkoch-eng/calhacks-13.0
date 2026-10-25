@@ -453,8 +453,8 @@ struct ContactView: View {
             VStack(alignment: .leading, spacing: 3) {
                 // The name is edited in place: tap it (or its pencil) and type.
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    TextField("Name", text: $name, axis: .vertical)
-                        .font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(1...2)
+                    TextField("Name", text: $name, axis: .horizontal)
+                        .font(.system(size: 28, weight: .semibold, design: .serif)).lineLimit(1)
                         .focused($typingName)
                         .submitLabel(.done)
                         .onChange(of: name) { _, text in

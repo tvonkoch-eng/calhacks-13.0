@@ -385,7 +385,7 @@ enum FaceEngine {
         /// feature-print cosines sit at 0.6-0.9 for everyone, ArcFace at ~0.4 for the same person
         /// and ~0.0 for anybody else.
         var minScore: Float {
-            if case .arcFace = self { return 0.35 }
+            if case .arcFace = self { return 0.33 }
             return 0.72
         }
         var minGap: Float {

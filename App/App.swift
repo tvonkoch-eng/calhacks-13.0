@@ -1071,9 +1071,9 @@ struct LensMirror: View {
             Image(uiImage: photo)
                 .resizable().aspectRatio(contentMode: .fill)
                 .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: 0))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: 0)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(white: 0.28)).frame(width: size, height: size)
         }
     }
@@ -1083,17 +1083,17 @@ struct LensMirror: View {
         return HStack(alignment: .center, spacing: LensFit.photoGap) {
             // Grey until the photo's write lands, as on the lens.
             if shot.photoPending && id == shot.photo {
-                RoundedRectangle(cornerRadius: 0)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
             } else if let photo = avatar(id) {
                 Image(uiImage: photo)
                     .resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: 0))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
                 // No photo yet: its box holds the place, as on the lens.
-                RoundedRectangle(cornerRadius: 0)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(Color(white: 0.28))
                     .frame(width: size, height: size)
             }

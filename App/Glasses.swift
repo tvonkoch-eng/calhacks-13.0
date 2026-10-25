@@ -414,6 +414,9 @@ enum Identification {
     private(set) var benching = false
     /// The card is on the lens with a placeholder; its photo is the next write.
     @ObservationIgnored private var photoPending = false
+    /// Whose photo is already on the lens. Their next card goes up with it, in one write: a card sent
+    /// without it first is what made the photo drop out and come back. Cleared when the glasses drop.
+    @ObservationIgnored private var photoOnLens: String?
     /// The lens link cannot take a frame per streamed token; coalesce to this cadence.
     @ObservationIgnored private let minSendInterval: TimeInterval = 0.22
 
@@ -1158,6 +1161,7 @@ enum Identification {
     /// `keepContext`: a reconnect, not a goodbye. The person on the card and the aid's lens survive
     /// it, so the lens comes back showing what it showed.
     private func teardown(status: String, keepContext: Bool = false) {
+        photoOnLens = nil   // the glasses lose the lens with the session: the next card carries its photo again
         inputTask?.cancel()
         inputTask = nil
         tokens = []
@@ -2221,6 +2225,11 @@ enum Identification {
             return
         }
         guard display != nil, displayReady, !benching else { return }
+        if photoOnLens == person.id {
+            photoPending = false
+            renderLens()
+            return
+        }
         photoPending = true
         let start = CFAbsoluteTimeGetCurrent()
         guard renderLens() else { photoPending = false; return }
@@ -2234,6 +2243,7 @@ enum Identification {
                 if self.renderLens() {
                     log["photoOK"] = await self.writesDone()
                     log["photoMs"] = ms(since: photoStart)
+                    if log["photoOK"] as? Bool == true { self.photoOnLens = person.id }
                 }
             }
             SpeedLog.record(log)
