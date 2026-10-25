@@ -105,23 +105,22 @@ struct NotesHome: View {
             }
             ForEach(past) { row in
                 NavigationLink(value: row.id) {
-                    HStack(spacing: 14) {
-                        faces(row.people, size: 46)
-                            .frame(width: 46, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 2) {
+                    // The notes card: serif title, when, and the faces on the right.
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(row.people.isEmpty ? "Conversation"
                                  : "Conversation with " + Self.list(row.people.map { crm.first($0) }))
-                                .font(.body.weight(.medium)).lineLimit(1)
-                            Text(row.lines.first?.text ?? "")
-                                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                                .font(.system(size: 17, weight: .semibold, design: .serif))
+                                .foregroundStyle(.primary).lineLimit(2)
+                            Text(row.started.formatted(date: .abbreviated, time: .shortened))
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 8)
-                        Text(relative(row.started)).font(.footnote).foregroundStyle(.secondary)
+                        faces(row.people, size: 28)
                     }
-                    .padding(.vertical, 5)
+                    .padding(.vertical, 6)
                 }
                 .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
-                .alignmentGuide(.listRowSeparatorLeading) { _ in 60 }
                 // Swipe left to discard.
                 .swipeActions(edge: .trailing) {
                     Button("Delete", systemImage: "trash", role: .destructive) { Transcripts.shared.delete(row.id) }
