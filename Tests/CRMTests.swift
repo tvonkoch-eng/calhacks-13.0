@@ -170,5 +170,46 @@ await MainActor.run {
     check(offline.contacts.count == 1, "retry doesn't make a second person")
 }
 
+// Meeting someone new by face: a pending contact at once, filled in mid-conversation by glances,
+// and the conversation files under them with the name they gave.
+check(Glance.parse("{\"name\": \"Priya Patel\", \"label\": \"evals startup founder\", \"facts\": [\"Building an evals startup\", null]}")
+        == Glance(name: "Priya Patel", label: "evals startup founder", facts: ["Building an evals startup"]), "glance parse")
+let meeting = await MainActor.run { () -> CRM in
+    let crm = makeCRM(Recap.Result(summary: "Talked evals.", label: "evals startup founder", name: "Priya", facts: ["Building an evals startup"]))
+    UserDefaults.standard.set(0, forKey: "glanceEvery")
+    var glances: [String] = []
+    crm.glancer = { input in
+        glances.append(input.transcript.joined(separator: "|"))
+        return Glance(name: "Priya", label: "evals startup founder", facts: ["Building an evals startup"])
+    }
+    let id = crm.meet(at: at(0))
+    check(crm.consent(id) == .pending && crm.name(id) == CRM.newName, "met: pending, unnamed")
+    crm.facing(id)
+    crm.heard("Hi, I'm Toby.", speaker: "A", at: at(1))
+    crm.heard("Hey, I'm Priya, I'm building an evals startup.", speaker: "B", at: at(2))
+    crm.heard("Oh nice, what kind of evals?", speaker: "A", at: at(3))
+    crm.heard("Agents, mostly. We just raised a seed.", speaker: "B", at: at(4))
+    return crm
+}
+await settle()
+await MainActor.run {
+    let id = meeting.newcomer ?? ""
+    check(meeting.name(id) == "Priya", "the glance names them mid-conversation")
+    check(meeting.facts(about: id).map(\.text) == ["Building an evals startup"], "facts kept as they come")
+    check(meeting.label(id) == "evals startup founder", "label before any recap")
+    meeting.tick(now: at(5), force: true)
+}
+await settle()
+await MainActor.run {
+    let c = meeting.conversations.first
+    check(meeting.contacts.count == 1 && c.map { meeting.name($0.person) } == "Priya", "filed under the face met, not a second Priya")
+    check(meeting.facts.count == 1, "the recap's fact isn't repeated")
+    var forgot: [String] = []
+    meeting.onForgot = { forgot.append($0) }
+    meeting.forgetPerson(c?.person ?? "")
+    check(forgot == [c?.person ?? "-"], "forgetting tells the face store")
+    UserDefaults.standard.removeObject(forKey: "glanceEvery")
+}
+
 print(failures == 0 ? "OK" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

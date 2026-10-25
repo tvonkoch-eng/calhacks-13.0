@@ -321,6 +321,13 @@ enum Talk {
         /// once the sentence closes with "?". Statements that start like questions ("what you
         /// could do is…") got answers in a real conversation (2026-10-24).
         var explicitOnly = false
+        /// Lines to say next (a lull, "Lens, what should I ask?", an opener for a face). Off: in
+        /// the 2026-10-24 test with Joaquin they were bad enough to drop entirely; the coach still
+        /// defines and still catches missed questions.
+        var suggestions = true
+        /// The wearer's own questions get answers too, not only the other person's. In testing the
+        /// wearer asks as much as anyone, and an ignored question reads as "it didn't hear me".
+        var answerMine = false
     }
 
     private(set) var lines: [Line] = []
@@ -340,6 +347,8 @@ enum Talk {
     @ObservationIgnored var onLens: ((LensView) -> Void)?
     /// Fires on every new event; the Mac tool prints it.
     @ObservationIgnored var onEvent: ((Event) -> Void)?
+    /// THEM introduced themselves ("I'm Priya"): the host can name a face it didn't know.
+    @ObservationIgnored var onName: ((String) -> Void)?
     /// Whether the wearer is the one talking right now, if the host can tell (nil: it can't).
     @ObservationIgnored var liveWearer: (() -> Bool?)?
     /// A speaker label's first name when the host knows who that is (face ID: "p:<id>"), so with
@@ -380,7 +389,8 @@ enum Talk {
             closedInTurn = closed.count
             // Coach each real sentence of theirs as it lands, so a definition is up while they're
             // still talking and the wearer is listening anyway.
-            if !mine, newest.split(separator: " ").count >= 6, Date().timeIntervalSince(lastCoach) > 4 { coachSoon() }
+            if newest.split(separator: " ").count >= 4, Date().timeIntervalSince(lastCoach) > 3,
+               Tools.command(in: newest) == nil { coachSoon() }
         }
         if !open.isEmpty { answerHeard(open, endpointed: false, mine: mine) }
         publish()
@@ -438,6 +448,7 @@ enum Talk {
                     them.name = name
                     compositor.setHeader(name)
                     log(.learned, "Name: \(name)", detail: "they introduced themselves")
+                    onName?(name)
                 }
             }
         }
@@ -462,7 +473,9 @@ enum Talk {
         }
         publish()
 
-        if !roles.isWearer(speaker), !Talk.isBackchannel(text) { coachSoon() }
+        // Every real line, the wearer's too: a term they used ("financial derivatives") is worth a
+        // card, and this is also the second look at a question the fast lane let go.
+        if !Talk.isBackchannel(text), Tools.command(in: text) == nil { coachSoon() }
         watchForSilence()
     }
 
@@ -543,7 +556,7 @@ enum Talk {
         guard config.answers != nil else { return }
         // Where, weather, my calendar: worth answering whoever asked, and only a tool can.
         let toolish = config.toolbox != nil && Tools.wants(text)
-        if mine, roles.known, !toolish {
+        if mine, roles.known, !toolish, !config.answerMine {
             if endpointed { commit(nil) }
             return
         }
@@ -1000,14 +1013,17 @@ enum Talk {
         // The recognizer garbled a request the gate or the answer model let go: the coach's clean
         // version goes to the tool model (answer, device tool or Fetch), unless something already
         // answered this turn.
-        // Only if they asked something: "we just raised a seed around" was rebuilt into "How much
-        // did the company raise?" and answered with a made-up number about their own company.
-        let theirs = (lines.last { !roles.isWearer($0.speaker) }?.text ?? "") + " " + (predictedWearer() ? "" : partial)
-        if let ask = advice.ask, Talk.asks(theirs), Date().timeIntervalSince(answeredAt) > 8, lookupTask == nil,
-           turns.first?.live != true, !asked.contains(where: { Talk.same($0, ask) }) {
+        // This is the second look at every line: the fast lane drops a question the recognizer
+        // ended with "." instead of "?", one the gate didn't recognise, or one it thought was
+        // the wearer's to leave alone. Only if someone asked something ("we just raised a seed
+        // around" was rebuilt into a question and answered with a made-up number), and unless
+        // that same question was answered or is in flight.
+        let newest = (lines.last { !$0.command }?.text ?? "") + " " + partial
+        if let ask = advice.ask, Talk.asks(newest), lookupTask == nil, turns.first?.live != true,
+           !alreadyAnswered(ask, at: now), !asked.contains(where: { Talk.same($0, ask) }) {
             asked.append(ask)
             answeredAt = now
-            log(.lookup, ask, detail: "rebuilt from what was heard")
+            log(.lookup, ask, detail: "caught on the second look")
             toolRound(ask, command: false)
         }
         // Shown only while its moment lasts: speech ends a lull (`wanted` is cleared), so a line that
@@ -1032,6 +1048,17 @@ enum Talk {
         }
         if status.hasPrefix("Coach") { status = "" }
         publish()
+    }
+
+    /// Something on the lens in the last 20 s already answers `question`: a turn that asked the
+    /// same thing, or an answer card about it.
+    private func alreadyAnswered(_ question: String, at now: Date) -> Bool {
+        let recent = turns.prefix(4).filter { turn in
+            guard turn.state == .done || turn.live else { return false }
+            return now.timeIntervalSince(turn.committedAt ?? turn.firedAt) < 20
+        }
+        if recent.contains(where: { Talk.same($0.question, question) }) { return true }
+        return now.timeIntervalSince(answeredAt) < 20 && Talk.same(answeredText, question)
     }
 
     // MARK: - Suggestions: what to say next, only when it's needed
@@ -1061,7 +1088,7 @@ enum Talk {
     }
 
     private func offer(_ moment: Moment) {
-        guard config.coach != nil else { return }
+        guard config.coach != nil, config.suggestions else { return }
         wanted = moment
         // A line written at the last moment that still fits: up now, instead of a model call later.
         if moment != .recognised, let idea = nextIdea() {

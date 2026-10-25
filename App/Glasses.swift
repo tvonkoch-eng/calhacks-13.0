@@ -45,14 +45,25 @@ enum Identification {
     /// the wearer has the floor. Two or more turn the person strip into a row of names.
     private(set) var group: [Member] = []
     private(set) var meSpeaking = false
-    /// The lens shows the group row only while two or more of them are in frame: someone seen in
-    /// the last `groupInFrame` seconds. Look away from one and it goes back to the single card.
-    @ObservationIgnored private var groupInFrame: TimeInterval { TimeInterval(Tuning.float("groupInFrame", 1.0)) }
+    /// The lens shows a card per person while two or more are in the conversation: anyone seen in
+    /// the last `groupHolds` seconds (15), or talking. Looking at one person for a while doesn't
+    /// drop the other (1 s did, on every glance); someone gone for 15 s does. Whoever is talking
+    /// comes first, then whoever was seen most recently, since the lens has room for two.
+    @ObservationIgnored private var groupHolds: TimeInterval { TimeInterval(Tuning.float("groupHolds", 15)) }
     @ObservationIgnored private var visibleGroup: [String] = []
     private var groupInView: [Member] {
         // No camera (a PREVIEW_GROUP screenshot run): nothing to filter by, show the group as set.
         guard connected || replaying else { return group }
-        return group.filter { member in sighted[member.id].map { clockNow.timeIntervalSince($0) < groupInFrame } ?? false }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["PREVIEW_GROUP"] != nil { return group }
+        #endif
+        let held = group.filter { member in
+            member.speaking || sighted[member.id].map { clockNow.timeIntervalSince($0) < groupHolds } ?? false
+        }
+        return held.sorted { a, b in
+            if a.speaking != b.speaking { return a.speaking }
+            return (sighted[a.id] ?? .distantPast) > (sighted[b.id] ?? .distantPast)
+        }
     }
 
     /// Rewrites the lens when who is in frame changes the group row (two in view, or back to one).
@@ -76,6 +87,9 @@ enum Identification {
     /// Every confident face in a scanned frame (person ids), whether or not it is announced. The
     /// host builds the conversation's group from these.
     @ObservationIgnored var onSeen: (([String]) -> Void)?
+    /// A face nobody resembles held in view while the aid listens: the host makes them a contact
+    /// (fused face, headshot) and returns the id, and from then on they match like anyone known.
+    @ObservationIgnored var onStranger: (([Float], UIImage?) -> String?)?
 
     // MARK: Own voice
 
@@ -1717,6 +1731,8 @@ enum Identification {
         // Who the wearer is facing, for the aid: the clearest match in view right now.
         let looking = seenNow.max { $0.score < $1.score }?.id
         if looking != facing { facing = looking }
+        if seenNow.isEmpty { noticeStranger(inView, image: image, store: store) }
+        betterLooks(inView, hits: scan.hits, image: image, store: store)
         guard let chosen, allowed else {
             if scan.timing.gated > 0, scan.timing.faces > 0, Int.random(in: 0..<10) == 0 {
                 SpeedLog.record(["event": "autoBlurred", "faces": scan.timing.faces,
@@ -1757,6 +1773,81 @@ enum Identification {
         log["totalMs"] = ms(since: start)
         if replaying { log["replayMs"] = Int(clockNow.timeIntervalSince(replayBase) * 1000) }
         SpeedLog.record(log)
+    }
+
+    // MARK: - Meeting someone new
+    //
+    // A handshake with a stranger: their face is in focus, close, and looks like nobody known. After
+    // a few looks they become a contact on the spot (the host's `onStranger`), with the fused face
+    // as their only sample and a headshot from this frame. The next scan matches them like anyone
+    // else, so the card goes up through the ordinary path and follows them; the name and what they
+    // say fill it in as the conversation goes (`refresh`).
+
+    @ObservationIgnored private var meetNew: Bool { Tuning.bool("meetNew", true) }
+    /// Looks before a stranger is someone met (2 fps: ~2 s of looking at them).
+    @ObservationIgnored private var meetLooks: Int { Tuning.int("meetLooks", 4) }
+    /// Below this best score against everyone known, a face is nobody we know. ArcFace puts
+    /// strangers near 0 and the same person at 0.4+.
+    @ObservationIgnored private var strangerBelow: Float { Tuning.float("strangerBelow", 0.22) }
+    /// Track id -> contact id for faces met this session, and how good their photo's look was.
+    @ObservationIgnored private var metTracks: [Int: String] = [:]
+    @ObservationIgnored private var photoLook: [String: (score: Float, at: Date)] = [:]
+    @ObservationIgnored private var lastMet = Date.distantPast
+    @ObservationIgnored private let cropContext = CIContext()
+
+    private func noticeStranger(_ inView: [FaceTracker.Track], image: CIImage, store: Store) {
+        guard meetNew, aidArmed, !identifying, let onStranger,
+              Date().timeIntervalSince(lastMet) > 10,
+              let track = inView.max(by: { $0.best.attention < $1.best.attention }),
+              metTracks[track.id] == nil, track.looks >= meetLooks, track.weight >= minEvidence,
+              facePx(track) >= minAnnouncePx else { return }
+        let best = store.ranked(track.probe).first?.score ?? 0
+        guard best < strangerBelow else { return }
+        let photo = headshot(image, box: track.box)
+        guard let id = onStranger(track.probe, photo) else { return }
+        metTracks[track.id] = id
+        photoLook[id] = (lookScore(track.box, track.best), Date())
+        lastMet = Date()
+        SpeedLog.record(["event": "metNew", "person": id, "track": track.id, "looks": track.looks,
+                         "facePx": Int(facePx(track)), "closest": (Double(best) * 1000).rounded() / 1000])
+    }
+
+    /// The first photo of someone met is whatever frame they were met on. A clearly sharper,
+    /// closer look later in the conversation replaces it (at most every few seconds).
+    private func betterLooks(_ inView: [FaceTracker.Track], hits: [FaceHit], image: CIImage, store: Store) {
+        for track in inView {
+            guard let id = metTracks[track.id], let hit = hits.first(where: { $0.box == track.box }), hit.usable else { continue }
+            let score = lookScore(hit.box, hit)
+            let last = photoLook[id] ?? (0, .distantPast)
+            guard score > last.score * 1.25, Date().timeIntervalSince(last.at) > 3,
+                  let photo = headshot(image, box: hit.box) else { continue }
+            store.setAvatar(id, photo)
+            photoLook[id] = (score, Date())
+            if onCard == id { renderLens() }
+        }
+    }
+
+    private func lookScore(_ box: CGRect, _ hit: FaceHit) -> Float {
+        Float(box.width) * hit.sharpness * hit.quality
+    }
+
+    /// Head and shoulders around a face box (normalised, y-up like the frame), square.
+    private func headshot(_ image: CIImage, box: CGRect) -> UIImage? {
+        let extent = image.extent
+        let side = min(max(box.width * extent.width, box.height * extent.height) * 2, extent.width, extent.height)
+        let center = CGPoint(x: extent.minX + box.midX * extent.width, y: extent.minY + box.midY * extent.height)
+        var rect = CGRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side)
+        rect.origin.x = min(max(rect.minX, extent.minX), extent.maxX - side)
+        rect.origin.y = min(max(rect.minY, extent.minY), extent.maxY - side)
+        guard let cg = cropContext.createCGImage(image, from: rect.integral) else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
+    /// Someone on the card was learned more about (a name, who they are): redraw with it.
+    func refresh(_ person: Person) {
+        guard case .known(let match, let hit) = result, match.person.id == person.id, match.person != person else { return }
+        result = .known(Match(person: person, score: match.score), hit)
+        renderLens()
     }
 
     /// Detect every face, crop the four largest, embed the ones sharp enough to be evidence.
@@ -2122,7 +2213,7 @@ enum Identification {
         case .identity:
             return hud()
         case .split:
-            // Two or more people in frame: the group row. Otherwise the person on the card.
+            // Two or more people in the conversation: a card each. Otherwise the person on the card.
             let inView = groupInView
             let members = inView.count >= 2 ? inView : []
             let partner = members.isEmpty ? person : nil

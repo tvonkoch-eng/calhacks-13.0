@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import Observation
 
 /// Ties the phone mic to the conversation aid, and the aid to the glasses.
@@ -24,6 +25,7 @@ import Observation
         didSet {
             glasses?.onFacing = { [weak self] id in self?.facingChanged(id) }
             glasses?.onSeen = { [weak self] ids in self?.seen(ids) }
+            glasses?.onStranger = { [weak self] face, photo in self?.meet(face: face, photo: photo) }
             glasses?.onOwnSpeech = { [weak self] text, _ in self?.ownSpeech(text) }
             let listener = self.listener
             glasses?.audioSink.handler = { buffer in listener.feed(buffer) }
@@ -52,6 +54,7 @@ import Observation
             wire(aid)
             crm?.wearer = aid.config.wearer
             crm?.models = Self.recapModels(aid.config)
+            crm?.glanceModels = Self.glanceModels(aid.config)
         }
     }
     /// The personal CRM keeps every conversation the aid hears (App/CRM.swift).
@@ -60,6 +63,8 @@ import Observation
             guard let crm else { return }
             crm.wearer = aid.config.wearer
             crm.models = Self.recapModels(aid.config)
+            crm.glanceModels = Self.glanceModels(aid.config)
+            crm.onGlance = { [weak self] id, glance in self?.learned(id, glance) }
             // ME for the wearer, a first name for someone face ID knows, else THEM.
             crm.retag = { [weak self] label in
                 guard let self else { return label ?? "?" }
@@ -92,6 +97,16 @@ import Observation
         return models
     }
 
+    /// Glances run every few lines mid-conversation: the backup's fast key first, so they never
+    /// eat the rate-limited coach key the aid's suggestions need.
+    private static func glanceModels(_ config: Aid.Config) -> [Aid.Model] {
+        var models: [Aid.Model] = []
+        for model in [config.backup, config.answers, config.coach].compactMap(\.self) where !models.contains(model) {
+            models.append(model)
+        }
+        return models
+    }
+
     /// Lens to the glasses; every aid event into speed.jsonl, so "why didn't it answer?" has an
     /// answer afterwards (the line with its speaker, the answer or the skip, rate limits).
     private func wire(_ aid: Aid) {
@@ -106,6 +121,7 @@ import Observation
         // turn after Avi's is as likely Mira's as the wearer's. No signal means "not the wearer",
         // so their questions still get answered.
         aid.liveWearer = { [weak self] in self?.speakers.wearerTalking() ?? false }
+        aid.onName = { [weak self] name in self?.introduced(name) }
         aid.nameFor = { [weak self] label in
             guard let self, label.hasPrefix("p:"), let person = self.person(String(label.dropFirst(2))) else { return nil }
             return self.firstName(person.name)
@@ -153,6 +169,10 @@ import Observation
         var config = Aid.Config.fromBundle(wearer: wearer)
         config.explicitOnly = Tuning.bool("aidExplicitOnly", true)
         if !Tuning.bool("aidCoach", true) { config.coach = nil }
+        // Off since the 2026-10-24 test: the lines to say were bad. The coach keeps defining terms
+        // and catching questions the fast lane missed.
+        config.suggestions = Tuning.bool("aidSuggest", false)
+        config.answerMine = Tuning.bool("aidAnswerMine", true)
         return Aid(config: config)
     }
 
@@ -408,17 +428,67 @@ import Observation
     }
 
     private func seed(_ id: String) {
-        guard id != met, let person = person(id) else { return }
+        // Someone just met has nothing to brief the aid with, and naming them "New person" would
+        // stop it taking the name they introduce themselves with.
+        guard id != met, !newcomers.contains(id), let person = person(id) else { return }
         met = id
         // What the roster says, then what the CRM kept from last time (summary, promises).
         aid.met(name: person.name, label: person.headline,
                 facts: person.details.map(\.text) + (crm?.record(id).briefing ?? []))
     }
 
+    // MARK: - Meeting someone new
+
+    /// Faces met this session, newest last: their cards fill in as they talk.
+    @ObservationIgnored private var newcomers: [String] = []
+
+    /// The glasses held a face nobody knows while listening: a contact now, card up next scan.
+    private func meet(face: [Float], photo: UIImage?) -> String? {
+        guard armed, let crm, let store else { return nil }
+        let id = crm.meet()
+        store.meet(Person(id: id, name: CRM.newName, role: "Just met", source: "Met just now"), face: face, photo: photo)
+        newcomers.append(id)
+        // A name already heard in this conversation, before the face was in focus, is theirs.
+        if crm.live != nil, let name = aid.them.name, !aid.them.recognised { introduced(name) }
+        return id
+    }
+
+    /// "I'm Priya" from the other person: the newest face met this conversation that has no name yet.
+    private func introduced(_ name: String) {
+        guard let crm, let id = newcomers.last(where: { crm.newcomer == $0 }),
+              let person = person(id), person.name == CRM.newName else { return }
+        rename(id, name)
+    }
+
+    private func rename(_ id: String, _ name: String) {
+        guard var person = person(id) else { return }
+        person.name = name
+        crm?.named(id, name)
+        store?.updateMet(person)
+        glasses?.refresh(person)
+        SpeedLog.record(["event": "metNamed", "person": id])
+    }
+
+    /// A glance at the conversation so far: who they are and what they've said, onto the card.
+    private func learned(_ id: String, _ glance: Glance) {
+        guard newcomers.contains(id), var person = person(id), let crm else { return }
+        if person.name == CRM.newName, let name = glance.name { person.name = name }
+        if person.name != CRM.newName { crm.named(id, person.name) }
+        if let label = glance.label { person.role = label }
+        let facts = crm.facts(about: id).map(\.text)
+        person.tie = facts.first
+        person.highlights = facts.count > 1 ? Array(facts.dropFirst().prefix(2)) : nil
+        store?.updateMet(person)
+        glasses?.refresh(person)
+        SpeedLog.record(["event": "metLearned", "person": id, "facts": facts.count])
+    }
+
     /// The roster and the contacts kept from conversations.
     private func person(_ id: String) -> Person? { store?.contacts.first { $0.id == id } }
     private func isWearer(_ id: String) -> Bool { person(id)?.isMe == true }
-    private func firstName(_ name: String) -> String { name.split(separator: " ").first.map(String.init) ?? name }
+    private func firstName(_ name: String) -> String {
+        name == CRM.newName ? name : name.split(separator: " ").first.map(String.init) ?? name
+    }
 
     private func roster() -> [String: String] {
         var map: [String: String] = [:]

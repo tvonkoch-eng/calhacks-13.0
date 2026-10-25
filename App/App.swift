@@ -40,6 +40,7 @@ struct CalHacksApp: App {
                     }
                     crm.onCancelled = { Nudges.cancel($0) }
                     crm.onSaved = { kept in store.saved = kept.map { crm.person($0) } }
+                    crm.onForgot = { store.forget($0) }
                     // Listening is on from launch; the mic pill turns it off.
                     Task { await assistant.ensureListening() }
                     // Knobs that are read once rather than per use have to be re-applied by hand
@@ -111,9 +112,21 @@ struct CalHacksApp: App {
                             glasses.aidArmed = true
                             // PREVIEW_WORK="Researching the GENIUS Act": a thinking row with its countdown.
                             let work = env["PREVIEW_WORK"].map { [Work(id: 99, label: $0, started: Date())] } ?? []
-                            glasses.showAid(LensView(card: Card(kind: .answer, title: parts[0],
-                                                                detail: parts.count > 1 ? parts[1] : ""),
-                                                     followup: parts.count > 2 ? parts[2] : nil, working: work))
+                            // PREVIEW_CARDS="title|detail;;title|detail": the card stack, newest first.
+                            var cards = [Card(kind: .answer, title: parts[0], detail: parts.count > 1 ? parts[1] : "", id: 1)]
+                            for (i, extra) in (env["PREVIEW_CARDS"] ?? "").components(separatedBy: ";;").enumerated() where !extra.isEmpty {
+                                let p = extra.components(separatedBy: "|")
+                                cards.append(Card(kind: .definition, title: p[0], detail: p.count > 1 ? p[1] : "", id: 2 + i))
+                            }
+                            let view = LensView(cards: cards, followup: parts.count > 2 ? parts[2] : nil, working: work)
+                            glasses.showAid(view)
+                            // The simulator has no mic, so listening fails and disarms the aid; put it back.
+                            Task {
+                                try? await Task.sleep(for: .seconds(4))
+                                glasses.aidArmed = true
+                                glasses.showAid(LensView())
+                                glasses.showAid(view)
+                            }
                         }
                         // PREVIEW_GROUP="joaquin,avi*,me": a conversation of several, * = talking,
                         // me = the wearer has the floor.
@@ -438,7 +451,8 @@ struct AidStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let card = view.card {
+            ForEach(Array(view.cards.enumerated()), id: \.element.id) { index, card in
+                if index > 0 { Divider().padding(.vertical, 4) }
                 Text(card.title)
                     .font(.system(.body, design: .serif, weight: .medium))
                     .lineLimit(1)
@@ -962,14 +976,40 @@ struct LensMirror: View {
         // upward from the same baseline. Everything above it is glass you can see through.
         GeometryReader { geo in
             VStack(spacing: 0) {
-                Spacer(minLength: 0)
+                // The split lens fills the panel: the aid's cards at the very top, the person on
+                // the floor. Every other card sits on the floor and hugs its content.
+                if shot.kind != .split { Spacer(minLength: 0) }
                 card
                 Color.clear.frame(height: m.bottom)
             }
-            .frame(width: LensMetrics.canvas, height: LensMetrics.canvas, alignment: .bottom)
+            .frame(width: LensMetrics.canvas, height: LensMetrics.canvas, alignment: shot.kind == .split ? .top : .bottom)
             .scaleEffect(geo.size.width / LensMetrics.canvas, anchor: .topLeading)
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             .clipped()
+        }
+    }
+
+    /// Mirror of `LensCards.groupCards`: two small cards side by side.
+    private var groupCards: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(shot.group.prefix(2), id: \.id) { member in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        if let photo = avatar(member.id) {
+                            Image(uiImage: photo)
+                                .resizable().aspectRatio(contentMode: .fill)
+                                .frame(width: m.icon, height: m.icon)
+                                .clipShape(RoundedRectangle(cornerRadius: m.icon * 0.22, style: .continuous))
+                        }
+                        if member.speaking { Image(systemName: "bubble.left").font(.system(size: m.glyph)) }
+                    }
+                    Text(member.name).font(.system(size: m.heading, weight: .semibold))
+                    Text(LensCards.short(member.headline)).font(.system(size: m.meta)).foregroundStyle(secondary)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(LensCardBackground(radius: m.radius))
+            }
         }
     }
 
@@ -1006,32 +1046,42 @@ struct LensMirror: View {
         }
     }
 
-    /// The aid's card content: the answer or definition, work in flight, the line to say next.
+    /// Mirror of `LensCards.cardBox`: the newest card as heading over body, older ones a step down.
+    private func cardBody(_ card: LensShot.CardText, newest: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                if let icon = card.icon { Image(systemName: LensCards.symbol(lensIcon: icon)).font(.system(size: m.glyph)) }
+                Text(card.title).font(.system(size: newest ? m.heading : m.body, weight: newest ? .semibold : .regular))
+            }
+            if let detail = card.detail {
+                Text(detail).font(.system(size: newest ? m.body : m.meta)).foregroundStyle(secondary)
+            }
+        }
+    }
+
+    /// Mirror of `LensCards.extrasBox`: work in flight, the line to say next.
+    @ViewBuilder private var extrasBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(shot.working.enumerated()), id: \.offset) { _, line in
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles").font(.system(size: m.glyph))
+                    Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
+                }
+            }
+            if let followup = shot.followup {
+                HStack(spacing: 10) {
+                    Image(systemName: "bubble.left").font(.system(size: m.glyph))
+                    Text(followup).font(.system(size: m.body))
+                }
+            }
+        }
+    }
+
+    /// The aid's card content as one box, for the aid-only layout.
     @ViewBuilder private var aidBody: some View {
         VStack(alignment: .leading, spacing: 12) {
-                if let title = shot.answer {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 10) {
-                            if let icon = shot.cardIcon { Image(systemName: LensCards.symbol(lensIcon: icon)).font(.system(size: m.glyph)) }
-                            Text(title).font(.system(size: m.heading, weight: .semibold))
-                        }
-                        if let detail = shot.echo {
-                            Text(detail).font(.system(size: m.body)).foregroundStyle(secondary)
-                        }
-                    }
-                }
-                ForEach(Array(shot.working.enumerated()), id: \.offset) { _, line in
-                    HStack(spacing: 10) {
-                        Image(systemName: "sparkles").font(.system(size: m.glyph))
-                        Text(line).font(.system(size: m.meta)).foregroundStyle(secondary)
-                    }
-                }
-                if let followup = shot.followup {
-                    HStack(spacing: 10) {
-                        Image(systemName: "bubble.left").font(.system(size: m.glyph))
-                        Text(followup).font(.system(size: m.body))
-                    }
-                }
+            ForEach(Array(shot.cards.enumerated()), id: \.offset) { index, card in cardBody(card, newest: index == 0) }
+            extrasBody
         }
     }
 
@@ -1039,17 +1089,20 @@ struct LensMirror: View {
         switch shot.kind {
         case .split:
             // The lens split: the aid's card on top, who you're talking to at the bottom.
-            VStack(alignment: .leading, spacing: 12) {
-                if shot.answer != nil || !shot.working.isEmpty || shot.followup != nil {
-                    aidBody
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(Array(shot.cards.enumerated()), id: \.offset) { index, card in
+                    cardBody(card, newest: index == 0)
+                        .padding(m.pad)
+                        .modifier(LensCardBackground(radius: m.radius))
+                }
+                if !shot.working.isEmpty || shot.followup != nil {
+                    extrasBody
                         .padding(m.pad)
                         .modifier(LensCardBackground(radius: m.radius))
                 }
                 Spacer(minLength: 0)
                 if shot.group.count >= 2 {
-                    groupRow
-                        .padding(m.pad)
-                        .modifier(LensCardBackground(radius: m.radius))
+                    groupCards
                 } else if let id = shot.photo {
                     HStack(alignment: .top, spacing: 16) {
                         // A third of the row, as on the lens; grey until the photo's write lands.

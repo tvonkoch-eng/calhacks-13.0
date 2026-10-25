@@ -60,7 +60,8 @@ func drawLens(_ view: LensView) {
     let width = 54
     var rows: [String] = []
     if let header = view.header, !view.isEmpty { rows.append(Style.dim + header.uppercased() + Style.reset) }
-    if let card = view.card {
+    for card in view.cards {
+        if card != view.cards.first { rows.append(Style.dim + String(repeating: "\u{00B7}", count: 6) + Style.reset) }
         let mark = card.kind == .answer ? "A" : card.kind == .definition ? "i" : "?"
         let title = card.title + (card.live && !card.title.hasSuffix("\u{2026}") ? " \u{2026}" : "")
             + (card.icon.map { "  " + Style.dim + "[\($0)]" + Style.reset } ?? "")
@@ -96,7 +97,13 @@ func drawLens(_ view: LensView) {
         let me = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: "App/people.json"))) as? [[String: Any]])?
             .first { $0["isMe"] as? Bool == true }
         let wearer = (me?["name"] as? String)?.split(separator: " ").first.map(String.init) ?? "the wearer"
-        aid = Aid(config: .fromBundle(wearer: wearer))
+        var config = Aid.Config.fromBundle(wearer: wearer)
+        // Same defaults as the phone (Assistant.makeAid): no lines to say, the wearer's questions answered.
+        let env = ProcessInfo.processInfo.environment
+        config.suggestions = env["AID_SUGGEST"] == "1"
+        config.answerMine = env["AID_ANSWER_MINE"] != "0"
+        config.explicitOnly = env["AID_EXPLICIT_ONLY"] != "0"
+        aid = Aid(config: config)
         listener.keywords = [wearer, "Lens"]
         listener.file = file
 
@@ -124,7 +131,8 @@ func drawLens(_ view: LensView) {
             self?.lensChanged(view)
             let card: Any = view.card.map { ["kind": "\($0.kind)", "title": $0.title, "detail": $0.detail, "live": $0.live,
                                               "id": $0.id] } ?? NSNull()
-            self?.record(["kind": "lens", "header": view.header ?? NSNull(), "card": card,
+            let cards = view.cards.map { ["kind": "\($0.kind)", "title": $0.title, "detail": $0.detail, "live": $0.live, "id": $0.id] as [String: Any] }
+            self?.record(["kind": "lens", "header": view.header ?? NSNull(), "card": card, "cards": cards,
                           "followup": view.followup ?? NSNull()], at: Date())
         }
     }
