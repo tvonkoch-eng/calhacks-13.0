@@ -1288,9 +1288,11 @@ enum Talk {
         // realized vol" (the judge: 2/8, during the recruiting moment).
         let theirOwn = Talk.normalized(lines.suffix(10).filter { roles.isWearer($0.speaker) }.map(\.text).joined(separator: " ")
             + (predictedWearer() ? " " + partial : ""))
+        // Where they are and who they are is known already: the event they're at ("CalHacks") is not news.
+        let known = Talk.normalized(config.situation + " " + config.background).filter { $0 != " " }
         for term in advice.define where !Talk.mentioned(term.term, in: theirOwn) && !defined.contains(where: { Talk.mentioned($0, in: Talk.normalized(term.term + " " + (term.meaning ?? ""))) })
             && term.term.count >= 3 && Talk.mentioned(term.term, in: recent) && !Talk.mentioned(term.term, in: answered)
-            && !quiet {
+            && !known.contains(Talk.normalized(term.term).filter { $0 != " " }) && !quiet {
             defined.append(term.term)
             // No meaning, or one the coach isn't sure of: search for it instead of guessing.
             guard let meaning = term.meaning, !unsure.contains(where: meaning.lowercased().contains) else {
