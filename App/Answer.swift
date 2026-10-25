@@ -123,7 +123,10 @@ struct Answerer {
     said that a smart, well-read college student might not know: a niche name, term, place, number \
     or claim. Niche means known mostly inside its field, however big (Legora, Harvey, Jane Street), \
     not household names (7-Eleven, Google, Tesla, Harvard). Reply with exactly SKIP, and nothing \
-    else, for small talk, fragments, or when everything mentioned is common knowledge. Never invent facts about the people talking; for their own \
+    else, for small talk, fragments, rhetorical or venting questions ("why is this so hard", "is \
+    it just broken"), a question with no clear subject ("what is the other thing", "what is the \
+    definition"), anything about the people talking or what they are working on, or when \
+    everything mentioned is common knowledge. Never invent facts about the people talking; for their own \
     lives, offer only what the conversation or what's known about them says. Never send the people \
     talking to the web: not their work, their company, their school or their plans.
     """
@@ -190,14 +193,18 @@ struct Answerer {
             "temperature": 0,
             "messages": [
                 ["role": "system", "content": """
-                    Someone in a live conversation just asked a question that refers back to \
-                    something said earlier ("they", "it", "that bill", "the company"). Rewrite it as \
-                    one short question that stands alone, naming exactly what it refers to from the \
-                    conversation (the company, product, law, place, person in the news). The \
+                    Someone in a live conversation said something that may be a question referring \
+                    back to earlier talk ("they", "it", "that bill", "the company"). Most of these \
+                    are NOT worth answering: reply exactly SKIP unless it is a sincere request for a \
+                    public fact about a specific, named thing the conversation clearly identifies \
+                    (a company, product, law, place, public figure, concept). SKIP when it is a \
+                    remark, rhetorical, slang or a joke ("is Meta just fried"), a half-finished \
+                    fragment, about the people talking or what they are doing (their project, \
+                    video, plans, things in the room), or when you would have to guess what it \
+                    refers to. Otherwise rewrite it as one short question that stands alone and \
+                    names the thing ("How much did Legora raise in its latest round?"). The \
                     transcript is live speech recognition, so names may be misheard: use the name \
-                    that was clearly meant. Reply with the question only. Reply exactly SKIP if it \
-                    is about the people talking themselves, or if the conversation never says what \
-                    it refers to. Never guess a referent.
+                    that was clearly meant. Reply with the question or SKIP only.
                     """],
                 ["role": "user", "content": "Conversation:\n\(context)\n\nQuestion: \(question)"],
             ],
@@ -209,6 +216,10 @@ struct Answerer {
             .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"")))
         if text.isEmpty { return nil }
         if text.uppercased().hasPrefix("SKIP") { return "SKIP" }
+        // Still pointing at nothing ("What is the other thing?"): not worth a card or a search.
+        let vague = " " + text.lowercased() + " "
+        if [" the other thing", " the thing", " that thing", " this thing", " the other one", " what is it",
+            " what's it", " the definition?"].contains(where: vague.contains) { return "SKIP" }
         return text.hasSuffix("?") ? text : text + "?"
     }
 

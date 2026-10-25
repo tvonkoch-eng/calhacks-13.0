@@ -39,6 +39,8 @@ enum QuestionGate {
         "is", "are", "was", "were", "do", "does", "did", "has", "have", "had", "can", "could",
         "will", "would", "should", "be", "been", "being", "am", "very", "really", "most", "more",
         "much", "many", "about", "like",
+        // "what is the definition…", "what is the other thing…": the thing itself hasn't been said.
+        "definition", "meaning", "other", "thing", "stuff", "it", "one",
     ]
 
     /// Noise people put in front of a real question.
