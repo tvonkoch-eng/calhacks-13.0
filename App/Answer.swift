@@ -99,7 +99,9 @@ struct Answerer {
     "Frank Herbert", "June 1944"), no sentence, no punctuation at the end. Only when the question \
     truly needs explaining (how or why something works) give one or two short sentences, at most \
     25 words: the core idea only, no list of every factor. \
-    Never a preamble or the question restated. A number keeps its unit, always in US units: miles, feet, °F, pounds, gallons; never km, \
+    Never a preamble or the question restated. "What is X" (a term, a method, a statistic) wants \
+    what X is, in a few words ("Cohen's kappa" → "Agreement between raters beyond chance, 0 to 1"), \
+    never just X's name back. A number keeps its unit, always in US units: miles, feet, °F, pounds, gallons; never km, \
     meters, °C or kg, and never both. Plain facts only. The conversation and what's known about \
     them are for understanding the question ("it", "they"), never the answer to repeat back.
 

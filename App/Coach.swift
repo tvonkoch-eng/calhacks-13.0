@@ -217,9 +217,15 @@ enum Coach {
     /// Lenient on purpose: models wrap JSON in prose, return one definition as an object instead of
     /// a list, or send null where we asked for []. Anything unusable is simply absent.
     static func parse(_ text: String) -> Advice? {
-        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,
-              let object = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any]
-        else { return nil }
+        // Without JSON mode (OpenRouter) qwen sometimes closes one brace too many ("…}}}"): back off
+        // to an earlier "}" until the object parses.
+        guard let start = text.firstIndex(of: "{") else { return nil }
+        var end = text.lastIndex(of: "}"), parsed: [String: Any]?
+        while let close = end, close > start, parsed == nil {
+            parsed = try? JSONSerialization.jsonObject(with: Data(text[start...close].utf8)) as? [String: Any]
+            end = text[..<close].lastIndex(of: "}")
+        }
+        guard let object = parsed else { return nil }
 
         func clean(_ value: Any?) -> String? {
             guard let s = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty,

@@ -290,6 +290,8 @@ do {
     let ask = Coach.parse(#"{"ask": "How much did Figure AI raise in its latest round?", "define": [], "suggest": null}"#)
     check(ask?.ask == "How much did Figure AI raise in its latest round?", "a rebuilt request")
     check(Coach.parse("no json here") == nil, "prose without JSON is rejected")
+    let extra = Coach.parse(#"{"ask": null, "define": [{"term": "GARCH model", "meaning": "volatility clustering"}], "insight": {"topic": "GARCH models", "query": "GARCH limits"}}}"#)
+    check(extra?.define.first?.term == "GARCH model" && extra?.insight?.topic == "GARCH models", "one closing brace too many still parses")
     let input = Coach.Input(wearer: "Toby", background: "finance student", known: "Priya · evals founder; Wearer promised: send the deck",
                             defined: [], suggested: ["How did the seed close?"], moment: "a silence", transcript: [])
     let message = Coach.message(input)
