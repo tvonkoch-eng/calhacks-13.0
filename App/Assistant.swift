@@ -610,8 +610,12 @@ import Observation
         case "name":
             if let id = newcomers.last { rename(id, arg("n")) }
         case "fact":
-            guard let id = newcomers.last, var person = person(id) else { return }
-            if person.tie?.isEmpty ?? true { person.tie = arg("t") } else { person.highlights = (person.highlights ?? []) + [arg("t")] }
+            // Filed in the CRM as a glance would, then onto the card the way `learned` puts it.
+            guard let id = newcomers.last, let crm, var person = person(id) else { return }
+            crm.demoFact(id, arg("t"))
+            let facts = crm.facts(about: id).map(\.text)
+            person.tie = facts.first
+            person.highlights = facts.count > 1 ? Array(facts.dropFirst().prefix(2)) : nil
             store?.updateMet(person)
             glasses?.refresh(person)
         case "jarvis":

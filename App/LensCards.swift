@@ -560,7 +560,8 @@ enum LensCards {
     static func info(_ person: Person) -> [String] {
         // What they do now leads; then how you know them, what you owe them, their best work,
         // and the rest of their background, each once.
-        var pool: [String] = [person.headline]
+        // A new contact's stand-in role ("Met Today, 7:02 AM") is no bullet: what they said is.
+        var pool: [String] = person.headline.hasPrefix("Met ") ? [] : [person.headline]
         if let tie = person.tie { pool.append(tie) }
         if let recall = recall?(person.id) { pool.append(recall) }
         pool += person.highlights ?? []

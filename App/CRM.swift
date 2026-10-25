@@ -370,6 +370,14 @@ struct Reminder: Codable, Identifiable, Equatable {
         }
     }
 
+    #if DEBUG
+    /// Demo driver: a fact heard from them, filed as a glance files it.
+    func demoFact(_ id: String, _ text: String) {
+        facts.append(Fact(id: UUID(), person: id, text: text, learned: .now))
+        save()
+    }
+    #endif
+
     private func look(_ input: Recap.Input) async -> Glance? {
         if let glancer { return try? await glancer(input) }
         for model in glanceModels {
