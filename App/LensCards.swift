@@ -129,7 +129,7 @@ enum LensCards {
             }
         }
         .padding(20)
-        .background(.card)
+        // No card behind it: the aid's text sits on the glass.
     }
 
     /// Work in flight and the line to say next, under the cards.
@@ -153,7 +153,7 @@ enum LensCards {
             }
         }
         .padding(20)
-        .background(.card)
+        // No card behind it: the aid's text sits on the glass.
     }
 
     /// Everyone you're talking to, in one row: a photo and a first name each, the speech bubble in

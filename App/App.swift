@@ -1119,14 +1119,14 @@ struct LensMirror: View {
                 ForEach(Array(shot.cards.enumerated()), id: \.offset) { index, card in
                     cardBody(card, newest: index == 0)
                         .padding(m.pad)
-                        .modifier(LensCardBackground(radius: m.radius))
+                        .modifier(GlassText())
                 }
-                // Always up, blank until there's a suggestion: the top third is reserved for it.
-                // Stretched down to the people: the top third is one solid box.
+                // The top third is reserved for the suggestion: text on the glass, no box, so an
+                // empty lens shows nothing at all.
                 extrasBody
                     .frame(minHeight: LensFit.blank, maxHeight: .infinity, alignment: .topLeading)
                     .padding(m.pad)
-                    .modifier(LensCardBackground(radius: m.radius))
+                    .modifier(GlassText())
                 if shot.group.count >= 2 {
                     groupCards.frame(height: LensFit.half).clipped()
                 } else if let id = shot.photo {
@@ -1256,6 +1256,17 @@ struct LensMirror: View {
         }
     }
 
+}
+
+/// Text straight on the glass, no card. A soft shadow keeps it legible over a bright camera frame
+/// on the phone; on the lens itself the display is additive and needs none.
+private struct GlassText: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .shadow(color: .black.opacity(0.7), radius: 3)
+    }
 }
 
 /// The lens's `.background(.card)`. Sampled straight off a captured lens frame rather than
