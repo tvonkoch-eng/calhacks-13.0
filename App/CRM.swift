@@ -1205,7 +1205,7 @@ enum Recap {
         return result
     }
 
-    static func complete(system prompt: String, _ message: String, model: Aid.Model) async throws -> String {
+    static func complete(system prompt: String, _ message: String, model: Aid.Model, timeout: TimeInterval = 25) async throws -> String {
         var body: [String: Any] = [
             "model": model.model,
             "temperature": 0.2,
@@ -1225,7 +1225,9 @@ enum Recap {
             body["max_tokens"] = 700
         }
         if model.provider == .cerebras { body.removeValue(forKey: "response_format") }
-        return try await LLM.complete(model.provider.endpoint, key: model.key, body: body, timeout: 25)
+        // OpenRouter: the quickest host for the model, not the cheapest-first default.
+        if model.provider == .openrouter { body["provider"] = ["sort": "latency"] }
+        return try await LLM.complete(model.provider.endpoint, key: model.key, body: body, timeout: timeout)
     }
 
     /// Lenient like `Coach.parse`: prose around the object, null for [], strings for numbers.
@@ -1291,9 +1293,10 @@ struct Glance: Equatable {
     take facts from it as THEM's, unless it plainly describes the wearer.
     "label": who THEM is in at most 4 words, lowercase, from what they said: "evals startup \
     founder", "berkeley eecs junior". null if unclear.
-    "facts": up to 3 durable things THEM said about themselves (job, school, project, where \
-    they're from, plans, interests), at most 8 words each, most useful first, never anything in \
-    "Known", never about the wearer. Often [].
+    "facts": up to 3 durable things THEM said about THEMSELVES: what they do (job, company, \
+    role), where they study and what, what they're building, where they're from. At most 8 words \
+    each, most useful first, never anything in "Known", never about the wearer. Never opinions, \
+    reactions, jokes, the event, the demo, the app, or what anyone else is doing. Often [].
     "details": THEM's work (employer and role), school, and where they're from, only when they \
     said it clearly: {"work": "...", "school": "...", "from": "..."}. {} if not.
     "key": the 3 most important things to know about THEM overall, copied exactly from "Known" \
@@ -1302,7 +1305,9 @@ struct Glance: Equatable {
     """
 
     static func ask(_ input: Recap.Input, model: Aid.Model) async throws -> Glance {
-        let text = try await Recap.complete(system: prompt, Recap.message(input), model: model)
+        // A glance answers in ~1 s; one that hangs (24 s on Oct 25, holding the name back) is dropped
+        // and the next fallback model asked.
+        let text = try await Recap.complete(system: prompt, Recap.message(input), model: model, timeout: 4)
         guard let glance = parse(text) else { throw LLM.Failure.unreadable(String(text.prefix(120))) }
         return glance
     }
