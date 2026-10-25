@@ -809,6 +809,19 @@ enum LensFit {
         return (out, max(0, left.rounded(.down)))
     }
 
+    /// The title with words cut from its end, until the aid fits the room; "…" marks the cut.
+    private static func shortened(_ title: String, _ shot: LensShot, bottom: LensCards.Bottom) -> String {
+        var words = title.split(separator: " ")
+        let all = words.count
+        func text() -> String { words.joined(separator: " ") + (words.count < all ? "…" : "") }
+        var trial = shot
+        while words.count > 1, content(trial, bottom: bottom) > room(bottom) {
+            words.removeLast()
+            trial.cards[0].title = text()
+        }
+        return text()
+    }
+
     /// Drops what won't fit in the aid's room (an older card's detail, then the older card) and
     /// returns the spacer's height.
     static func fit(_ shot: inout LensShot, bottom: LensCards.Bottom) -> CGFloat {
@@ -837,6 +850,8 @@ enum LensFit {
             } else if last > 0 {
                 shot.cards.removeLast()
             } else {
+                // The newest answer alone is too tall: shorten its words, or it runs into the people.
+                shot.cards[0].title = shortened(shot.cards[0].title, shot, bottom: bottom)
                 break
             }
         }
